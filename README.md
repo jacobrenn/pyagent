@@ -39,15 +39,19 @@ ollama pull llama3.1
 
 ## Running the TUI
 
+`main.py` is executable, so you can run the app directly:
+
 ```bash
-python main.py
+./main.py
 ```
 
 To override the configured Ollama model for a session:
 
 ```bash
-python main.py --model llama3.1
+./main.py --model llama3.1
 ```
+
+Note: on most shells, running a script from the current directory requires `./main.py`. If you want to run it as just `main.py`, make sure the repository directory is on your `PATH`.
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can refresh them while the app is running with `/reload_context`.
 
