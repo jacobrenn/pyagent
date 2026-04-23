@@ -43,7 +43,8 @@ class ChatMessage(Vertical):
         self.finalized = finalized
         self.render_mode = render_mode
         self._label = Label(self._label_text(), classes=f"role-label {role}")
-        self._stream_widget = Static(content, markup=False, classes="stream-content")
+        self._stream_widget = Static(
+            content, markup=False, classes="stream-content")
         self._markdown_widget = Markdown(content, classes="markdown-content")
 
     def _label_text(self) -> str:
@@ -90,7 +91,8 @@ class ChatMessage(Vertical):
 class PromptInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit", "Send", show=False, priority=True),
-        Binding("shift+enter", "insert_newline", "New line", show=False, priority=True),
+        Binding("shift+enter", "insert_newline",
+                "New line", show=False, priority=True),
         *TextArea.BINDINGS,
     ]
 
@@ -113,11 +115,14 @@ class PyAgentApp(App):
     BINDINGS = [
         Binding("up", "scroll_chat_up", "Scroll chat up", priority=True),
         Binding("down", "scroll_chat_down", "Scroll chat down", priority=True),
-        Binding("pageup", "scroll_chat_page_up", "Scroll chat up", priority=True),
-        Binding("pagedown", "scroll_chat_page_down", "Scroll chat down", priority=True),
+        Binding("pageup", "scroll_chat_page_up",
+                "Scroll chat up", priority=True),
+        Binding("pagedown", "scroll_chat_page_down",
+                "Scroll chat down", priority=True),
         Binding("home", "scroll_chat_home", "Chat top", priority=True),
         Binding("end", "scroll_chat_end", "Chat bottom", priority=True),
-        Binding("ctrl+p", "history_previous", "Previous prompt", priority=True),
+        Binding("ctrl+p", "history_previous",
+                "Previous prompt", priority=True),
         Binding("ctrl+n", "history_next", "Next prompt", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear chat"),
         Binding("ctrl+d", "toggle_debug", "Toggle debug"),
@@ -222,7 +227,8 @@ class PyAgentApp(App):
 
     def __init__(self, profile: str | None = None, model: str | None = None):
         super().__init__()
-        self.project_context, self.project_context_files = load_project_context(os.getcwd())
+        self.project_context, self.project_context_files = load_project_context(
+            os.getcwd())
         self.agent = Agent(
             model=model,
             profile=profile,
@@ -251,7 +257,8 @@ class PyAgentApp(App):
 
     def on_mount(self) -> None:
         self._debug_log_widget().display = False
-        self._chat_follow_timer = self.set_interval(0.1, self._auto_follow_chat, pause=False)
+        self._chat_follow_timer = self.set_interval(
+            0.1, self._auto_follow_chat, pause=False)
         self._set_status(self._ready_status())
         profile = self.agent.current_profile()
         self._add_message(
@@ -265,7 +272,8 @@ class PyAgentApp(App):
             finalized=True,
         )
         if self.project_context_files:
-            loaded_files = "\n".join(f"- `{path}`" for path in self.project_context_files)
+            loaded_files = "\n".join(
+                f"- `{path}`" for path in self.project_context_files)
             self._add_message(
                 "system",
                 f"Loaded project instructions:\n{loaded_files}",
@@ -304,7 +312,8 @@ class PyAgentApp(App):
     def _resize_prompt_input(self) -> None:
         input_widget = self._prompt_input()
         line_count = max(1, input_widget.text.count("\n") + 1)
-        target_height = max(PROMPT_INPUT_MIN_HEIGHT, min(PROMPT_INPUT_MAX_HEIGHT, line_count + 2))
+        target_height = max(PROMPT_INPUT_MIN_HEIGHT, min(
+            PROMPT_INPUT_MAX_HEIGHT, line_count + 2))
         input_widget.styles.height = target_height
 
     def _chat_container(self) -> VerticalScroll:
@@ -388,7 +397,8 @@ class PyAgentApp(App):
             "/reload_context",
             "/debug",
         ]
-        suggestion = get_close_matches(command, known_commands, n=1, cutoff=0.5)
+        suggestion = get_close_matches(
+            command, known_commands, n=1, cutoff=0.5)
         if suggestion:
             return f"Unknown command: `{command}`. Did you mean `{suggestion[0]}`? Use `/help` to see available commands."
         return f"Unknown command: `{command}`. Use `/help` to see available commands."
@@ -490,7 +500,8 @@ class PyAgentApp(App):
                 self._add_system_note("Usage: `/tools` or `/tools on|off`")
                 return True
 
-            tool_names = "\n".join(f"- `{name}`" for name in self.agent.tool_registry.names())
+            tool_names = "\n".join(
+                f"- `{name}`" for name in self.agent.tool_registry.names())
             self._add_system_note(
                 "Tools:\n"
                 f"- Status: `{'on' if self.agent.config.tools_enabled else 'off'}`\n"
@@ -504,7 +515,8 @@ class PyAgentApp(App):
                 try:
                     self.agent.reload_profiles()
                 except ValueError as exc:
-                    self._add_system_note(f"Could not reload profiles: `{exc}`")
+                    self._add_system_note(
+                        f"Could not reload profiles: `{exc}`")
                     return True
                 self._add_system_note(
                     f"Reloaded profiles from `{self.agent.profile_store.path}`. Active profile: `{self.agent.current_profile().name}`."
@@ -523,7 +535,8 @@ class PyAgentApp(App):
                 if name == default_name:
                     markers.append("default")
                 marker_text = f" ({', '.join(markers)})" if markers else ""
-                auth = f"api_key_env={profile.api_key_env}" if profile.api_key_env else ("inline api key" if profile.api_key else "no api key")
+                auth = f"api_key_env={profile.api_key_env}" if profile.api_key_env else (
+                    "inline api key" if profile.api_key else "no api key")
                 lines.append(
                     f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}` • {auth}"
                 )
@@ -561,15 +574,19 @@ class PyAgentApp(App):
                 make_default = bool(options.get("default", False))
                 switch_to = bool(options.get("switch", False))
                 try:
-                    base_url = str(options.get("base_url") or default_base_url_for_provider(provider)).strip()
+                    base_url = str(options.get(
+                        "base_url") or default_base_url_for_provider(provider)).strip()
                     profile = ModelProfile(
                         name=profile_name,
                         provider=provider,
                         model=model,
                         base_url=base_url,
-                        api_key=str(options.get("api_key", "")).strip() or None,
-                        api_key_env=str(options.get("api_key_env", "")).strip() or None,
-                        headers={str(key): str(value) for key, value in headers.items()},
+                        api_key=str(options.get("api_key", "")
+                                    ).strip() or None,
+                        api_key_env=str(options.get(
+                            "api_key_env", "")).strip() or None,
+                        headers={str(key): str(value)
+                                 for key, value in headers.items()},
                     )
                     self.agent.save_profile(profile, make_default=make_default)
                     if switch_to:
@@ -627,15 +644,18 @@ class PyAgentApp(App):
                     self._add_system_note(f"Could not list models: `{error}`")
                     return True
                 if not model_names:
-                    self._add_system_note("This endpoint did not report any available models.")
+                    self._add_system_note(
+                        "This endpoint did not report any available models.")
                     return True
                 models_text = "\n".join(f"- `{name}`" for name in model_names)
-                self._add_system_note(f"Available models for `{profile.name}`:\n{models_text}")
+                self._add_system_note(
+                    f"Available models for `{profile.name}`:\n{models_text}")
                 return True
 
             new_model = " ".join(args).strip()
             if not new_model:
-                self._add_system_note("Usage: `/model list` or `/model <name>`")
+                self._add_system_note(
+                    "Usage: `/model list` or `/model <name>`")
                 return True
 
             old_model = profile.model
@@ -667,7 +687,8 @@ class PyAgentApp(App):
             return True
 
         if command == "/cwd":
-            self._add_system_note(f"Current working directory: `{os.getcwd()}`")
+            self._add_system_note(
+                f"Current working directory: `{os.getcwd()}`")
             return True
 
         if command == "/history":
@@ -681,13 +702,15 @@ class PyAgentApp(App):
                     if query.lower() in entry.lower()
                 ]
                 if not matches:
-                    self._add_system_note(f"No prompt history entries matched `{query}`.")
+                    self._add_system_note(
+                        f"No prompt history entries matched `{query}`.")
                     return True
                 history_lines = "\n".join(
                     f"- {_truncate(entry.replace(chr(10), ' ⏎ '), 160)}"
                     for entry in matches[-10:]
                 )
-                self._add_system_note(f"Prompt history matches for `{query}`:\n{history_lines}")
+                self._add_system_note(
+                    f"Prompt history matches for `{query}`:\n{history_lines}")
                 return True
             if not self.input_history:
                 self._add_system_note("Prompt history is empty.")
@@ -696,12 +719,14 @@ class PyAgentApp(App):
                     f"{index + 1}. {_truncate(entry.replace(chr(10), ' ⏎ '), 120)}"
                     for index, entry in enumerate(self.input_history[-10:])
                 )
-                self._add_system_note(f"Recent prompts:\n{history_lines}\n\nTip: use `/history search <text>` to find an older prompt.")
+                self._add_system_note(
+                    f"Recent prompts:\n{history_lines}\n\nTip: use `/history search <text>` to find an older prompt.")
             return True
 
         if command == "/prompt":
             system_prompt = self.agent.messages[0]["content"] if self.agent.messages else "<missing>"
-            self._add_system_note(f"Active system prompt:\n\n```text\n{system_prompt}\n```")
+            self._add_system_note(
+                f"Active system prompt:\n\n```text\n{system_prompt}\n```")
             return True
 
         if command == "/context":
@@ -722,16 +747,20 @@ class PyAgentApp(App):
 
         if command == "/reload_context":
             previous_files = set(self.agent.project_context_files)
-            self.project_context, self.project_context_files = load_project_context(os.getcwd())
-            self.agent.set_project_context(self.project_context, self.project_context_files)
+            self.project_context, self.project_context_files = load_project_context(
+                os.getcwd())
+            self.agent.set_project_context(
+                self.project_context, self.project_context_files)
             current_files = set(self.project_context_files)
             added = sorted(current_files - previous_files)
             removed = sorted(previous_files - current_files)
             details = [self._context_status_text()]
             if added:
-                details.append("Added:\n" + "\n".join(f"- `{path}`" for path in added))
+                details.append(
+                    "Added:\n" + "\n".join(f"- `{path}`" for path in added))
             if removed:
-                details.append("Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
+                details.append(
+                    "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
             if not self.project_context_files:
                 details = [
                     "Reloaded project instructions. No `AGENTS.md` or skill files were found."
@@ -792,7 +821,8 @@ class PyAgentApp(App):
     def _schedule_chat_scroll_end(self, force: bool = False) -> None:
         if force or self.chat_auto_follow or self._is_chat_near_bottom():
             self.chat_auto_follow = True
-            self.call_after_refresh(self._chat_container().scroll_end, animate=False)
+            self.call_after_refresh(
+                self._chat_container().scroll_end, animate=False)
 
     def _update_chat_auto_follow(self) -> None:
         self.chat_auto_follow = self._is_chat_near_bottom()
@@ -821,7 +851,8 @@ class PyAgentApp(App):
         render_mode: str = "markdown",
     ) -> ChatMessage:
         should_autoscroll = self.chat_auto_follow or self._is_chat_near_bottom()
-        message = ChatMessage(role, content, finalized=finalized, render_mode=render_mode)
+        message = ChatMessage(
+            role, content, finalized=finalized, render_mode=render_mode)
         message.add_class(f"{role}-message")
         self._chat_container().mount(message)
         self._schedule_chat_scroll_end(force=should_autoscroll)
@@ -853,7 +884,8 @@ class PyAgentApp(App):
 
     async def action_clear_chat(self) -> None:
         if self.is_processing:
-            self.notify("Wait for the current response to finish before clearing.")
+            self.notify(
+                "Wait for the current response to finish before clearing.")
             return
         self.agent.reset()
         await self._chat_container().remove_children()
@@ -942,7 +974,8 @@ class PyAgentApp(App):
         def ensure_assistant_message() -> ChatMessage:
             nonlocal assistant_message
             if assistant_message is None:
-                assistant_message = self._add_message("assistant", "", finalized=False)
+                assistant_message = self._add_message(
+                    "assistant", "", finalized=False)
             return assistant_message
 
         def flush_buffer() -> None:
@@ -1005,7 +1038,8 @@ class PyAgentApp(App):
                     )
                     tool_name = event.get("name", "<unknown>")
                     result_preview = _truncate(result, 800)
-                    suffix = "\n\n_Output truncated for readability._" if len(result) > len(result_preview) else ""
+                    suffix = "\n\n_Output truncated for readability._" if len(
+                        result) > len(result_preview) else ""
                     self._add_message(
                         "tool",
                         f"Tool result • `{tool_name}`\n\n```text\n{result_preview}\n```{suffix}",
@@ -1016,7 +1050,8 @@ class PyAgentApp(App):
                     continue
 
                 if event_type == "error":
-                    self._log_debug(f"error: {event.get('message', 'Unknown error')}")
+                    self._log_debug(
+                        f"error: {event.get('message', 'Unknown error')}")
                     ensure_assistant_message().append_stream(
                         f"\n\n{event.get('message', 'Unknown error')}"
                     )

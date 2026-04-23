@@ -266,7 +266,8 @@ class OpenAICompatibleClient(BaseChatClient):
                 if delta is None:
                     continue
 
-                content = _extract_openai_content(getattr(delta, "content", None))
+                content = _extract_openai_content(
+                    getattr(delta, "content", None))
                 if content:
                     yield {"content": content}
 
@@ -295,7 +296,8 @@ class OpenAICompatibleClient(BaseChatClient):
                         current["function"]["name"] += str(function_name)
                     function_arguments = getattr(function, "arguments", None)
                     if function_arguments:
-                        current["function"]["arguments"] += str(function_arguments)
+                        current["function"]["arguments"] += str(
+                            function_arguments)
 
             if tool_call_fragments:
                 yield {
@@ -321,7 +323,6 @@ def build_chat_client(profile: ModelProfile, timeout: int = 300) -> BaseChatClie
     raise ValueError(f"Unsupported provider '{profile.provider}'")
 
 
-
 def _format_openai_error(exc: openai.APIError) -> str:
     if isinstance(exc, openai.APIStatusError):
         status = getattr(exc, "status_code", None)
@@ -338,7 +339,6 @@ def _format_openai_error(exc: openai.APIError) -> str:
     if isinstance(exc, openai.APITimeoutError):
         return f"OpenAI-compatible timeout error: {exc}"
     return f"OpenAI-compatible API error: {exc}"
-
 
 
 def _extract_openai_content(content: Any) -> str:
@@ -358,7 +358,6 @@ def _extract_openai_content(content: Any) -> str:
                 parts.append(text)
         return "".join(parts)
     return ""
-
 
 
 def _merge_tool_call_fragments(
@@ -401,7 +400,8 @@ def _merge_tool_call_fragments(
                 **incoming_arguments,
             }
         elif isinstance(existing_arguments, str) and isinstance(incoming_arguments, str):
-            current_function["arguments"] = existing_arguments + incoming_arguments
+            current_function["arguments"] = existing_arguments + \
+                incoming_arguments
         elif incoming_arguments:
             current_function["arguments"] = incoming_arguments
 

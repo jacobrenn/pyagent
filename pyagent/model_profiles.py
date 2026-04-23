@@ -86,10 +86,12 @@ def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
     if not model:
         raise ValueError(f"Profile '{name}' must define a non-empty 'model'.")
 
-    base_url = str(data.get("base_url") or default_base_url_for_provider(provider)).strip()
+    base_url = str(data.get("base_url")
+                   or default_base_url_for_provider(provider)).strip()
     headers = data.get("headers") or {}
     if not isinstance(headers, dict):
-        raise ValueError(f"Profile '{name}' field 'headers' must be an object.")
+        raise ValueError(
+            f"Profile '{name}' field 'headers' must be an object.")
 
     return ModelProfile(
         name=name,
@@ -105,7 +107,8 @@ def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
 def _store_from_json(path: str, payload: dict[str, Any]) -> ProfileStore:
     profiles_payload = payload.get("profiles")
     if not isinstance(profiles_payload, dict) or not profiles_payload:
-        raise ValueError("Model profile file must contain a non-empty 'profiles' object.")
+        raise ValueError(
+            "Model profile file must contain a non-empty 'profiles' object.")
 
     profiles = {
         str(name): _profile_from_dict(str(name), profile_data)
@@ -113,9 +116,11 @@ def _store_from_json(path: str, payload: dict[str, Any]) -> ProfileStore:
         if isinstance(profile_data, dict)
     }
     if not profiles:
-        raise ValueError("Model profile file did not contain any valid profiles.")
+        raise ValueError(
+            "Model profile file did not contain any valid profiles.")
 
-    default_profile = str(payload.get("default_profile") or "").strip() or next(iter(profiles))
+    default_profile = str(payload.get("default_profile")
+                          or "").strip() or next(iter(profiles))
     if default_profile not in profiles:
         available = ", ".join(sorted(profiles))
         raise ValueError(
@@ -133,7 +138,8 @@ def _env_profile() -> ModelProfile:
         name="default",
         provider=provider,
         model=model,
-        base_url=os.getenv("PYAGENT_BASE_URL", default_base_url).strip() or default_base_url,
+        base_url=os.getenv("PYAGENT_BASE_URL",
+                           default_base_url).strip() or default_base_url,
         api_key=os.getenv("PYAGENT_API_KEY", "").strip() or None,
         api_key_env=os.getenv("PYAGENT_API_KEY_ENV", "").strip() or None,
         headers={},
@@ -188,9 +194,11 @@ def load_profile_store(path: str | None = None) -> ProfileStore:
         try:
             payload = json.loads(profile_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Could not parse model profile file {profile_path}: {exc}") from exc
+            raise ValueError(
+                f"Could not parse model profile file {profile_path}: {exc}") from exc
         if not isinstance(payload, dict):
-            raise ValueError("Model profile file must contain a JSON object at the top level.")
+            raise ValueError(
+                "Model profile file must contain a JSON object at the top level.")
         return _store_from_json(str(profile_path), payload)
 
     fallback_profile = _env_profile()

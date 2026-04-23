@@ -25,7 +25,8 @@ class Agent:
         )
         self.active_profile_name = profile or self.config.default_profile or self.profile_store.default_profile
         self.model_override = model.strip() if model else None
-        self.tool_registry = tool_registry or create_default_tool_registry(self.config)
+        self.tool_registry = tool_registry or create_default_tool_registry(
+            self.config)
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.project_context = project_context.strip()
         self.project_context_files = list(project_context_files or [])
@@ -61,7 +62,8 @@ class Agent:
                 api_key_env=profile.api_key_env,
                 headers=dict(profile.headers),
             )
-        self.client = build_chat_client(profile, timeout=self.config.request_timeout)
+        self.client = build_chat_client(
+            profile, timeout=self.config.request_timeout)
 
     def current_profile(self) -> ModelProfile:
         return self.client.profile
@@ -81,14 +83,16 @@ class Agent:
 
     def reload_profiles(self) -> None:
         current_profile_name = self.active_profile_name
-        self.profile_store = load_profile_store(self.config.model_profiles_path)
+        self.profile_store = load_profile_store(
+            self.config.model_profiles_path)
         if current_profile_name not in self.profile_store.profiles:
             self.active_profile_name = self.profile_store.default_profile
             self.model_override = None
         self._rebuild_client()
 
     def save_profile(self, profile: ModelProfile, make_default: bool = False) -> None:
-        update_profile_store(self.profile_store, profile, make_default=make_default)
+        update_profile_store(self.profile_store, profile,
+                             make_default=make_default)
         save_profile_store(self.profile_store)
         self.profile_store = load_profile_store(self.profile_store.path)
 
@@ -106,7 +110,8 @@ class Agent:
         if "error" in response:
             return [], str(response["error"])
 
-        names = [name for name in response.get("models", []) if isinstance(name, str) and name]
+        names = [name for name in response.get(
+            "models", []) if isinstance(name, str) and name]
         return names, None
 
     def reset(self) -> None:
@@ -159,7 +164,8 @@ class Agent:
             if kept_count >= max_history:
                 break
 
-        trimmed_messages = [message for block in reversed(kept_blocks) for message in block]
+        trimmed_messages = [message for block in reversed(
+            kept_blocks) for message in block]
         self.messages = [system_message, *trimmed_messages]
 
     def _normalize_arguments(self, arguments: Any) -> dict[str, Any]:
@@ -226,7 +232,8 @@ class Agent:
                     **incoming_arguments,
                 }
             elif isinstance(existing_arguments, str) and isinstance(incoming_arguments, str):
-                current_function["arguments"] = existing_arguments + incoming_arguments
+                current_function["arguments"] = existing_arguments + \
+                    incoming_arguments
             elif incoming_arguments:
                 current_function["arguments"] = incoming_arguments
 
@@ -245,7 +252,8 @@ class Agent:
             result = str(tool_result["result"]).strip()
             if not result:
                 continue
-            blocks.append(f"**{tool_result['name']}**\n\n```text\n{result}\n```")
+            blocks.append(
+                f"**{tool_result['name']}**\n\n```text\n{result}\n```")
         if not blocks:
             return ""
         return "\n\nHere are the tool results:\n\n" + "\n\n".join(blocks)
@@ -291,7 +299,8 @@ class Agent:
 
                 tool_calls = chunk.get("tool_calls") or []
                 if tool_calls:
-                    full_tool_calls = self._merge_tool_calls(full_tool_calls, tool_calls)
+                    full_tool_calls = self._merge_tool_calls(
+                        full_tool_calls, tool_calls)
                     yield {
                         "type": "debug",
                         "label": "merged_tool_calls",
@@ -311,7 +320,8 @@ class Agent:
                 if self._should_append_tool_results(
                     assistant_message["content"], recent_tool_results
                 ):
-                    suffix = self._format_tool_results_for_fallback(recent_tool_results)
+                    suffix = self._format_tool_results_for_fallback(
+                        recent_tool_results)
                     if suffix:
                         assistant_message["content"] += suffix
                         self.messages[-1]["content"] = assistant_message["content"]

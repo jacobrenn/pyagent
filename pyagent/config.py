@@ -69,10 +69,12 @@ class AppConfig:
         defaults = cls()
         return cls(
             request_timeout=int(
-                os.getenv("PYAGENT_REQUEST_TIMEOUT", str(defaults.request_timeout))
+                os.getenv("PYAGENT_REQUEST_TIMEOUT",
+                          str(defaults.request_timeout))
             ),
             max_iterations=int(
-                os.getenv("PYAGENT_MAX_ITERATIONS", str(defaults.max_iterations))
+                os.getenv("PYAGENT_MAX_ITERATIONS",
+                          str(defaults.max_iterations))
             ),
             max_history_messages=int(
                 os.getenv(
@@ -91,9 +93,11 @@ class AppConfig:
                 "PYAGENT_MODEL_PROFILES_PATH",
                 defaults.model_profiles_path,
             ),
-            tools_enabled=os.getenv("PYAGENT_TOOLS_ENABLED", str(defaults.tools_enabled)).lower()
+            tools_enabled=os.getenv("PYAGENT_TOOLS_ENABLED", str(
+                defaults.tools_enabled)).lower()
             in {"1", "true", "yes", "on"},
-            bash_enabled=os.getenv("PYAGENT_BASH_ENABLED", str(defaults.bash_enabled)).lower()
+            bash_enabled=os.getenv("PYAGENT_BASH_ENABLED", str(
+                defaults.bash_enabled)).lower()
             in {"1", "true", "yes", "on"},
             bash_readonly_mode=os.getenv(
                 "PYAGENT_BASH_READONLY_MODE", str(defaults.bash_readonly_mode)

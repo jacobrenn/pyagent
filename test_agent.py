@@ -70,7 +70,8 @@ class FakeOpenAIModels:
 
 class FakeOpenAIClient:
     def __init__(self, stream=None, models_response=None):
-        self.chat = SimpleNamespace(completions=FakeOpenAICompletions(stream=stream))
+        self.chat = SimpleNamespace(
+            completions=FakeOpenAICompletions(stream=stream))
         self.models = FakeOpenAIModels(response=models_response)
         self.closed = False
 
@@ -82,7 +83,8 @@ def make_chunk(content=None, tool_calls=None):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(content=content, tool_calls=tool_calls or []),
+                delta=SimpleNamespace(
+                    content=content, tool_calls=tool_calls or []),
                 finish_reason=None,
                 index=0,
             )
@@ -102,7 +104,8 @@ def make_tool_call_delta(index: int, id: str | None = None, name: str | None = N
 class AgentTests(unittest.TestCase):
     def test_tools_disabled_omits_tool_definitions_and_updates_system_prompt(self) -> None:
         config = AppConfig(max_iterations=1, tools_enabled=False)
-        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        agent = Agent(
+            config=config, tool_registry=create_default_tool_registry(config))
         agent.client = DummyClient([[{"content": "Plain answer"}]])
 
         events = list(agent.run("Answer without tools"))
@@ -110,11 +113,13 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(agent.tools, [])
         self.assertIn("Tool calling is disabled", agent.messages[0]["content"])
         self.assertEqual(agent.client.seen_tools, [None])
-        self.assertEqual(events[-1], {"type": "assistant_done", "content": "Plain answer"})
+        self.assertEqual(
+            events[-1], {"type": "assistant_done", "content": "Plain answer"})
 
     def test_appends_tool_result_when_model_stops_after_intro(self) -> None:
         config = AppConfig(max_iterations=3)
-        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        agent = Agent(
+            config=config, tool_registry=create_default_tool_registry(config))
         agent.client = DummyClient(
             [
                 [
@@ -138,7 +143,8 @@ class AgentTests(unittest.TestCase):
             ]
         )
 
-        events = list(agent.run("What files are available in the current working directory?"))
+        events = list(
+            agent.run("What files are available in the current working directory?"))
         assistant_deltas = "".join(
             event.get("delta", "") for event in events if event.get("type") == "content_delta"
         )
@@ -152,7 +158,8 @@ class AgentTests(unittest.TestCase):
 
     def test_trim_history_drops_orphaned_tool_messages(self) -> None:
         config = AppConfig(max_history_messages=3)
-        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        agent = Agent(
+            config=config, tool_registry=create_default_tool_registry(config))
         agent.messages = [
             {"role": "system", "content": "system"},
             {"role": "user", "content": "older question"},
@@ -188,7 +195,8 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(agent.messages[-1]["content"], "latest question")
 
     def test_set_model_updates_agent_and_client(self) -> None:
-        agent = Agent(config=AppConfig(), tool_registry=create_default_tool_registry(AppConfig()))
+        agent = Agent(config=AppConfig(),
+                      tool_registry=create_default_tool_registry(AppConfig()))
 
         agent.set_model("new-model")
 
@@ -221,7 +229,8 @@ class AgentTests(unittest.TestCase):
 
             agent = Agent(
                 config=AppConfig(model_profiles_path=profile_path),
-                tool_registry=create_default_tool_registry(AppConfig(model_profiles_path=profile_path)),
+                tool_registry=create_default_tool_registry(
+                    AppConfig(model_profiles_path=profile_path)),
             )
             agent.set_profile("remote")
 
@@ -230,8 +239,10 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(agent.client.model, "gpt-4.1-mini")
 
     def test_available_models_uses_normalized_client_response(self) -> None:
-        agent = Agent(config=AppConfig(), tool_registry=create_default_tool_registry(AppConfig()))
-        agent.client = ModelListClient({"models": ["llama3.1", "qwen2.5-coder:7b"]})
+        agent = Agent(config=AppConfig(),
+                      tool_registry=create_default_tool_registry(AppConfig()))
+        agent.client = ModelListClient(
+            {"models": ["llama3.1", "qwen2.5-coder:7b"]})
 
         names, error = agent.available_models()
 
@@ -257,7 +268,8 @@ class AgentTests(unittest.TestCase):
                 )
 
             config = AppConfig(model_profiles_path=profile_path)
-            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            agent = Agent(
+                config=config, tool_registry=create_default_tool_registry(config))
 
             with open(profile_path, "w", encoding="utf-8") as file:
                 json.dump(
@@ -326,7 +338,8 @@ class UiCommandTests(unittest.TestCase):
         self.assertFalse(app.agent.config.tools_enabled)
         self.assertEqual(app.agent.tools, [])
         self.assertEqual(len(app.agent.messages), 1)
-        self.assertIn("Tool calling is disabled", app.agent.messages[0]["content"])
+        self.assertIn("Tool calling is disabled",
+                      app.agent.messages[0]["content"])
         self.assertIn("Tools disabled for this session", notes[-1])
         self.assertTrue(statuses)
 
@@ -336,7 +349,8 @@ class UiCommandTests(unittest.TestCase):
         self.assertTrue(app.agent.config.tools_enabled)
         self.assertGreater(len(app.agent.tools), 0)
         self.assertEqual(len(app.agent.messages), 1)
-        self.assertNotIn("Tool calling is disabled", app.agent.messages[0]["content"])
+        self.assertNotIn("Tool calling is disabled",
+                         app.agent.messages[0]["content"])
         self.assertIn("Tools enabled for this session", notes[-1])
 
     def test_status_command_reports_agent_tool_loop_max_iterations(self) -> None:
@@ -383,7 +397,8 @@ class ClientTests(unittest.TestCase):
         )
 
         self.assertIsInstance(build_chat_client(ollama_profile), OllamaClient)
-        self.assertIsInstance(build_chat_client(openai_profile), OpenAICompatibleClient)
+        self.assertIsInstance(build_chat_client(
+            openai_profile), OpenAICompatibleClient)
 
     def test_openai_compatible_stream_assembles_tool_calls(self) -> None:
         profile = ModelProfile(
@@ -422,13 +437,16 @@ class ClientTests(unittest.TestCase):
         chunks = list(client.chat_stream(messages=[], tools=[]))
 
         self.assertEqual(chunks[0], {"content": "Hello"})
-        self.assertEqual(chunks[1]["tool_calls"][0]["function"]["name"], "search_text")
+        self.assertEqual(chunks[1]["tool_calls"][0]
+                         ["function"]["name"], "search_text")
         self.assertEqual(
             chunks[1]["tool_calls"][0]["function"]["arguments"],
             '{"query":"PyAgent"}',
         )
-        self.assertEqual(fake_sdk_client.chat.completions.last_create["model"], "gpt-4.1-mini")
-        self.assertEqual(fake_sdk_client.chat.completions.last_create["messages"], [])
+        self.assertEqual(
+            fake_sdk_client.chat.completions.last_create["model"], "gpt-4.1-mini")
+        self.assertEqual(
+            fake_sdk_client.chat.completions.last_create["messages"], [])
 
     def test_openai_compatible_list_models_parses_response(self) -> None:
         profile = ModelProfile(
@@ -441,7 +459,8 @@ class ClientTests(unittest.TestCase):
         client = OpenAICompatibleClient(profile=profile)
         client._client_factory = lambda **kwargs: FakeOpenAIClient(
             models_response=SimpleNamespace(
-                data=[SimpleNamespace(id="gpt-4.1"), SimpleNamespace(id="local-model")]
+                data=[SimpleNamespace(id="gpt-4.1"),
+                      SimpleNamespace(id="local-model")]
             )
         )
 
@@ -509,7 +528,8 @@ class ClientTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual([message["role"] for message in prepared], ["system", "user", "assistant", "tool"])
+        self.assertEqual([message["role"] for message in prepared], [
+                         "system", "user", "assistant", "tool"])
         self.assertEqual(prepared[-1]["content"], "kept")
 
     def test_rebuild_client_closes_previous_client(self) -> None:
@@ -532,7 +552,8 @@ class ClientTests(unittest.TestCase):
 
             agent = Agent(
                 config=AppConfig(model_profiles_path=profile_path),
-                tool_registry=create_default_tool_registry(AppConfig(model_profiles_path=profile_path)),
+                tool_registry=create_default_tool_registry(
+                    AppConfig(model_profiles_path=profile_path)),
             )
             old_client = FakeOpenAIClient()
             agent.client = old_client
@@ -604,8 +625,10 @@ class ToolTests(unittest.TestCase):
 
     def test_find_files_supports_substring_and_glob(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            open(os.path.join(temp_dir, "alpha.py"), "w", encoding="utf-8").close()
-            open(os.path.join(temp_dir, "beta.txt"), "w", encoding="utf-8").close()
+            open(os.path.join(temp_dir, "alpha.py"),
+                 "w", encoding="utf-8").close()
+            open(os.path.join(temp_dir, "beta.txt"),
+                 "w", encoding="utf-8").close()
 
             substring_result = find_files("alpha", path=temp_dir)
             glob_result = find_files("*.txt", path=temp_dir)
@@ -677,7 +700,8 @@ class ProjectContextTests(unittest.TestCase):
     def test_discovers_agents_and_skill_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_path = os.path.realpath(temp_dir)
-            os.makedirs(os.path.join(base_path, "skills", "python"), exist_ok=True)
+            os.makedirs(os.path.join(
+                base_path, "skills", "python"), exist_ok=True)
             with open(os.path.join(base_path, "AGENTS.md"), "w", encoding="utf-8") as file:
                 file.write("project rules")
             with open(os.path.join(base_path, "skills", "python", "testing.md"), "w", encoding="utf-8") as file:
@@ -685,9 +709,11 @@ class ProjectContextTests(unittest.TestCase):
             with open(os.path.join(base_path, "local.skill"), "w", encoding="utf-8") as file:
                 file.write("local skill")
 
-            files = [path.relative_to(base_path).as_posix() for path in discover_project_instruction_files(base_path)]
+            files = [path.relative_to(base_path).as_posix(
+            ) for path in discover_project_instruction_files(base_path)]
 
-        self.assertEqual(files, ["AGENTS.md", "local.skill", "skills/python/testing.md"])
+        self.assertEqual(
+            files, ["AGENTS.md", "local.skill", "skills/python/testing.md"])
 
     def test_load_project_context_and_agent_reset_include_project_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -704,7 +730,8 @@ class ProjectContextTests(unittest.TestCase):
 
         self.assertEqual(files, ["AGENTS.md"])
         self.assertIn("Always run tests after edits.", context)
-        self.assertIn("Always run tests after edits.", agent.messages[0]["content"])
+        self.assertIn("Always run tests after edits.",
+                      agent.messages[0]["content"])
 
 
 def demo() -> None:
