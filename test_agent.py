@@ -182,7 +182,8 @@ class AgentTests(unittest.TestCase):
         events = list(agent.run("Inspect the repository"))
 
         self.assertEqual(agent.client.calls, 2)
-        self.assertEqual(events[-1], {"type": "assistant_done", "content": "Finished"})
+        self.assertEqual(
+            events[-1], {"type": "assistant_done", "content": "Finished"})
 
     def test_trim_history_drops_orphaned_tool_messages(self) -> None:
         config = AppConfig(max_history_messages=3)

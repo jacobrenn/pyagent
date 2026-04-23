@@ -689,7 +689,8 @@ class PyAgentApp(App):
 
         if command == "/max_iterations":
             if len(args) != 1:
-                self._add_system_note("Usage: `/max_iterations <positive integer|-1>`")
+                self._add_system_note(
+                    "Usage: `/max_iterations <positive integer|-1>`")
                 return True
 
             max_iterations, error = self._parse_max_iterations(args[0])
