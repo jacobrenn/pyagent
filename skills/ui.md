@@ -1,6 +1,6 @@
 # UI skill
 
-Use this skill when changing the Textual interface in `ui.py`.
+Use this skill when changing the Textual interface in `pyagent/ui.py`.
 
 ## Goals
 
@@ -57,7 +57,7 @@ If you change slash commands or status text:
 ## Preferred approach
 
 - Small CSS/layout changes first
-- Small helper methods in `ui.py` over deeply nested logic
+- Small helper methods in `pyagent/ui.py` over deeply nested logic
 - Put discoverability in the prompt subtitle and `/help`, not in large persistent banners
 
 ## When to update docs/tests

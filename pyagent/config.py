@@ -14,7 +14,7 @@ def _default_profiles_path() -> str:
 
 
 SYSTEM_PROMPT = (
-    "You are a capable coding assistant operating in a tool-use loop. You have access to tools to "
+    "You are PyAgent, a capable coding assistant operating in a tool-use loop. You have access to tools to "
     "inspect the file system, search for files and text, read and write files, append to files, edit "
     "files, and run shell commands. Prefer dedicated search and file tools over shell commands when "
     "possible. Explain your reasoning briefly, use tools when needed, and be precise when making code "

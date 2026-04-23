@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
-from config import AppConfig
+from .config import AppConfig
 
 
 MAX_TOOL_OUTPUT_CHARS = 12_000

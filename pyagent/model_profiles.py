@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from config import AppConfig
+from .config import AppConfig
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"

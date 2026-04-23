@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from config import AppConfig, SYSTEM_PROMPT
-from llm_client import build_chat_client
-from model_profiles import ModelProfile, ProfileStore, load_profile_store, save_profile_store, update_profile_store
-from tools import ToolRegistry, create_default_tool_registry
+from .config import AppConfig, SYSTEM_PROMPT
+from .llm_client import build_chat_client
+from .model_profiles import ModelProfile, ProfileStore, load_profile_store, save_profile_store, update_profile_store
+from .tools import ToolRegistry, create_default_tool_registry
 
 
 class Agent:

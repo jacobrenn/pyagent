@@ -17,14 +17,14 @@ The project is intentionally lightweight. Prefer small, compatible changes over 
 
 Core files:
 
-- `main.py` — launches the TUI
-- `ui.py` — Textual app, transcript rendering, prompt input, slash commands, prompt history, scroll behavior
-- `agent.py` — agent loop, tool-call handling, provider switching, fallback behavior after tool results
-- `tools.py` — tool registry plus built-in tools
-- `config.py` — environment-driven runtime config and system prompt
-- `model_profiles.py` — loads saved model profiles from JSON and env fallback
-- `llm_client.py` — provider-specific clients and streaming normalization
-- `project_context.py` — loads `AGENTS.md` / skill files into project context
+- `pyagent/main.py` — launches the TUI
+- `pyagent/ui.py` — Textual app, transcript rendering, prompt input, slash commands, prompt history, scroll behavior
+- `pyagent/agent.py` — agent loop, tool-call handling, provider switching, fallback behavior after tool results
+- `pyagent/tools.py` — tool registry plus built-in tools
+- `pyagent/config.py` — environment-driven runtime config and system prompt
+- `pyagent/model_profiles.py` — loads saved model profiles from JSON and env fallback
+- `pyagent/llm_client.py` — provider-specific clients and streaming normalization
+- `pyagent/project_context.py` — loads `AGENTS.md` / skill files into project context
 - `test_agent.py` — unit tests
 
 ## Development priorities
@@ -53,14 +53,14 @@ If implementing agent-facing capabilities, prefer:
 Do not weaken shell safety casually.
 If you change shell policy, update:
 
-- `config.py`
-- `tools.py`
+- `pyagent/config.py`
+- `pyagent/tools.py`
 - `README.md`
 - tests in `test_agent.py`
 
 ## UI conventions
 
-In `ui.py`:
+In `pyagent/ui.py`:
 
 - Keep transcript rendering compact.
 - Avoid overly noisy status text.
@@ -72,7 +72,7 @@ If touching scroll behavior, test manually in the running TUI.
 
 ## Agent loop conventions
 
-In `agent.py`:
+In `pyagent/agent.py`:
 
 - The model may stop after a tool call with an incomplete answer.
 - Preserve the existing fallback behavior that appends tool output when needed.
@@ -108,7 +108,7 @@ If you change that behavior:
 For any non-trivial change, run:
 
 ```bash
-python -m py_compile agent.py config.py llm_client.py model_profiles.py tools.py ui.py main.py ollama_client.py test_agent.py project_context.py
+python -m py_compile pyagent/*.py test_agent.py
 python -m unittest -v
 ```
 

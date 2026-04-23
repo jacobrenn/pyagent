@@ -5,17 +5,17 @@ import os
 import tempfile
 import unittest
 
-from agent import Agent
-from config import AppConfig
-from llm_client import OpenAICompatibleClient, OllamaClient, build_chat_client
-from model_profiles import (
+from pyagent.agent import Agent
+from pyagent.config import AppConfig
+from pyagent.llm_client import OpenAICompatibleClient, OllamaClient, build_chat_client
+from pyagent.model_profiles import (
     ModelProfile,
     load_profile_store,
     save_profile_store,
     update_profile_store,
 )
-from project_context import discover_project_instruction_files, load_project_context
-from tools import (
+from pyagent.project_context import discover_project_instruction_files, load_project_context
+from pyagent.tools import (
     append_file,
     bash,
     create_default_tool_registry,

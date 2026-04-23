@@ -1,6 +1,6 @@
 # Tools skill
 
-Use this skill when changing `tools.py`, tool registration, or tool behavior exposed to the model.
+Use this skill when changing `pyagent/tools.py`, tool registration, or tool behavior exposed to the model.
 
 ## Goals
 
@@ -54,7 +54,7 @@ Be conservative with `bash`.
 If changing shell behavior:
 
 - preserve or improve safety checks
-- keep config-driven policy in `config.py`
+- keep config-driven policy in `pyagent/config.py`
 - document new env vars in `README.md`
 - add tests in `test_agent.py`
 

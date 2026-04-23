@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 import requests
 
-from model_profiles import ModelProfile
+from .model_profiles import ModelProfile
 
 
 class BaseChatClient:

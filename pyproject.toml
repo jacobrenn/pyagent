@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyagent"
+version = "0.1.0"
+description = "A lightweight coding agent built with Textual and a configurable multi-provider backend"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "textual",
+  "requests",
+]
+
+[project.scripts]
+pyagent = "pyagent.main:main"
+
+[tool.setuptools]
+packages = ["pyagent"]

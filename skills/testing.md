@@ -7,7 +7,7 @@ Use this skill when changing logic in the agent loop, tools, config, model profi
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile agent.py config.py llm_client.py model_profiles.py tools.py ui.py main.py ollama_client.py test_agent.py project_context.py
+python -m py_compile pyagent/*.py test_agent.py
 python -m unittest -v
 ```
 
@@ -60,7 +60,7 @@ Test:
 ## UI testing guidance
 
 The current automated tests are stronger for logic than for full TUI behavior.
-For `ui.py` changes, do both:
+For `pyagent/ui.py` changes, do both:
 
 1. automated validation via `py_compile` and `unittest`
 2. manual checks in the running app

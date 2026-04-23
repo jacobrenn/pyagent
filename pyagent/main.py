@@ -2,7 +2,7 @@
 
 import argparse
 
-from ui import PyAgentApp
+from .ui import PyAgentApp
 
 
 def main() -> None:

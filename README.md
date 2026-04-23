@@ -30,23 +30,37 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 
 ## Installation
 
+Install PyAgent locally from the repo root:
+
+```bash
+python -m pip install -e .
+```
+
+If you only want the dependencies without installing the package entry point, this still works:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Running the TUI
 
-`main.py` is executable, so you can run the app directly:
+After installation, run PyAgent from any directory with:
 
 ```bash
-./main.py
+pyagent
+```
+
+You can also launch it as a module:
+
+```bash
+python -m pyagent
 ```
 
 To choose a saved profile and optionally override its model for the current session:
 
 ```bash
-./main.py --profile local-qwen
-./main.py --profile openai-gpt4 --model gpt-4.1-mini
+pyagent --profile local-qwen
+pyagent --profile openai-gpt4 --model gpt-4.1-mini
 ```
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can refresh them while the app is running with `/reload_context`.
@@ -192,6 +206,6 @@ python test_agent.py
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile agent.py config.py llm_client.py model_profiles.py tools.py ui.py main.py ollama_client.py test_agent.py project_context.py
+python -m py_compile pyagent/*.py test_agent.py
 python -m unittest -v
 ```

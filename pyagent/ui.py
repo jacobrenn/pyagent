@@ -13,9 +13,9 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Footer, Header, Label, Markdown, RichLog, Static, TextArea
 
-from agent import Agent
-from model_profiles import ModelProfile, default_base_url_for_provider
-from project_context import load_project_context
+from .agent import Agent
+from .model_profiles import ModelProfile, default_base_url_for_provider
+from .project_context import load_project_context
 
 
 PROMPT_INPUT_MIN_HEIGHT = 3
