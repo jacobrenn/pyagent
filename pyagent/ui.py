@@ -295,6 +295,11 @@ class PyAgentApp(App):
             f" • Debug: {'on' if self.debug_visible else 'off'}"
         )
 
+    def _max_iterations_text(self) -> str:
+        if self.agent.config.max_iterations < 0:
+            return "`-1` (infinite)"
+        return f"`{self.agent.config.max_iterations}`"
+
     def _ready_status(self) -> str:
         return f"Ready • {self._status_summary()}"
 
@@ -341,6 +346,7 @@ class PyAgentApp(App):
             "Session\n"
             "- `/clear` — clear the conversation\n"
             "- `/status` — show current configuration and runtime limits\n"
+            "- `/max_iterations <n|-1>` — set the agent tool-loop iteration limit for this session\n"
             "- `/cwd` — show the current working directory\n"
             "\n"
             "Profiles and models\n"
@@ -389,6 +395,7 @@ class PyAgentApp(App):
             "/profile",
             "/model",
             "/status",
+            "/max_iterations",
             "/cwd",
             "/history",
             "/prompt",
@@ -427,6 +434,16 @@ class PyAgentApp(App):
 
     def _parse_bool_option(self, value: str) -> bool:
         return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _parse_max_iterations(self, value: str) -> tuple[int | None, str | None]:
+        try:
+            iterations = int(value.strip())
+        except ValueError:
+            return None, "Max iterations must be an integer. Use `-1` for infinite."
+
+        if iterations == 0 or iterations < -1:
+            return None, "Max iterations must be a positive integer or `-1` for infinite."
+        return iterations, None
 
     def _parse_profile_add_options(self, args: list[str]) -> tuple[dict[str, str | bool | dict[str, str]], str | None]:
         if not args:
@@ -670,6 +687,24 @@ class PyAgentApp(App):
             self._set_status(self._ready_status())
             return True
 
+        if command == "/max_iterations":
+            if len(args) != 1:
+                self._add_system_note("Usage: `/max_iterations <positive integer|-1>`")
+                return True
+
+            max_iterations, error = self._parse_max_iterations(args[0])
+            if error:
+                self._add_system_note(error)
+                return True
+
+            self.agent.config.max_iterations = max_iterations
+            self._add_system_note(
+                "Set agent tool-loop max iterations to "
+                f"{self._max_iterations_text()} for this session."
+            )
+            self._set_status(self._ready_status())
+            return True
+
         if command == "/status":
             profile = self.agent.current_profile()
             context_count = len(self.agent.project_context_files)
@@ -678,7 +713,7 @@ class PyAgentApp(App):
                 f"- {self._status_summary()}\n"
                 f"- Base URL: `{profile.base_url}`\n"
                 f"- Profile file: `{self.agent.profile_store.path}`\n"
-                f"- Agent tool-loop max iterations: `{self.agent.config.max_iterations}`\n"
+                f"- Agent tool-loop max iterations: {self._max_iterations_text()}\n"
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
                 f"- Project instruction files loaded: `{context_count}`\n"

@@ -173,6 +173,7 @@ Changing tool mode at runtime resets the current conversation so the updated sys
 - `/model list` — ask the current endpoint for available models, if supported
 - `/model <name>` — override the current profile's model for this session
 - `/status` — show current configuration, including the agent tool-loop max-iteration setting
+- `/max_iterations <n|-1>` — set the maximum tool-loop iterations for the current session (`-1` means infinite)
 - `/cwd` — show current working directory
 - `/history` — show recent prompt history
 - `/history search <text>` — search saved prompt history for matching prompts
@@ -203,7 +204,7 @@ Environment variables:
 - `PYAGENT_PROFILE` — default profile name to select
 - `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/pyagent/models.json` location
 - `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
-- `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn
+- `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn (`-1` means infinite)
 - `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
 - `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
 - `PYAGENT_BASH_ENABLED` — enable or disable the bash tool

@@ -273,7 +273,8 @@ class Agent:
         yield {"type": "assistant_start"}
         recent_tool_results: list[dict[str, Any]] = []
 
-        for iteration in range(self.config.max_iterations):
+        iteration = 0
+        while self.config.max_iterations < 0 or iteration < self.config.max_iterations:
             full_response_parts: list[str] = []
             full_tool_calls: list[dict[str, Any]] = []
             yield {
@@ -388,6 +389,8 @@ class Agent:
                 )
                 self._trim_history()
                 yield {"type": "tool_result", "name": name, "result": result}
+
+            iteration += 1
 
         warning = "Reached maximum iterations without a final answer."
         self.messages.append({"role": "assistant", "content": warning})

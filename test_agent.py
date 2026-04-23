@@ -156,6 +156,34 @@ class AgentTests(unittest.TestCase):
         self.assertIn("```text", assistant_deltas)
         self.assertIn("README.md", assistant_deltas)
 
+    def test_negative_max_iterations_allows_unbounded_tool_loop(self) -> None:
+        config = AppConfig(max_iterations=-1)
+        agent = Agent(
+            config=config, tool_registry=create_default_tool_registry(config))
+        agent.client = DummyClient(
+            [
+                [
+                    {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "list_files",
+                                    "arguments": {"path": ".", "max_depth": 1},
+                                },
+                            }
+                        ]
+                    }
+                ],
+                [{"content": "Finished"}],
+            ]
+        )
+
+        events = list(agent.run("Inspect the repository"))
+
+        self.assertEqual(agent.client.calls, 2)
+        self.assertEqual(events[-1], {"type": "assistant_done", "content": "Finished"})
+
     def test_trim_history_drops_orphaned_tool_messages(self) -> None:
         config = AppConfig(max_history_messages=3)
         agent = Agent(
@@ -319,6 +347,7 @@ class UiCommandTests(unittest.TestCase):
 
         self.assertIn("`/context`", text)
         self.assertIn("`/history search <text>`", text)
+        self.assertIn("`/max_iterations <n|-1>`", text)
         self.assertIn("`/tools on|off`", text)
         self.assertIn("`Enter`", text)
         self.assertIn("`Shift+Enter`", text)
@@ -363,6 +392,42 @@ class UiCommandTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertIn("Agent tool-loop max iterations: `7`", notes[-1])
+
+    def test_max_iterations_command_updates_runtime_limit(self) -> None:
+        app = PyAgentApp()
+        notes: list[str] = []
+        statuses: list[str] = []
+        app._add_system_note = notes.append
+        app._set_status = statuses.append
+
+        handled = app._handle_slash_command("/max_iterations 20")
+
+        self.assertTrue(handled)
+        self.assertEqual(app.agent.config.max_iterations, 20)
+        self.assertIn("Set agent tool-loop max iterations to `20`", notes[-1])
+        self.assertTrue(statuses)
+
+    def test_max_iterations_command_accepts_infinite(self) -> None:
+        app = PyAgentApp()
+        notes: list[str] = []
+        app._add_system_note = notes.append
+        app._set_status = lambda _text: None
+
+        handled = app._handle_slash_command("/max_iterations -1")
+
+        self.assertTrue(handled)
+        self.assertEqual(app.agent.config.max_iterations, -1)
+        self.assertIn("`-1` (infinite)", notes[-1])
+
+    def test_max_iterations_command_rejects_invalid_values(self) -> None:
+        app = PyAgentApp()
+        notes: list[str] = []
+        app._add_system_note = notes.append
+
+        handled = app._handle_slash_command("/max_iterations 0")
+
+        self.assertTrue(handled)
+        self.assertIn("positive integer or `-1` for infinite", notes[-1])
 
 
 class ConfigTests(unittest.TestCase):
