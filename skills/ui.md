@@ -15,9 +15,12 @@ Use this skill when changing the Textual interface in `pyagent/ui.py`.
 - `Enter` sends.
 - `Shift+Enter` inserts a newline.
 - `Ctrl+P` / `Ctrl+N` navigate prompt history.
+- `/history search <text>` searches saved prompt history.
 - `↑` / `↓` and paging keys scroll the transcript.
 - Tool messages are intentionally compact.
 - Profile/model switching is exposed through slash commands.
+- `/context` shows loaded project instruction files and context size.
+- Unknown slash commands may suggest a close match.
 - Auto-follow logic is sensitive to Textual layout timing.
 
 ## Be careful about
@@ -52,6 +55,8 @@ If you change slash commands or status text:
 - keep `/help` accurate
 - keep profile/model switching discoverable
 - keep profile reload / creation syntax discoverable
+- keep `/context` and `/reload_context` discoverable when project context is relevant
+- keep typo suggestions helpful but compact
 - keep status bar text short
 
 ## Preferred approach
@@ -67,6 +72,9 @@ Update `README.md` if you change:
 - keybindings
 - prompt behavior
 - slash commands
+- `/context` and `/reload_context`
+- `/history search`
+- typo-suggestion behavior for unknown slash commands
 - visible UI workflow
 - profile/model switching behavior
 

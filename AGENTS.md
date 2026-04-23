@@ -18,7 +18,7 @@ The project is intentionally lightweight. Prefer small, compatible changes over 
 Core files:
 
 - `pyagent/main.py` — launches the TUI
-- `pyagent/ui.py` — Textual app, transcript rendering, prompt input, slash commands, prompt history, scroll behavior
+- `pyagent/ui.py` — Textual app, transcript rendering, prompt input, slash commands, prompt history/search, context inspection, scroll behavior
 - `pyagent/agent.py` — agent loop, tool-call handling, provider switching, fallback behavior after tool results
 - `pyagent/tools.py` — tool registry plus built-in tools
 - `pyagent/config.py` — environment-driven runtime config and system prompt
@@ -100,7 +100,7 @@ If you change that behavior:
 
 - keep limits on prompt/context size
 - keep startup loading transparent in the UI
-- preserve `/reload_context`
+- preserve `/reload_context` and `/context`
 - update tests and docs
 
 ## Testing requirements
@@ -121,6 +121,7 @@ If behavior changes for users, update `README.md`.
 Examples:
 
 - new slash commands
+- changed slash-command output or suggestions
 - new tools or tool semantics
 - new env vars
 - changed keybindings

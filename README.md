@@ -16,9 +16,9 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Conversation reset** with `Ctrl+L` or `/clear`
 - **Scrollable transcript** with mouse wheel, `↑` / `↓`, or `PgUp` / `PgDn`
 - **Multi-line prompt input** with `Shift+Enter`; press `Enter` to send, the input box auto-grows as you type, and the prompt area shows a helper hint
-- **Prompt history** with `Ctrl+P` / `Ctrl+N`
-- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/prompt`, `/reload_context`, and `/debug on|off`
-- **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup
+- **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
+- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, and `/debug on|off`
+- **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup, with `/context` and `/reload_context` for inspection and refresh
 
 ## Requirements
 
@@ -66,7 +66,7 @@ PyAgent --profile local-qwen
 PyAgent --profile openai-gpt4 --model gpt-4.1-mini
 ```
 
-If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can refresh them while the app is running with `/reload_context`.
+If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can inspect the currently loaded sources with `/context` and refresh them while the app is running with `/reload_context`.
 
 ## Model profiles
 
@@ -149,7 +149,7 @@ Useful env vars for that fallback:
 - `/clear` — clear the conversation
 - `/help` — show command help
 - `/tools` — list tools
-- `/profiles` — list saved profiles
+- `/profiles` — list saved profiles, including current/default markers and auth hints
 - `/profiles reload` — reload profiles from disk
 - `/reload_profiles` — reload profiles from disk
 - `/profile` — show the active profile
@@ -161,9 +161,13 @@ Useful env vars for that fallback:
 - `/status` — show current configuration
 - `/cwd` — show current working directory
 - `/history` — show recent prompt history
+- `/history search <text>` — search saved prompt history for matching prompts
+- `/context` — show loaded project instruction files and context size
 - `/prompt` — show the active system prompt
-- `/reload_context` — reload `AGENTS.md` and local skill files
+- `/reload_context` — reload `AGENTS.md` and local skill files and report added or removed files
 - `/debug on|off` — show or hide the debug pane
+
+Unknown slash commands may suggest a close match, for example `/stats` may suggest `/status`.
 
 ### Profile creation from the TUI
 

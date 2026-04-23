@@ -113,7 +113,43 @@ class Agent:
         max_history = self.config.max_history_messages
         if len(self.messages) <= max_history + 1:
             return
-        self.messages = [self.messages[0], *self.messages[-max_history:]]
+
+        system_message = self.messages[0]
+        blocks: list[list[dict[str, Any]]] = []
+        index = 1
+        while index < len(self.messages):
+            message = self.messages[index]
+            role = message.get("role")
+
+            if role == "tool":
+                index += 1
+                continue
+
+            if role == "assistant" and message.get("tool_calls"):
+                block = [message]
+                index += 1
+                while index < len(self.messages) and self.messages[index].get("role") == "tool":
+                    block.append(self.messages[index])
+                    index += 1
+                blocks.append(block)
+                continue
+
+            blocks.append([message])
+            index += 1
+
+        kept_blocks: list[list[dict[str, Any]]] = []
+        kept_count = 0
+        for block in reversed(blocks):
+            block_size = len(block)
+            if kept_blocks and kept_count + block_size > max_history:
+                break
+            kept_blocks.append(block)
+            kept_count += block_size
+            if kept_count >= max_history:
+                break
+
+        trimmed_messages = [message for block in reversed(kept_blocks) for message in block]
+        self.messages = [system_message, *trimmed_messages]
 
     def _normalize_arguments(self, arguments: Any) -> dict[str, Any]:
         if isinstance(arguments, dict):

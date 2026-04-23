@@ -175,19 +175,54 @@ class OpenAICompatibleClient(BaseChatClient):
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
+        pending_tool_call_ids: set[str] = set()
+        pending_tool_results = False
+
         for message in messages:
+            role = message.get("role")
             item = {
-                "role": message.get("role"),
+                "role": role,
                 "content": message.get("content", ""),
             }
-            if message.get("role") == "assistant" and message.get("tool_calls"):
-                item["tool_calls"] = message["tool_calls"]
-            elif message.get("role") == "tool":
-                item["tool_call_id"] = message.get("tool_call_id")
+
+            if role == "assistant" and message.get("tool_calls"):
+                tool_calls = message["tool_calls"]
+                item["tool_calls"] = tool_calls
+                prepared.append(item)
+                pending_tool_call_ids = {
+                    str(tool_call.get("id"))
+                    for tool_call in tool_calls
+                    if tool_call.get("id")
+                }
+                pending_tool_results = True
+                continue
+
+            if role == "tool":
+                if not prepared:
+                    continue
+                previous = prepared[-1]
+                if previous.get("role") not in {"assistant", "tool"}:
+                    continue
+                tool_call_id = message.get("tool_call_id")
+                if pending_tool_call_ids and tool_call_id not in pending_tool_call_ids:
+                    continue
+                item["tool_call_id"] = tool_call_id
                 name = message.get("name") or message.get("tool_name")
                 if name:
                     item["name"] = name
+                prepared.append(item)
+                pending_tool_results = False
+                continue
+
+            if pending_tool_results and prepared and prepared[-1].get("role") == "assistant":
+                prepared.pop()
+            pending_tool_call_ids = set()
+            pending_tool_results = False
             prepared.append(item)
+
+        if pending_tool_results and prepared and prepared[-1].get("role") == "assistant":
+            prepared.pop()
+
         return prepared
 
     def list_models(self) -> dict[str, Any]:

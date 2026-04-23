@@ -25,6 +25,7 @@ from pyagent.tools import (
     list_files,
     search_text,
 )
+from pyagent.ui import PyAgentApp
 
 
 class DummyClient:
@@ -135,6 +136,43 @@ class AgentTests(unittest.TestCase):
         self.assertIn("```text", assistant_deltas)
         self.assertIn("README.md", assistant_deltas)
 
+    def test_trim_history_drops_orphaned_tool_messages(self) -> None:
+        config = AppConfig(max_history_messages=3)
+        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        agent.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "older question"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "search_text",
+                            "arguments": {"query": "PyAgent"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "search_text",
+                "content": "result",
+                "tool_call_id": "call_1",
+            },
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "latest question"},
+        ]
+
+        agent._trim_history()
+
+        self.assertEqual(
+            [message["role"] for message in agent.messages],
+            ["system", "assistant", "user"],
+        )
+        self.assertEqual(agent.messages[-1]["content"], "latest question")
+
     def test_set_model_updates_agent_and_client(self) -> None:
         agent = Agent(config=AppConfig(), tool_registry=create_default_tool_registry(AppConfig()))
 
@@ -227,6 +265,34 @@ class AgentTests(unittest.TestCase):
 
         self.assertEqual(agent.current_profile().name, "remote")
         self.assertEqual(agent.current_profile().model, "gpt-4.1-mini")
+
+
+class UiCommandTests(unittest.TestCase):
+    def test_unknown_command_suggests_close_match(self) -> None:
+        app = PyAgentApp()
+
+        message = app._unknown_command_message("/stats")
+
+        self.assertIn("Did you mean `/status`?", message)
+
+    def test_context_status_text_reports_loaded_files(self) -> None:
+        app = PyAgentApp()
+        app.agent.project_context = "alpha\nbeta"
+        app.agent.project_context_files = ["AGENTS.md", "skills/testing.md"]
+
+        text = app._context_status_text()
+
+        self.assertIn("Files loaded: `2`", text)
+        self.assertIn("AGENTS.md", text)
+        self.assertIn("skills/testing.md", text)
+
+    def test_help_text_mentions_history_search_and_context(self) -> None:
+        app = PyAgentApp()
+
+        text = app._command_help_text()
+
+        self.assertIn("`/context`", text)
+        self.assertIn("`/history search <text>`", text)
 
 
 class ClientTests(unittest.TestCase):
@@ -332,6 +398,48 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(payload, {"models": []})
         self.assertEqual(captured["api_key"], "")
         self.assertEqual(captured["base_url"], "http://localhost:1234/v1")
+
+    def test_openai_compatible_prepare_messages_skips_invalid_tool_sequences(self) -> None:
+        profile = ModelProfile(
+            name="remote",
+            provider="openai_compatible",
+            model="gpt-4.1-mini",
+            base_url="https://example.com/v1",
+            api_key="secret",
+        )
+        client = OpenAICompatibleClient(profile=profile)
+
+        prepared = client._prepare_messages(
+            [
+                {"role": "system", "content": "system"},
+                {
+                    "role": "tool",
+                    "name": "search_text",
+                    "content": "orphaned",
+                    "tool_call_id": "call_orphaned",
+                },
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {"name": "search_text", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "name": "search_text",
+                    "content": "kept",
+                    "tool_call_id": "call_1",
+                },
+            ]
+        )
+
+        self.assertEqual([message["role"] for message in prepared], ["system", "user", "assistant", "tool"])
+        self.assertEqual(prepared[-1]["content"], "kept")
 
     def test_rebuild_client_closes_previous_client(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

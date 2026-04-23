@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import os
 import shlex
+from difflib import get_close_matches
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -276,9 +277,17 @@ class PyAgentApp(App):
         self._resize_prompt_input()
         self._log_debug("Debug log initialized.")
 
-    def _ready_status(self) -> str:
+    def _status_summary(self) -> str:
         profile = self.agent.current_profile()
-        return f"Ready • Profile: {profile.name} • Model: {profile.model}"
+        context_count = len(self.agent.project_context_files)
+        return (
+            f"Profile: {profile.name} • Provider: {profile.provider} • Model: {profile.model}"
+            f" • Context: {context_count}"
+            f" • Debug: {'on' if self.debug_visible else 'off'}"
+        )
+
+    def _ready_status(self) -> str:
+        return f"Ready • {self._status_summary()}"
 
     def _set_status(self, text: str) -> None:
         self.query_one("#status-bar", Static).update(text)
@@ -308,6 +317,73 @@ class PyAgentApp(App):
 
     def _add_system_note(self, content: str) -> None:
         self._add_message("system", content, finalized=True)
+
+    def _command_help_text(self) -> str:
+        return (
+            "Available commands:\n"
+            "\n"
+            "Session\n"
+            "- `/clear` — clear the conversation\n"
+            "- `/status` — show current configuration\n"
+            "- `/cwd` — show the current working directory\n"
+            "\n"
+            "Profiles and models\n"
+            "- `/profiles` — list saved model profiles\n"
+            "- `/profiles reload` — reload profiles from disk\n"
+            "- `/profile` — show the current profile\n"
+            "- `/profile <name>` — switch to another saved profile\n"
+            "- `/profile add <name> provider=<provider> model=<model> ...` — create or update a profile\n"
+            "- `/model` — show the current model and usage\n"
+            "- `/model list` — list models from the current endpoint, if supported\n"
+            "- `/model <name>` — override the current profile's model for this session\n"
+            "\n"
+            "Context and prompts\n"
+            "- `/context` — show loaded project instruction sources\n"
+            "- `/prompt` — show the active system prompt\n"
+            "- `/history` — show recent prompt history\n"
+            "- `/history search <text>` — search saved prompt history\n"
+            "- `/reload_context` — reload `AGENTS.md` and local skill files\n"
+            "\n"
+            "Tools and debugging\n"
+            "- `/tools` — list available tools\n"
+            "- `/debug on|off` — show or hide the debug pane"
+        )
+
+    def _context_status_text(self) -> str:
+        files = self.agent.project_context_files
+        total_chars = len(self.agent.project_context)
+        if not files:
+            return "Project context:\n- No `AGENTS.md` or skill files loaded."
+        lines = [
+            "Project context:",
+            f"- Files loaded: `{len(files)}`",
+            f"- Context size: `{total_chars}` characters",
+            "- Sources:",
+        ]
+        lines.extend(f"  - `{path}`" for path in files)
+        return "\n".join(lines)
+
+    def _unknown_command_message(self, command: str) -> str:
+        known_commands = [
+            "/clear",
+            "/help",
+            "/tools",
+            "/profiles",
+            "/profile",
+            "/model",
+            "/status",
+            "/cwd",
+            "/history",
+            "/prompt",
+            "/context",
+            "/reload_profiles",
+            "/reload_context",
+            "/debug",
+        ]
+        suggestion = get_close_matches(command, known_commands, n=1, cutoff=0.5)
+        if suggestion:
+            return f"Unknown command: `{command}`. Did you mean `{suggestion[0]}`? Use `/help` to see available commands."
+        return f"Unknown command: `{command}`. Use `/help` to see available commands."
 
     def _record_history(self, user_input: str) -> None:
         if not user_input:
@@ -388,27 +464,7 @@ class PyAgentApp(App):
         args = parts[1:]
 
         if command == "/help":
-            self._add_system_note(
-                "Available commands:\n"
-                "- `/clear` — clear the conversation\n"
-                "- `/help` — show this help\n"
-                "- `/tools` — list available tools\n"
-                "- `/profiles` — list saved model profiles\n"
-                "- `/profiles reload` — reload profiles from disk\n"
-                "- `/profile` — show the current profile\n"
-                "- `/profile <name>` — switch to another saved profile\n"
-                "- `/profile add <name> provider=<provider> model=<model> ...` — create or update a profile\n"
-                "- `/model` — show the current model and usage\n"
-                "- `/model list` — list models from the current endpoint, if supported\n"
-                "- `/model <name>` — override the current profile's model for this session\n"
-                "- `/status` — show current configuration\n"
-                "- `/cwd` — show the current working directory\n"
-                "- `/history` — show recent prompt history\n"
-                "- `/prompt` — show the active system prompt\n"
-                "- `/debug on|off` — show or hide the debug pane\n"
-                "- `/reload_profiles` — reload profiles from disk\n"
-                "- `/reload_context` — reload `AGENTS.md` and local skill files"
-            )
+            self._add_system_note(self._command_help_text())
             return True
 
         if command == "/tools":
@@ -431,11 +487,18 @@ class PyAgentApp(App):
 
             current = self.agent.current_profile().name
             lines = []
+            default_name = self.agent.profile_store.default_profile
             for name in self.agent.profile_names():
                 profile = self.agent.profile_store.get(name)
-                marker = " (current)" if name == current else ""
+                markers = []
+                if name == current:
+                    markers.append("current")
+                if name == default_name:
+                    markers.append("default")
+                marker_text = f" ({', '.join(markers)})" if markers else ""
+                auth = f"api_key_env={profile.api_key_env}" if profile.api_key_env else ("inline api key" if profile.api_key else "no api key")
                 lines.append(
-                    f"- `{name}`{marker} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}`"
+                    f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}` • {auth}"
                 )
             self._add_system_note(
                 "Saved profiles:\n"
@@ -565,16 +628,14 @@ class PyAgentApp(App):
             context_count = len(self.agent.project_context_files)
             self._add_system_note(
                 "Current status:\n"
-                f"- Profile: `{profile.name}`\n"
-                f"- Provider: `{profile.provider}`\n"
-                f"- Model: `{profile.model}`\n"
+                f"- {self._status_summary()}\n"
                 f"- Base URL: `{profile.base_url}`\n"
                 f"- Profile file: `{self.agent.profile_store.path}`\n"
                 f"- Max iterations: `{self.agent.config.max_iterations}`\n"
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
                 f"- Project instruction files loaded: `{context_count}`\n"
-                f"- Debug pane visible: `{self.debug_visible}`"
+                f"- Working directory: `{os.getcwd()}`"
             )
             return True
 
@@ -583,6 +644,24 @@ class PyAgentApp(App):
             return True
 
         if command == "/history":
+            if args and args[0].lower() == "search":
+                query = " ".join(args[1:]).strip()
+                if not query:
+                    self._add_system_note("Usage: `/history search <text>`")
+                    return True
+                matches = [
+                    entry for entry in self.input_history
+                    if query.lower() in entry.lower()
+                ]
+                if not matches:
+                    self._add_system_note(f"No prompt history entries matched `{query}`.")
+                    return True
+                history_lines = "\n".join(
+                    f"- {_truncate(entry.replace(chr(10), ' ⏎ '), 160)}"
+                    for entry in matches[-10:]
+                )
+                self._add_system_note(f"Prompt history matches for `{query}`:\n{history_lines}")
+                return True
             if not self.input_history:
                 self._add_system_note("Prompt history is empty.")
             else:
@@ -590,12 +669,16 @@ class PyAgentApp(App):
                     f"{index + 1}. {_truncate(entry.replace(chr(10), ' ⏎ '), 120)}"
                     for index, entry in enumerate(self.input_history[-10:])
                 )
-                self._add_system_note(f"Recent prompts:\n{history_lines}")
+                self._add_system_note(f"Recent prompts:\n{history_lines}\n\nTip: use `/history search <text>` to find an older prompt.")
             return True
 
         if command == "/prompt":
             system_prompt = self.agent.messages[0]["content"] if self.agent.messages else "<missing>"
             self._add_system_note(f"Active system prompt:\n\n```text\n{system_prompt}\n```")
+            return True
+
+        if command == "/context":
+            self._add_system_note(self._context_status_text())
             return True
 
         if command == "/reload_profiles":
@@ -611,15 +694,23 @@ class PyAgentApp(App):
             return True
 
         if command == "/reload_context":
+            previous_files = set(self.agent.project_context_files)
             self.project_context, self.project_context_files = load_project_context(os.getcwd())
             self.agent.set_project_context(self.project_context, self.project_context_files)
-            if self.project_context_files:
-                loaded_files = "\n".join(f"- `{path}`" for path in self.project_context_files)
-                self._add_system_note(f"Reloaded project instructions:\n{loaded_files}")
-            else:
-                self._add_system_note(
+            current_files = set(self.project_context_files)
+            added = sorted(current_files - previous_files)
+            removed = sorted(previous_files - current_files)
+            details = [self._context_status_text()]
+            if added:
+                details.append("Added:\n" + "\n".join(f"- `{path}`" for path in added))
+            if removed:
+                details.append("Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
+            if not self.project_context_files:
+                details = [
                     "Reloaded project instructions. No `AGENTS.md` or skill files were found."
-                )
+                ]
+            self._add_system_note("\n\n".join(details))
+            self._set_status(self._ready_status())
             return True
 
         if command == "/debug":
@@ -639,7 +730,7 @@ class PyAgentApp(App):
             self._add_system_note("Usage: `/debug on` or `/debug off`")
             return True
 
-        self._add_system_note(f"Unknown command: `{command}`. Use `/help` to see available commands.")
+        self._add_system_note(self._unknown_command_message(command))
         return True
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -886,10 +977,11 @@ class PyAgentApp(App):
                         f"tool_result {event.get('name', '<unknown>')}: {_truncate(result, 1200)}"
                     )
                     tool_name = event.get("name", "<unknown>")
-                    result_preview = _truncate(result, 2500)
+                    result_preview = _truncate(result, 800)
+                    suffix = "\n\n_Output truncated for readability._" if len(result) > len(result_preview) else ""
                     self._add_message(
                         "tool",
-                        f"Tool result • `{tool_name}`\n\n```text\n{result_preview}\n```",
+                        f"Tool result • `{tool_name}`\n\n```text\n{result_preview}\n```{suffix}",
                         finalized=True,
                         render_mode="markdown",
                     )

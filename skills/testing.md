@@ -55,6 +55,7 @@ Test:
 - instruction file discovery
 - prompt/context inclusion
 - reload behavior where practical
+- context/status reporting where practical
 - truncation or size-limit behavior if changed
 
 ## UI testing guidance
@@ -73,6 +74,9 @@ Manual checks should include, when relevant:
 - profile/model switching
 - profile reload and profile creation commands
 - prompt history
+- `/history search` behavior
+- `/context` and `/reload_context` behavior
+- unknown-command suggestion behavior
 - multiline prompt behavior
 - debug pane toggling
 
