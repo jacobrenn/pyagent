@@ -11,10 +11,11 @@ requires-python = ">=3.10"
 dependencies = [
   "textual",
   "requests",
+  "openai>=2.14.0",
 ]
 
 [project.scripts]
-pyagent = "pyagent.main:main"
+PyAgent = "pyagent.main:main"
 
 [tool.setuptools]
 packages = ["pyagent"]

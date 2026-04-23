@@ -1,2 +1,3 @@
 textual
 requests
+openai>=2.14.0

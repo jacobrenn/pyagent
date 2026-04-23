@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 from pyagent.agent import Agent
 from pyagent.config import AppConfig
@@ -46,46 +47,53 @@ class ModelListClient:
         return self.payload
 
 
-class FakeStreamResponse:
-    def __init__(self, lines: list[str], json_payload: dict | None = None):
-        self.lines = lines
-        self.json_payload = json_payload or {}
+class FakeOpenAICompletions:
+    def __init__(self, stream=None):
+        self.stream = stream or []
+        self.last_create = None
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def raise_for_status(self):
-        return None
-
-    def iter_lines(self, decode_unicode: bool = True):
-        for line in self.lines:
-            yield line
-
-    def json(self):
-        return self.json_payload
+    def create(self, **kwargs):
+        self.last_create = kwargs
+        return self.stream
 
 
-class FakeSession:
-    def __init__(self, post_response: FakeStreamResponse | None = None, get_response: FakeStreamResponse | None = None):
-        self.post_response = post_response
-        self.get_response = get_response
-        self.last_post = None
-        self.last_get = None
+class FakeOpenAIModels:
+    def __init__(self, response=None):
+        self.response = response or SimpleNamespace(data=[])
 
-    def post(self, url, **kwargs):
-        self.last_post = {"url": url, **kwargs}
-        if self.post_response is None:
-            raise AssertionError("Unexpected POST request")
-        return self.post_response
+    def list(self):
+        return self.response
 
-    def get(self, url, **kwargs):
-        self.last_get = {"url": url, **kwargs}
-        if self.get_response is None:
-            raise AssertionError("Unexpected GET request")
-        return self.get_response
+
+class FakeOpenAIClient:
+    def __init__(self, stream=None, models_response=None):
+        self.chat = SimpleNamespace(completions=FakeOpenAICompletions(stream=stream))
+        self.models = FakeOpenAIModels(response=models_response)
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def make_chunk(content=None, tool_calls=None):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=content, tool_calls=tool_calls or []),
+                finish_reason=None,
+                index=0,
+            )
+        ]
+    )
+
+
+def make_tool_call_delta(index: int, id: str | None = None, name: str | None = None, arguments: str | None = None):
+    return SimpleNamespace(
+        index=index,
+        id=id,
+        type="function",
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
 
 
 class AgentTests(unittest.TestCase):
@@ -249,16 +257,30 @@ class ClientTests(unittest.TestCase):
             api_key="secret",
         )
         client = OpenAICompatibleClient(profile=profile)
-        client.session = FakeSession(
-            post_response=FakeStreamResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"Hello"}}]}',
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"search_text","arguments":"{\\"query\\":"}}]}}]}',
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"PyAgent\\"}"}}]}}]}',
-                    'data: [DONE]',
-                ]
-            )
+        fake_sdk_client = FakeOpenAIClient(
+            stream=[
+                make_chunk(content="Hello"),
+                make_chunk(
+                    tool_calls=[
+                        make_tool_call_delta(
+                            index=0,
+                            id="call_1",
+                            name="search_text",
+                            arguments='{"query":',
+                        )
+                    ]
+                ),
+                make_chunk(
+                    tool_calls=[
+                        make_tool_call_delta(
+                            index=0,
+                            arguments='"PyAgent"}',
+                        )
+                    ]
+                ),
+            ]
         )
+        client._client_factory = lambda **kwargs: fake_sdk_client
 
         chunks = list(client.chat_stream(messages=[], tools=[]))
 
@@ -268,6 +290,8 @@ class ClientTests(unittest.TestCase):
             chunks[1]["tool_calls"][0]["function"]["arguments"],
             '{"query":"PyAgent"}',
         )
+        self.assertEqual(fake_sdk_client.chat.completions.last_create["model"], "gpt-4.1-mini")
+        self.assertEqual(fake_sdk_client.chat.completions.last_create["messages"], [])
 
     def test_openai_compatible_list_models_parses_response(self) -> None:
         profile = ModelProfile(
@@ -278,16 +302,65 @@ class ClientTests(unittest.TestCase):
             api_key="secret",
         )
         client = OpenAICompatibleClient(profile=profile)
-        client.session = FakeSession(
-            get_response=FakeStreamResponse(
-                [],
-                json_payload={"data": [{"id": "gpt-4.1"}, {"id": "local-model"}]},
+        client._client_factory = lambda **kwargs: FakeOpenAIClient(
+            models_response=SimpleNamespace(
+                data=[SimpleNamespace(id="gpt-4.1"), SimpleNamespace(id="local-model")]
             )
         )
 
         payload = client.list_models()
 
         self.assertEqual(payload, {"models": ["gpt-4.1", "local-model"]})
+
+    def test_openai_compatible_client_uses_empty_api_key_for_no_auth_servers(self) -> None:
+        profile = ModelProfile(
+            name="remote",
+            provider="openai_compatible",
+            model="gpt-4.1-mini",
+            base_url="http://localhost:1234/v1",
+        )
+        client = OpenAICompatibleClient(profile=profile)
+        captured: dict[str, object] = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return FakeOpenAIClient(models_response=SimpleNamespace(data=[]))
+
+        client._client_factory = factory
+        payload = client.list_models()
+
+        self.assertEqual(payload, {"models": []})
+        self.assertEqual(captured["api_key"], "")
+        self.assertEqual(captured["base_url"], "http://localhost:1234/v1")
+
+    def test_rebuild_client_closes_previous_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = os.path.join(temp_dir, "models.json")
+            with open(profile_path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "model": "qwen2.5-coder:7b",
+                                "base_url": "http://localhost:11434",
+                            }
+                        },
+                    },
+                    file,
+                )
+
+            agent = Agent(
+                config=AppConfig(model_profiles_path=profile_path),
+                tool_registry=create_default_tool_registry(AppConfig(model_profiles_path=profile_path)),
+            )
+            old_client = FakeOpenAIClient()
+            agent.client = old_client
+
+            agent._rebuild_client()
+
+        self.assertTrue(old_client.closed)
 
 
 class ProfileStoreTests(unittest.TestCase):

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
+import openai
 import requests
+from openai import OpenAI
 
 from .model_profiles import ModelProfile
 
@@ -14,7 +16,6 @@ class BaseChatClient:
         self.model = profile.model
         self.base_url = profile.base_url.rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", **self.profile.headers}
@@ -22,6 +23,9 @@ class BaseChatClient:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
+
+    def close(self) -> None:
+        return None
 
     def chat_stream(
         self,
@@ -39,6 +43,10 @@ class OllamaClient(BaseChatClient):
         super().__init__(profile=profile, timeout=timeout)
         self.api_url = f"{self.base_url}/api/chat"
         self.tags_url = f"{self.base_url}/api/tags"
+        self.session = requests.Session()
+
+    def close(self) -> None:
+        self.session.close()
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
@@ -141,8 +149,29 @@ class OllamaClient(BaseChatClient):
 class OpenAICompatibleClient(BaseChatClient):
     def __init__(self, profile: ModelProfile, timeout: int = 300):
         super().__init__(profile=profile, timeout=timeout)
-        self.chat_url = f"{self.base_url}/chat/completions"
         self.models_url = f"{self.base_url}/models"
+        self._client_factory = OpenAI
+        self._sdk_client: OpenAI | None = None
+
+    def close(self) -> None:
+        if self._sdk_client is not None:
+            self._sdk_client.close()
+            self._sdk_client = None
+
+    def _resolved_api_key_for_sdk(self) -> str:
+        api_key = self.profile.resolved_api_key()
+        return api_key if api_key is not None else ""
+
+    def _get_client(self) -> OpenAI:
+        if self._sdk_client is None:
+            self._sdk_client = self._client_factory(
+                api_key=self._resolved_api_key_for_sdk(),
+                base_url=self.base_url,
+                default_headers=self.profile.headers or None,
+                timeout=float(self.timeout),
+                max_retries=2,
+            )
+        return self._sdk_client
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
@@ -163,25 +192,17 @@ class OpenAICompatibleClient(BaseChatClient):
 
     def list_models(self) -> dict[str, Any]:
         try:
-            response = self.session.get(
-                self.models_url,
-                timeout=self.timeout,
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._get_client().models.list()
         except ValueError as exc:
             return {"error": str(exc)}
-        except requests.RequestException as exc:
-            return {"error": str(exc)}
+        except openai.APIError as exc:
+            return {"error": _format_openai_error(exc)}
         except Exception as exc:
             return {"error": str(exc)}
 
         names: list[str] = []
-        for model in payload.get("data", []):
-            if not isinstance(model, dict):
-                continue
-            name = model.get("id") or model.get("name")
+        for model in getattr(payload, "data", []) or []:
+            name = getattr(model, "id", None) or getattr(model, "name", None)
             if isinstance(name, str) and name:
                 names.append(name)
         return {"models": names}
@@ -201,66 +222,58 @@ class OpenAICompatibleClient(BaseChatClient):
 
         tool_call_fragments: dict[int, dict[str, Any]] = {}
         try:
-            with self.session.post(
-                self.chat_url,
-                json=payload,
-                stream=True,
-                timeout=self.timeout,
-                headers=self._headers(),
-            ) as response:
-                response.raise_for_status()
-                for raw_line in response.iter_lines(decode_unicode=True):
-                    if not raw_line:
+            stream = self._get_client().chat.completions.create(**payload)
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+
+                content = _extract_openai_content(getattr(delta, "content", None))
+                if content:
+                    yield {"content": content}
+
+                for tool_call in getattr(delta, "tool_calls", None) or []:
+                    index = int(getattr(tool_call, "index", 0) or 0)
+                    current = tool_call_fragments.setdefault(
+                        index,
+                        {
+                            "id": getattr(tool_call, "id", None) or f"call_{index}",
+                            "type": getattr(tool_call, "type", None) or "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    tool_call_id = getattr(tool_call, "id", None)
+                    if tool_call_id:
+                        current["id"] = tool_call_id
+                    tool_type = getattr(tool_call, "type", None)
+                    if tool_type:
+                        current["type"] = tool_type
+
+                    function = getattr(tool_call, "function", None)
+                    if function is None:
                         continue
-                    line = raw_line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
+                    function_name = getattr(function, "name", None)
+                    if function_name:
+                        current["function"]["name"] += str(function_name)
+                    function_arguments = getattr(function, "arguments", None)
+                    if function_arguments:
+                        current["function"]["arguments"] += str(function_arguments)
 
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError as exc:
-                        yield {"error": f"Could not decode OpenAI-compatible stream chunk: {exc}: {data!r}"}
-                        return
-
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    content = _extract_openai_content(delta.get("content"))
-                    if content:
-                        yield {"content": content}
-
-                    for tool_call in delta.get("tool_calls") or []:
-                        index = int(tool_call.get("index", 0))
-                        current = tool_call_fragments.setdefault(
-                            index,
-                            {
-                                "id": tool_call.get("id") or f"call_{index}",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            },
-                        )
-                        if tool_call.get("id"):
-                            current["id"] = tool_call["id"]
-                        function = tool_call.get("function") or {}
-                        if function.get("name"):
-                            current["function"]["name"] += str(function["name"])
-                        if function.get("arguments"):
-                            current["function"]["arguments"] += str(function["arguments"])
-
-                if tool_call_fragments:
-                    yield {
-                        "tool_calls": [
-                            tool_call_fragments[index]
-                            for index in sorted(tool_call_fragments)
-                        ]
-                    }
+            if tool_call_fragments:
+                yield {
+                    "tool_calls": [
+                        tool_call_fragments[index]
+                        for index in sorted(tool_call_fragments)
+                    ]
+                }
         except ValueError as exc:
             yield {"error": str(exc)}
-        except requests.RequestException as exc:
+        except openai.APIError as exc:
+            yield {"error": _format_openai_error(exc)}
+        except Exception as exc:
             yield {"error": str(exc)}
 
 
@@ -273,6 +286,26 @@ def build_chat_client(profile: ModelProfile, timeout: int = 300) -> BaseChatClie
     raise ValueError(f"Unsupported provider '{profile.provider}'")
 
 
+
+def _format_openai_error(exc: openai.APIError) -> str:
+    if isinstance(exc, openai.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        request_id = getattr(exc, "request_id", None)
+        parts = ["OpenAI-compatible API error"]
+        if status is not None:
+            parts.append(f"status={status}")
+        if request_id:
+            parts.append(f"request_id={request_id}")
+        message = str(exc).strip()
+        return ": ".join([" ".join(parts), message]) if message else " ".join(parts)
+    if isinstance(exc, openai.APIConnectionError):
+        return f"OpenAI-compatible connection error: {exc}"
+    if isinstance(exc, openai.APITimeoutError):
+        return f"OpenAI-compatible timeout error: {exc}"
+    return f"OpenAI-compatible API error: {exc}"
+
+
+
 def _extract_openai_content(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -283,8 +316,14 @@ def _extract_openai_content(content: Any) -> str:
                 text = item.get("text")
                 if isinstance(text, str):
                     parts.append(text)
+                continue
+            item_type = getattr(item, "type", None)
+            text = getattr(item, "text", None)
+            if item_type == "text" and isinstance(text, str):
+                parts.append(text)
         return "".join(parts)
     return ""
+
 
 
 def _merge_tool_call_fragments(

@@ -10,6 +10,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Provider support** for:
   - native **Ollama** chat endpoints
   - **OpenAI-compatible** chat endpoints such as OpenAI, vLLM, and other `/v1/chat/completions` servers
+- **OpenAI Python SDK integration** for OpenAI-compatible chat completions and model listing
 - **Named model profiles** stored in JSON for easy switching between endpoints and models
 - **API key support** through inline values or environment-variable references
 - **Conversation reset** with `Ctrl+L` or `/clear`
@@ -42,12 +43,14 @@ If you only want the dependencies without installing the package entry point, th
 pip install -r requirements.txt
 ```
 
+PyAgent uses the `openai` Python SDK for OpenAI-compatible profiles and keeps the native Ollama HTTP path for Ollama profiles.
+
 ## Running the TUI
 
 After installation, run PyAgent from any directory with:
 
 ```bash
-pyagent
+PyAgent
 ```
 
 You can also launch it as a module:
@@ -59,8 +62,8 @@ python -m pyagent
 To choose a saved profile and optionally override its model for the current session:
 
 ```bash
-pyagent --profile local-qwen
-pyagent --profile openai-gpt4 --model gpt-4.1-mini
+PyAgent --profile local-qwen
+PyAgent --profile openai-gpt4 --model gpt-4.1-mini
 ```
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can refresh them while the app is running with `/reload_context`.
@@ -115,6 +118,8 @@ Provider values:
 
 `openai` and `vllm` are treated as OpenAI-compatible providers.
 
+OpenAI-compatible profiles use the `openai` Python SDK with the Chat Completions API. This keeps PyAgent on `/v1/chat/completions` rather than the newer Responses API so it remains compatible with OpenAI-style servers such as OpenAI and vLLM.
+
 ### API keys
 
 Profiles can specify either:
@@ -123,6 +128,8 @@ Profiles can specify either:
 - `api_key_env` — environment variable name to read at runtime
 
 Using `api_key_env` is recommended.
+
+For local OpenAI-compatible servers that do not require authentication, you can omit both `api_key` and `api_key_env`.
 
 ### Fallback behavior
 

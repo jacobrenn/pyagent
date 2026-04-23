@@ -38,6 +38,12 @@ class Agent:
         return f"{SYSTEM_PROMPT}\n\n{self.project_context}"
 
     def _rebuild_client(self) -> None:
+        existing_client = getattr(self, "client", None)
+        if existing_client is not None:
+            close = getattr(existing_client, "close", None)
+            if callable(close):
+                close()
+
         profile = self.profile_store.get(self.active_profile_name)
         if self.model_override:
             profile = ModelProfile(
