@@ -282,6 +282,7 @@ class PyAgentApp(App):
         context_count = len(self.agent.project_context_files)
         return (
             f"Profile: {profile.name} • Provider: {profile.provider} • Model: {profile.model}"
+            f" • Tools: {'on' if self.agent.config.tools_enabled else 'off'}"
             f" • Context: {context_count}"
             f" • Debug: {'on' if self.debug_visible else 'off'}"
         )
@@ -320,11 +321,17 @@ class PyAgentApp(App):
 
     def _command_help_text(self) -> str:
         return (
-            "Available commands:\n"
+            "Available commands and keys:\n"
+            "\n"
+            "Prompt and navigation\n"
+            "- `Enter` — send the current prompt\n"
+            "- `Shift+Enter` — insert a newline\n"
+            "- `Ctrl+P` / `Ctrl+N` — move through prompt history\n"
+            "- `↑` / `↓` / `PgUp` / `PgDn` / `Home` / `End` — scroll the chat transcript\n"
             "\n"
             "Session\n"
             "- `/clear` — clear the conversation\n"
-            "- `/status` — show current configuration\n"
+            "- `/status` — show current configuration and runtime limits\n"
             "- `/cwd` — show the current working directory\n"
             "\n"
             "Profiles and models\n"
@@ -345,7 +352,8 @@ class PyAgentApp(App):
             "- `/reload_context` — reload `AGENTS.md` and local skill files\n"
             "\n"
             "Tools and debugging\n"
-            "- `/tools` — list available tools\n"
+            "- `/tools` — show tool status and available tools\n"
+            "- `/tools on|off` — enable or disable model tool calling for this session\n"
             "- `/debug on|off` — show or hide the debug pane"
         )
 
@@ -468,8 +476,27 @@ class PyAgentApp(App):
             return True
 
         if command == "/tools":
+            if len(args) == 1 and args[0].lower() in {"on", "off"}:
+                enabled = args[0].lower() == "on"
+                self.agent.set_tools_enabled(enabled)
+                state = "enabled" if enabled else "disabled"
+                self._add_system_note(
+                    f"Tools {state} for this session. Conversation reset so the updated system prompt takes effect."
+                )
+                self._set_status(self._ready_status())
+                return True
+
+            if args:
+                self._add_system_note("Usage: `/tools` or `/tools on|off`")
+                return True
+
             tool_names = "\n".join(f"- `{name}`" for name in self.agent.tool_registry.names())
-            self._add_system_note(f"Available tools:\n{tool_names}")
+            self._add_system_note(
+                "Tools:\n"
+                f"- Status: `{'on' if self.agent.config.tools_enabled else 'off'}`\n"
+                "- Available tool definitions:\n"
+                f"{tool_names}"
+            )
             return True
 
         if command == "/profiles":
@@ -631,7 +658,7 @@ class PyAgentApp(App):
                 f"- {self._status_summary()}\n"
                 f"- Base URL: `{profile.base_url}`\n"
                 f"- Profile file: `{self.agent.profile_store.path}`\n"
-                f"- Max iterations: `{self.agent.config.max_iterations}`\n"
+                f"- Agent tool-loop max iterations: `{self.agent.config.max_iterations}`\n"
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
                 f"- Project instruction files loaded: `{context_count}`\n"

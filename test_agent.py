@@ -32,8 +32,10 @@ class DummyClient:
     def __init__(self, responses: list[list[dict]]):
         self.responses = responses
         self.calls = 0
+        self.seen_tools: list[object] = []
 
     def chat_stream(self, messages, tools=None):
+        self.seen_tools.append(tools)
         response = self.responses[self.calls]
         self.calls += 1
         for chunk in response:
@@ -98,6 +100,18 @@ def make_tool_call_delta(index: int, id: str | None = None, name: str | None = N
 
 
 class AgentTests(unittest.TestCase):
+    def test_tools_disabled_omits_tool_definitions_and_updates_system_prompt(self) -> None:
+        config = AppConfig(max_iterations=1, tools_enabled=False)
+        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        agent.client = DummyClient([[{"content": "Plain answer"}]])
+
+        events = list(agent.run("Answer without tools"))
+
+        self.assertEqual(agent.tools, [])
+        self.assertIn("Tool calling is disabled", agent.messages[0]["content"])
+        self.assertEqual(agent.client.seen_tools, [None])
+        self.assertEqual(events[-1], {"type": "assistant_done", "content": "Plain answer"})
+
     def test_appends_tool_result_when_model_stops_after_intro(self) -> None:
         config = AppConfig(max_iterations=3)
         agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
@@ -286,13 +300,70 @@ class UiCommandTests(unittest.TestCase):
         self.assertIn("AGENTS.md", text)
         self.assertIn("skills/testing.md", text)
 
-    def test_help_text_mentions_history_search_and_context(self) -> None:
+    def test_help_text_mentions_history_search_context_and_prompt_keys(self) -> None:
         app = PyAgentApp()
 
         text = app._command_help_text()
 
         self.assertIn("`/context`", text)
         self.assertIn("`/history search <text>`", text)
+        self.assertIn("`/tools on|off`", text)
+        self.assertIn("`Enter`", text)
+        self.assertIn("`Shift+Enter`", text)
+        self.assertIn("`Ctrl+P` / `Ctrl+N`", text)
+
+    def test_tools_command_toggles_runtime_tools_and_resets_conversation(self) -> None:
+        app = PyAgentApp()
+        notes: list[str] = []
+        statuses: list[str] = []
+        app._add_system_note = notes.append
+        app._set_status = statuses.append
+        app.agent.add_message("user", "hello")
+
+        handled = app._handle_slash_command("/tools off")
+
+        self.assertTrue(handled)
+        self.assertFalse(app.agent.config.tools_enabled)
+        self.assertEqual(app.agent.tools, [])
+        self.assertEqual(len(app.agent.messages), 1)
+        self.assertIn("Tool calling is disabled", app.agent.messages[0]["content"])
+        self.assertIn("Tools disabled for this session", notes[-1])
+        self.assertTrue(statuses)
+
+        handled = app._handle_slash_command("/tools on")
+
+        self.assertTrue(handled)
+        self.assertTrue(app.agent.config.tools_enabled)
+        self.assertGreater(len(app.agent.tools), 0)
+        self.assertEqual(len(app.agent.messages), 1)
+        self.assertNotIn("Tool calling is disabled", app.agent.messages[0]["content"])
+        self.assertIn("Tools enabled for this session", notes[-1])
+
+    def test_status_command_reports_agent_tool_loop_max_iterations(self) -> None:
+        app = PyAgentApp()
+        app.agent.config.max_iterations = 7
+        notes: list[str] = []
+        app._add_system_note = notes.append
+
+        handled = app._handle_slash_command("/status")
+
+        self.assertTrue(handled)
+        self.assertIn("Agent tool-loop max iterations: `7`", notes[-1])
+
+
+class ConfigTests(unittest.TestCase):
+    def test_from_env_reads_tools_enabled_flag(self) -> None:
+        previous = os.environ.get("PYAGENT_TOOLS_ENABLED")
+        try:
+            os.environ["PYAGENT_TOOLS_ENABLED"] = "false"
+            config = AppConfig.from_env()
+        finally:
+            if previous is None:
+                os.environ.pop("PYAGENT_TOOLS_ENABLED", None)
+            else:
+                os.environ["PYAGENT_TOOLS_ENABLED"] = previous
+
+        self.assertFalse(config.tools_enabled)
 
 
 class ClientTests(unittest.TestCase):

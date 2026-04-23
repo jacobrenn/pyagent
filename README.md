@@ -7,6 +7,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Streaming chat UI** built with Textual
 - **Markdown rendering** for final assistant and tool messages
 - **Tool use** for shell commands, file search/text search, file reads/writes/appends/edits, listing files, and calculation
+- **Optional text-only mode** by disabling all model tool calling for a session
 - **Provider support** for:
   - native **Ollama** chat endpoints
   - **OpenAI-compatible** chat endpoints such as OpenAI, vLLM, and other `/v1/chat/completions` servers
@@ -17,7 +18,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Scrollable transcript** with mouse wheel, `↑` / `↓`, or `PgUp` / `PgDn`
 - **Multi-line prompt input** with `Shift+Enter`; press `Enter` to send, the input box auto-grows as you type, and the prompt area shows a helper hint
 - **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
-- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, and `/debug on|off`
+- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
 - **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup, with `/context` and `/reload_context` for inspection and refresh
 
 ## Requirements
@@ -144,7 +145,20 @@ Useful env vars for that fallback:
 - `PYAGENT_API_KEY`
 - `PYAGENT_API_KEY_ENV`
 
+## Tool configuration
+
+- `PYAGENT_TOOLS_ENABLED` — enable or disable all model tool calling for the session (`true` by default)
+- `PYAGENT_BASH_ENABLED` — enable or disable the `bash` tool specifically (`true` by default)
+
+When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools.
+
 ## Runtime slash commands
+
+- `/tools` — show current tool status and available tool definitions
+- `/tools on` — enable model tool calling for the current session
+- `/tools off` — disable model tool calling for the current session
+
+Changing tool mode at runtime resets the current conversation so the updated system prompt is applied cleanly.
 
 - `/clear` — clear the conversation
 - `/help` — show command help
@@ -158,7 +172,7 @@ Useful env vars for that fallback:
 - `/model` — show the active model
 - `/model list` — ask the current endpoint for available models, if supported
 - `/model <name>` — override the current profile's model for this session
-- `/status` — show current configuration
+- `/status` — show current configuration, including the agent tool-loop max-iteration setting
 - `/cwd` — show current working directory
 - `/history` — show recent prompt history
 - `/history search <text>` — search saved prompt history for matching prompts

@@ -26,16 +26,22 @@ class Agent:
         self.active_profile_name = profile or self.config.default_profile or self.profile_store.default_profile
         self.model_override = model.strip() if model else None
         self.tool_registry = tool_registry or create_default_tool_registry(self.config)
-        self.tools = self.tool_registry.definitions()
+        self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.project_context = project_context.strip()
         self.project_context_files = list(project_context_files or [])
         self._rebuild_client()
         self.reset()
 
     def _system_prompt(self) -> str:
+        prompt = SYSTEM_PROMPT
+        if not self.config.tools_enabled:
+            prompt += (
+                "\n\nTool calling is disabled for this session. Do not call tools. "
+                "Answer using only the conversation and your built-in knowledge."
+            )
         if not self.project_context:
-            return SYSTEM_PROMPT
-        return f"{SYSTEM_PROMPT}\n\n{self.project_context}"
+            return prompt
+        return f"{prompt}\n\n{self.project_context}"
 
     def _rebuild_client(self) -> None:
         existing_client = getattr(self, "client", None)
@@ -89,6 +95,11 @@ class Agent:
     def set_model(self, model: str) -> None:
         self.model_override = model.strip()
         self._rebuild_client()
+
+    def set_tools_enabled(self, enabled: bool) -> None:
+        self.config.tools_enabled = enabled
+        self.tools = self.tool_registry.definitions() if enabled else []
+        self.reset()
 
     def available_models(self) -> tuple[list[str], str | None]:
         response = self.client.list_models()
@@ -263,7 +274,10 @@ class Agent:
                 "data": {"iteration": iteration + 1, "message_count": len(self.messages)},
             }
 
-            for chunk in self.client.chat_stream(self.messages, tools=self.tools):
+            for chunk in self.client.chat_stream(
+                self.messages,
+                tools=self.tools if self.config.tools_enabled else None,
+            ):
                 yield {"type": "debug", "label": "llm_chunk", "data": chunk}
                 if "error" in chunk:
                     error_message = f"API Error: {chunk['error']}"
