@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 import json
 import os
+import shlex
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -13,6 +14,7 @@ from textual.message import Message
 from textual.widgets import Footer, Header, Label, Markdown, RichLog, Static, TextArea
 
 from agent import Agent
+from model_profiles import ModelProfile, default_base_url_for_provider
 from project_context import load_project_context
 
 
@@ -40,8 +42,7 @@ class ChatMessage(Vertical):
         self.finalized = finalized
         self.render_mode = render_mode
         self._label = Label(self._label_text(), classes=f"role-label {role}")
-        self._stream_widget = Static(
-            content, markup=False, classes="stream-content")
+        self._stream_widget = Static(content, markup=False, classes="stream-content")
         self._markdown_widget = Markdown(content, classes="markdown-content")
 
     def _label_text(self) -> str:
@@ -88,8 +89,7 @@ class ChatMessage(Vertical):
 class PromptInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit", "Send", show=False, priority=True),
-        Binding("shift+enter", "insert_newline",
-                "New line", show=False, priority=True),
+        Binding("shift+enter", "insert_newline", "New line", show=False, priority=True),
         *TextArea.BINDINGS,
     ]
 
@@ -108,18 +108,15 @@ class PromptInput(TextArea):
 
 class PyAgentApp(App):
     TITLE = "PyAgent"
-    SUB_TITLE = "Markdown-aware local coding agent"
+    SUB_TITLE = "Multi-provider coding agent"
     BINDINGS = [
         Binding("up", "scroll_chat_up", "Scroll chat up", priority=True),
         Binding("down", "scroll_chat_down", "Scroll chat down", priority=True),
-        Binding("pageup", "scroll_chat_page_up",
-                "Scroll chat up", priority=True),
-        Binding("pagedown", "scroll_chat_page_down",
-                "Scroll chat down", priority=True),
+        Binding("pageup", "scroll_chat_page_up", "Scroll chat up", priority=True),
+        Binding("pagedown", "scroll_chat_page_down", "Scroll chat down", priority=True),
         Binding("home", "scroll_chat_home", "Chat top", priority=True),
         Binding("end", "scroll_chat_end", "Chat bottom", priority=True),
-        Binding("ctrl+p", "history_previous",
-                "Previous prompt", priority=True),
+        Binding("ctrl+p", "history_previous", "Previous prompt", priority=True),
         Binding("ctrl+n", "history_next", "Next prompt", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear chat"),
         Binding("ctrl+d", "toggle_debug", "Toggle debug"),
@@ -222,12 +219,12 @@ class PyAgentApp(App):
     }
     """
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, profile: str | None = None, model: str | None = None):
         super().__init__()
-        self.project_context, self.project_context_files = load_project_context(
-            os.getcwd())
+        self.project_context, self.project_context_files = load_project_context(os.getcwd())
         self.agent = Agent(
             model=model,
+            profile=profile,
             project_context=self.project_context,
             project_context_files=self.project_context_files,
         )
@@ -253,17 +250,21 @@ class PyAgentApp(App):
 
     def on_mount(self) -> None:
         self._debug_log_widget().display = False
-        self._chat_follow_timer = self.set_interval(
-            0.1, self._auto_follow_chat, pause=False)
+        self._chat_follow_timer = self.set_interval(0.1, self._auto_follow_chat, pause=False)
         self._set_status(self._ready_status())
+        profile = self.agent.current_profile()
         self._add_message(
             "system",
-            "Welcome to **PyAgent**. Responses stream as plain text for speed and render as Markdown when complete.",
+            (
+                "Welcome to **PyAgent**. Responses stream as plain text for speed and render as Markdown when complete.\n\n"
+                f"Active profile: `{profile.name}`  \n"
+                f"Provider: `{profile.provider}`  \n"
+                f"Model: `{profile.model}`"
+            ),
             finalized=True,
         )
         if self.project_context_files:
-            loaded_files = "\n".join(
-                f"- `{path}`" for path in self.project_context_files)
+            loaded_files = "\n".join(f"- `{path}`" for path in self.project_context_files)
             self._add_message(
                 "system",
                 f"Loaded project instructions:\n{loaded_files}",
@@ -276,7 +277,8 @@ class PyAgentApp(App):
         self._log_debug("Debug log initialized.")
 
     def _ready_status(self) -> str:
-        return f"Ready • Model: {self.agent.config.model}"
+        profile = self.agent.current_profile()
+        return f"Ready • Profile: {profile.name} • Model: {profile.model}"
 
     def _set_status(self, text: str) -> None:
         self.query_one("#status-bar", Static).update(text)
@@ -292,8 +294,7 @@ class PyAgentApp(App):
     def _resize_prompt_input(self) -> None:
         input_widget = self._prompt_input()
         line_count = max(1, input_widget.text.count("\n") + 1)
-        target_height = max(PROMPT_INPUT_MIN_HEIGHT, min(
-            PROMPT_INPUT_MAX_HEIGHT, line_count + 2))
+        target_height = max(PROMPT_INPUT_MIN_HEIGHT, min(PROMPT_INPUT_MAX_HEIGHT, line_count + 2))
         input_widget.styles.height = target_height
 
     def _chat_container(self) -> VerticalScroll:
@@ -324,11 +325,65 @@ class PyAgentApp(App):
         self.input_history_index = index
         self._set_prompt_text(self.input_history[index])
 
+    def _parse_command_parts(self, raw_input: str) -> tuple[list[str] | None, str | None]:
+        try:
+            return shlex.split(raw_input), None
+        except ValueError as exc:
+            return None, str(exc)
+
+    def _parse_bool_option(self, value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _parse_profile_add_options(self, args: list[str]) -> tuple[dict[str, str | bool | dict[str, str]], str | None]:
+        if not args:
+            return {}, "Usage: `/profile add <name> provider=<provider> model=<model> [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]`"
+
+        name = args[0].strip()
+        if not name:
+            return {}, "Profile name must not be empty."
+
+        options: dict[str, str | bool | dict[str, str]] = {
+            "name": name,
+            "headers": {},
+        }
+        for token in args[1:]:
+            if "=" not in token:
+                return {}, f"Invalid option `{token}`. Expected key=value."
+            key, value = token.split("=", 1)
+            normalized_key = key.strip().lower()
+            value = value.strip()
+            if not normalized_key:
+                return {}, f"Invalid option `{token}`."
+            if normalized_key.startswith("header."):
+                header_name = key[len("header."):].strip()
+                if not header_name:
+                    return {}, f"Invalid header option `{token}`."
+                headers = options["headers"]
+                assert isinstance(headers, dict)
+                headers[header_name] = value
+                continue
+            if normalized_key in {"default", "switch"}:
+                options[normalized_key] = self._parse_bool_option(value)
+                continue
+            options[normalized_key] = value
+
+        provider = str(options.get("provider", "")).strip()
+        model = str(options.get("model", "")).strip()
+        if not provider or not model:
+            return {}, "`provider` and `model` are required."
+        return options, None
+
     def _handle_slash_command(self, raw_input: str) -> bool:
         if not raw_input.startswith("/"):
             return False
 
-        parts = raw_input.split()
+        parts, error = self._parse_command_parts(raw_input)
+        if error:
+            self._add_system_note(f"Could not parse command: `{error}`")
+            return True
+        if not parts:
+            return True
+
         command = parts[0].lower()
         args = parts[1:]
 
@@ -338,74 +393,183 @@ class PyAgentApp(App):
                 "- `/clear` — clear the conversation\n"
                 "- `/help` — show this help\n"
                 "- `/tools` — list available tools\n"
+                "- `/profiles` — list saved model profiles\n"
+                "- `/profiles reload` — reload profiles from disk\n"
+                "- `/profile` — show the current profile\n"
+                "- `/profile <name>` — switch to another saved profile\n"
+                "- `/profile add <name> provider=<provider> model=<model> ...` — create or update a profile\n"
                 "- `/model` — show the current model and usage\n"
-                "- `/model list` — list available Ollama models\n"
-                "- `/model <name>` — switch to a different Ollama model\n"
+                "- `/model list` — list models from the current endpoint, if supported\n"
+                "- `/model <name>` — override the current profile's model for this session\n"
                 "- `/status` — show current configuration\n"
                 "- `/cwd` — show the current working directory\n"
                 "- `/history` — show recent prompt history\n"
                 "- `/prompt` — show the active system prompt\n"
                 "- `/debug on|off` — show or hide the debug pane\n"
+                "- `/reload_profiles` — reload profiles from disk\n"
                 "- `/reload_context` — reload `AGENTS.md` and local skill files"
             )
             return True
 
         if command == "/tools":
-            tool_names = "\n".join(
-                f"- `{name}`" for name in self.agent.tool_registry.names())
+            tool_names = "\n".join(f"- `{name}`" for name in self.agent.tool_registry.names())
             self._add_system_note(f"Available tools:\n{tool_names}")
             return True
 
+        if command == "/profiles":
+            if len(args) == 1 and args[0].lower() == "reload":
+                try:
+                    self.agent.reload_profiles()
+                except ValueError as exc:
+                    self._add_system_note(f"Could not reload profiles: `{exc}`")
+                    return True
+                self._add_system_note(
+                    f"Reloaded profiles from `{self.agent.profile_store.path}`. Active profile: `{self.agent.current_profile().name}`."
+                )
+                self._set_status(self._ready_status())
+                return True
+
+            current = self.agent.current_profile().name
+            lines = []
+            for name in self.agent.profile_names():
+                profile = self.agent.profile_store.get(name)
+                marker = " (current)" if name == current else ""
+                lines.append(
+                    f"- `{name}`{marker} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}`"
+                )
+            self._add_system_note(
+                "Saved profiles:\n"
+                + ("\n".join(lines) if lines else "<no profiles>")
+                + f"\n\nProfile file: `{self.agent.profile_store.path}`"
+            )
+            return True
+
+        if command == "/profile":
+            if not args:
+                profile = self.agent.current_profile()
+                self._add_system_note(
+                    "Current profile:\n"
+                    f"- Name: `{profile.name}`\n"
+                    f"- Provider: `{profile.provider}`\n"
+                    f"- Model: `{profile.model}`\n"
+                    f"- Base URL: `{profile.base_url}`\n"
+                    f"- API key env: `{profile.api_key_env or '<none>'}`"
+                )
+                return True
+
+            if args[0].lower() == "add":
+                options, error = self._parse_profile_add_options(args[1:])
+                if error:
+                    self._add_system_note(error)
+                    return True
+
+                provider = str(options.get("provider", "")).strip()
+                profile_name = str(options.get("name", "")).strip()
+                model = str(options.get("model", "")).strip()
+                headers = options.get("headers") or {}
+                assert isinstance(headers, dict)
+                make_default = bool(options.get("default", False))
+                switch_to = bool(options.get("switch", False))
+                try:
+                    base_url = str(options.get("base_url") or default_base_url_for_provider(provider)).strip()
+                    profile = ModelProfile(
+                        name=profile_name,
+                        provider=provider,
+                        model=model,
+                        base_url=base_url,
+                        api_key=str(options.get("api_key", "")).strip() or None,
+                        api_key_env=str(options.get("api_key_env", "")).strip() or None,
+                        headers={str(key): str(value) for key, value in headers.items()},
+                    )
+                    self.agent.save_profile(profile, make_default=make_default)
+                    if switch_to:
+                        self.agent.set_profile(profile.name)
+                except ValueError as exc:
+                    self._add_system_note(f"Could not save profile: `{exc}`")
+                    return True
+
+                details = [
+                    f"Saved profile `{profile.name}`.",
+                    f"Provider: `{profile.provider}`",
+                    f"Model: `{profile.model}`",
+                    f"Base URL: `{profile.base_url}`",
+                    f"Profile file: `{self.agent.profile_store.path}`",
+                ]
+                if make_default:
+                    details.append("Set as default profile.")
+                if switch_to:
+                    details.append("Switched to the new profile.")
+                    self._set_status(self._ready_status())
+                self._add_system_note("\n".join(details))
+                return True
+
+            profile_name = " ".join(args).strip()
+            old_profile = self.agent.current_profile().name
+            try:
+                self.agent.set_profile(profile_name)
+            except ValueError as exc:
+                self._add_system_note(str(exc))
+                return True
+            new_profile = self.agent.current_profile()
+            self._add_system_note(
+                f"Switched profile from `{old_profile}` to `{new_profile.name}`. Conversation preserved."
+            )
+            self._set_status(self._ready_status())
+            return True
+
         if command == "/model":
+            profile = self.agent.current_profile()
             if not args:
                 self._add_system_note(
-                    "Current model: "
-                    f"`{self.agent.config.model}`\n"
+                    "Current model:\n"
+                    f"- Profile: `{profile.name}`\n"
+                    f"- Provider: `{profile.provider}`\n"
+                    f"- Model: `{profile.model}`\n"
                     "Usage:\n"
-                    "- `/model list` — list available Ollama models\n"
-                    "- `/model <name>` — switch models without clearing the conversation"
+                    "- `/model list` — list models from the current endpoint\n"
+                    "- `/model <name>` — override the active profile's model"
                 )
                 return True
 
             if len(args) == 1 and args[0].lower() == "list":
                 model_names, error = self.agent.available_models()
                 if error:
-                    self._add_system_note(
-                        f"Could not list Ollama models: `{error}`")
+                    self._add_system_note(f"Could not list models: `{error}`")
                     return True
                 if not model_names:
-                    self._add_system_note(
-                        "Ollama did not report any installed models.")
+                    self._add_system_note("This endpoint did not report any available models.")
                     return True
                 models_text = "\n".join(f"- `{name}`" for name in model_names)
-                self._add_system_note(
-                    f"Available Ollama models:\n{models_text}")
+                self._add_system_note(f"Available models for `{profile.name}`:\n{models_text}")
                 return True
 
             new_model = " ".join(args).strip()
             if not new_model:
-                self._add_system_note(
-                    "Usage: `/model list` or `/model <name>`")
+                self._add_system_note("Usage: `/model list` or `/model <name>`")
                 return True
 
-            old_model = self.agent.config.model
+            old_model = profile.model
             if new_model == old_model:
                 self._add_system_note(f"Already using model `{new_model}`.")
                 return True
 
             self.agent.set_model(new_model)
             self._add_system_note(
-                f"Switched model from `{old_model}` to `{new_model}`. Conversation preserved."
+                f"Switched model from `{old_model}` to `{new_model}` within profile `{profile.name}`."
             )
             self._set_status(self._ready_status())
             return True
 
         if command == "/status":
+            profile = self.agent.current_profile()
             context_count = len(self.agent.project_context_files)
             self._add_system_note(
                 "Current status:\n"
-                f"- Model: `{self.agent.config.model}`\n"
-                f"- Base URL: `{self.agent.config.base_url}`\n"
+                f"- Profile: `{profile.name}`\n"
+                f"- Provider: `{profile.provider}`\n"
+                f"- Model: `{profile.model}`\n"
+                f"- Base URL: `{profile.base_url}`\n"
+                f"- Profile file: `{self.agent.profile_store.path}`\n"
                 f"- Max iterations: `{self.agent.config.max_iterations}`\n"
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
@@ -415,8 +579,7 @@ class PyAgentApp(App):
             return True
 
         if command == "/cwd":
-            self._add_system_note(
-                f"Current working directory: `{os.getcwd()}`")
+            self._add_system_note(f"Current working directory: `{os.getcwd()}`")
             return True
 
         if command == "/history":
@@ -432,42 +595,51 @@ class PyAgentApp(App):
 
         if command == "/prompt":
             system_prompt = self.agent.messages[0]["content"] if self.agent.messages else "<missing>"
+            self._add_system_note(f"Active system prompt:\n\n```text\n{system_prompt}\n```")
+            return True
+
+        if command == "/reload_profiles":
+            try:
+                self.agent.reload_profiles()
+            except ValueError as exc:
+                self._add_system_note(f"Could not reload profiles: `{exc}`")
+                return True
             self._add_system_note(
-                f"Active system prompt:\n\n```text\n{system_prompt}\n```")
+                f"Reloaded profiles from `{self.agent.profile_store.path}`. Active profile: `{self.agent.current_profile().name}`."
+            )
+            self._set_status(self._ready_status())
             return True
 
         if command == "/reload_context":
-            self.project_context, self.project_context_files = load_project_context(
-                os.getcwd())
-            self.agent.set_project_context(
-                self.project_context, self.project_context_files)
+            self.project_context, self.project_context_files = load_project_context(os.getcwd())
+            self.agent.set_project_context(self.project_context, self.project_context_files)
             if self.project_context_files:
-                loaded_files = "\n".join(
-                    f"- `{path}`" for path in self.project_context_files)
-                self._add_system_note(
-                    f"Reloaded project instructions:\n{loaded_files}")
+                loaded_files = "\n".join(f"- `{path}`" for path in self.project_context_files)
+                self._add_system_note(f"Reloaded project instructions:\n{loaded_files}")
             else:
                 self._add_system_note(
-                    "Reloaded project instructions. No `AGENTS.md` or skill files were found.")
+                    "Reloaded project instructions. No `AGENTS.md` or skill files were found."
+                )
             return True
 
         if command == "/debug":
             if not args:
                 self._add_system_note(
-                    f"Debug pane is currently `{'on' if self.debug_visible else 'off'}`.")
+                    f"Debug pane is currently `{'on' if self.debug_visible else 'off'}`."
+                )
                 return True
             arg = args[0].lower()
             if arg in {"on", "off"}:
                 self.debug_visible = arg == "on"
                 self._debug_log_widget().display = self.debug_visible
                 self._add_system_note(
-                    f"Debug pane {'enabled' if self.debug_visible else 'disabled'}.")
+                    f"Debug pane {'enabled' if self.debug_visible else 'disabled'}."
+                )
                 return True
             self._add_system_note("Usage: `/debug on` or `/debug off`")
             return True
 
-        self._add_system_note(
-            f"Unknown command: `{command}`. Use `/help` to see available commands.")
+        self._add_system_note(f"Unknown command: `{command}`. Use `/help` to see available commands.")
         return True
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -502,8 +674,7 @@ class PyAgentApp(App):
     def _schedule_chat_scroll_end(self, force: bool = False) -> None:
         if force or self.chat_auto_follow or self._is_chat_near_bottom():
             self.chat_auto_follow = True
-            self.call_after_refresh(
-                self._chat_container().scroll_end, animate=False)
+            self.call_after_refresh(self._chat_container().scroll_end, animate=False)
 
     def _update_chat_auto_follow(self) -> None:
         self.chat_auto_follow = self._is_chat_near_bottom()
@@ -532,8 +703,7 @@ class PyAgentApp(App):
         render_mode: str = "markdown",
     ) -> ChatMessage:
         should_autoscroll = self.chat_auto_follow or self._is_chat_near_bottom()
-        message = ChatMessage(
-            role, content, finalized=finalized, render_mode=render_mode)
+        message = ChatMessage(role, content, finalized=finalized, render_mode=render_mode)
         message.add_class(f"{role}-message")
         self._chat_container().mount(message)
         self._schedule_chat_scroll_end(force=should_autoscroll)
@@ -565,8 +735,7 @@ class PyAgentApp(App):
 
     async def action_clear_chat(self) -> None:
         if self.is_processing:
-            self.notify(
-                "Wait for the current response to finish before clearing.")
+            self.notify("Wait for the current response to finish before clearing.")
             return
         self.agent.reset()
         await self._chat_container().remove_children()
@@ -655,8 +824,7 @@ class PyAgentApp(App):
         def ensure_assistant_message() -> ChatMessage:
             nonlocal assistant_message
             if assistant_message is None:
-                assistant_message = self._add_message(
-                    "assistant", "", finalized=False)
+                assistant_message = self._add_message("assistant", "", finalized=False)
             return assistant_message
 
         def flush_buffer() -> None:
@@ -678,7 +846,8 @@ class PyAgentApp(App):
                 event_type = event.get("type")
                 if event_type == "debug":
                     self._log_debug(
-                        f"{event.get('label', 'event')}: {self._format_debug_data(event.get('data'))}")
+                        f"{event.get('label', 'event')}: {self._format_debug_data(event.get('data'))}"
+                    )
                     continue
 
                 if event_type == "assistant_start":
@@ -701,7 +870,7 @@ class PyAgentApp(App):
                     self._log_debug(
                         f"tool_call {event.get('name', '<unknown>')}: {self._format_debug_data(event.get('arguments', {}), 1000)}"
                     )
-                    tool_name = event.get('name', '<unknown>')
+                    tool_name = event.get("name", "<unknown>")
                     self._add_message(
                         "tool",
                         f"Tool • `{tool_name}`\n\n{self._compact_arguments(event.get('arguments', {}), 220)}",
@@ -716,7 +885,7 @@ class PyAgentApp(App):
                     self._log_debug(
                         f"tool_result {event.get('name', '<unknown>')}: {_truncate(result, 1200)}"
                     )
-                    tool_name = event.get('name', '<unknown>')
+                    tool_name = event.get("name", "<unknown>")
                     result_preview = _truncate(result, 2500)
                     self._add_message(
                         "tool",
@@ -728,15 +897,16 @@ class PyAgentApp(App):
                     continue
 
                 if event_type == "error":
-                    self._log_debug(
-                        f"error: {event.get('message', 'Unknown error')}")
+                    self._log_debug(f"error: {event.get('message', 'Unknown error')}")
                     ensure_assistant_message().append_stream(
-                        f"\n\n{event.get('message', 'Unknown error')}")
+                        f"\n\n{event.get('message', 'Unknown error')}"
+                    )
                     break
 
                 if event_type == "assistant_done":
                     self._log_debug(
-                        f"assistant_done: {_truncate(event.get('content', ''), 500)}")
+                        f"assistant_done: {_truncate(event.get('content', ''), 500)}"
+                    )
                     continue
 
             flush_buffer()

@@ -16,7 +16,8 @@ Use this skill when changing the Textual interface in `ui.py`.
 - `Shift+Enter` inserts a newline.
 - `Ctrl+P` / `Ctrl+N` navigate prompt history.
 - `↑` / `↓` and paging keys scroll the transcript.
-- Tool messages are intentionally more compact than before.
+- Tool messages are intentionally compact.
+- Profile/model switching is exposed through slash commands.
 - Auto-follow logic is sensitive to Textual layout timing.
 
 ## Be careful about
@@ -44,11 +45,19 @@ If you change the prompt input:
 - preserve prompt subtitle guidance
 - avoid conflicts with transcript scrolling keys
 
+### Slash commands
+
+If you change slash commands or status text:
+
+- keep `/help` accurate
+- keep profile/model switching discoverable
+- keep profile reload / creation syntax discoverable
+- keep status bar text short
+
 ## Preferred approach
 
 - Small CSS/layout changes first
 - Small helper methods in `ui.py` over deeply nested logic
-- Keep status bar text short
 - Put discoverability in the prompt subtitle and `/help`, not in large persistent banners
 
 ## When to update docs/tests
@@ -59,5 +68,6 @@ Update `README.md` if you change:
 - prompt behavior
 - slash commands
 - visible UI workflow
+- profile/model switching behavior
 
 Add tests when practical, but also manually test the TUI for layout/scroll changes.

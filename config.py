@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 
 def _parse_csv_env(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _default_profiles_path() -> str:
+    return str(Path.home() / "pyagent" / "models.json")
 
 
 SYSTEM_PROMPT = (
@@ -21,12 +26,12 @@ SYSTEM_PROMPT = (
 
 @dataclass(slots=True)
 class AppConfig:
-    model: str = "gemma4:31b"
-    base_url: str = "http://localhost:11434"
     request_timeout: int = 300
     max_iterations: int = 10
     max_history_messages: int = 24
     stream_batch_interval: float = 0.05
+    default_profile: str | None = None
+    model_profiles_path: str = _default_profiles_path()
     bash_enabled: bool = True
     bash_readonly_mode: bool = False
     bash_timeout_default: int = 60
@@ -62,15 +67,17 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         defaults = cls()
         return cls(
-            model=os.getenv("PYAGENT_MODEL", defaults.model),
-            base_url=os.getenv("PYAGENT_BASE_URL", defaults.base_url),
             request_timeout=int(
-                os.getenv("PYAGENT_REQUEST_TIMEOUT", str(defaults.request_timeout))),
+                os.getenv("PYAGENT_REQUEST_TIMEOUT", str(defaults.request_timeout))
+            ),
             max_iterations=int(
-                os.getenv("PYAGENT_MAX_ITERATIONS", str(defaults.max_iterations))),
+                os.getenv("PYAGENT_MAX_ITERATIONS", str(defaults.max_iterations))
+            ),
             max_history_messages=int(
-                os.getenv("PYAGENT_MAX_HISTORY_MESSAGES",
-                          str(defaults.max_history_messages))
+                os.getenv(
+                    "PYAGENT_MAX_HISTORY_MESSAGES",
+                    str(defaults.max_history_messages),
+                )
             ),
             stream_batch_interval=float(
                 os.getenv(
@@ -78,13 +85,22 @@ class AppConfig:
                     str(defaults.stream_batch_interval),
                 )
             ),
-            bash_enabled=os.getenv("PYAGENT_BASH_ENABLED", str(
-                defaults.bash_enabled)).lower() in {"1", "true", "yes", "on"},
-            bash_readonly_mode=os.getenv("PYAGENT_BASH_READONLY_MODE", str(
-                defaults.bash_readonly_mode)).lower() in {"1", "true", "yes", "on"},
+            default_profile=os.getenv("PYAGENT_PROFILE") or None,
+            model_profiles_path=os.getenv(
+                "PYAGENT_MODEL_PROFILES_PATH",
+                defaults.model_profiles_path,
+            ),
+            bash_enabled=os.getenv("PYAGENT_BASH_ENABLED", str(defaults.bash_enabled)).lower()
+            in {"1", "true", "yes", "on"},
+            bash_readonly_mode=os.getenv(
+                "PYAGENT_BASH_READONLY_MODE", str(defaults.bash_readonly_mode)
+            ).lower()
+            in {"1", "true", "yes", "on"},
             bash_timeout_default=int(
-                os.getenv("PYAGENT_BASH_TIMEOUT_DEFAULT",
-                          str(defaults.bash_timeout_default))
+                os.getenv(
+                    "PYAGENT_BASH_TIMEOUT_DEFAULT",
+                    str(defaults.bash_timeout_default),
+                )
             ),
             bash_blocked_substrings=_parse_csv_env(
                 os.getenv(

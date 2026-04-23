@@ -1,17 +1,27 @@
 # Testing skill
 
-Use this skill when changing logic in the agent loop, tools, config, project-context loading, or user-facing behavior.
+Use this skill when changing logic in the agent loop, tools, config, model profiles, provider clients, project-context loading, or user-facing behavior.
 
 ## Baseline expectation
 
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile agent.py config.py tools.py ui.py main.py ollama_client.py test_agent.py project_context.py
+python -m py_compile agent.py config.py llm_client.py model_profiles.py tools.py ui.py main.py ollama_client.py test_agent.py project_context.py
 python -m unittest -v
 ```
 
 ## What to test
+
+### Provider/profile changes
+
+Add or update tests for:
+
+- profile file loading
+- provider selection
+- API key env handling where relevant
+- model listing behavior
+- streamed content/tool-call normalization
 
 ### Tool changes
 
@@ -19,7 +29,6 @@ Add or update tests for:
 
 - happy-path behavior
 - error handling
-- backward compatibility where applicable
 - config-driven behavior
 
 Examples:
@@ -37,6 +46,7 @@ Test cases should cover:
 - malformed tool calls
 - fallback behavior when the model stops after a tool result
 - reset behavior if system prompt composition changes
+- switching profiles or models if agent state changes
 
 ### Project-context changes
 
@@ -60,6 +70,8 @@ Manual checks should include, when relevant:
 - transcript scrolling
 - auto-follow while streaming
 - slash commands
+- profile/model switching
+- profile reload and profile creation commands
 - prompt history
 - multiline prompt behavior
 - debug pane toggling
@@ -67,6 +79,7 @@ Manual checks should include, when relevant:
 ## Documentation alignment
 
 If a user-visible behavior changes, update `README.md` in the same change.
+If profile or provider behavior changes, update `AGENTS.md` and any relevant skills docs too.
 
 ## Rule of thumb
 

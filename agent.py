@@ -4,7 +4,8 @@ import json
 from typing import Any
 
 from config import AppConfig, SYSTEM_PROMPT
-from ollama_client import OllamaClient
+from llm_client import build_chat_client
+from model_profiles import ModelProfile, ProfileStore, load_profile_store, save_profile_store, update_profile_store
 from tools import ToolRegistry, create_default_tool_registry
 
 
@@ -12,25 +13,23 @@ class Agent:
     def __init__(
         self,
         model: str | None = None,
+        profile: str | None = None,
         config: AppConfig | None = None,
         tool_registry: ToolRegistry | None = None,
         project_context: str = "",
         project_context_files: list[str] | None = None,
     ):
         self.config = config or AppConfig.from_env()
-        if model is not None:
-            self.config.model = model
-
-        self.client = OllamaClient(
-            model=self.config.model,
-            base_url=self.config.base_url,
-            timeout=self.config.request_timeout,
+        self.profile_store: ProfileStore = load_profile_store(
+            self.config.model_profiles_path
         )
-        self.tool_registry = tool_registry or create_default_tool_registry(
-            self.config)
+        self.active_profile_name = profile or self.config.default_profile or self.profile_store.default_profile
+        self.model_override = model.strip() if model else None
+        self.tool_registry = tool_registry or create_default_tool_registry(self.config)
         self.tools = self.tool_registry.definitions()
         self.project_context = project_context.strip()
         self.project_context_files = list(project_context_files or [])
+        self._rebuild_client()
         self.reset()
 
     def _system_prompt(self) -> str:
@@ -38,31 +37,59 @@ class Agent:
             return SYSTEM_PROMPT
         return f"{SYSTEM_PROMPT}\n\n{self.project_context}"
 
+    def _rebuild_client(self) -> None:
+        profile = self.profile_store.get(self.active_profile_name)
+        if self.model_override:
+            profile = ModelProfile(
+                name=profile.name,
+                provider=profile.provider,
+                model=self.model_override,
+                base_url=profile.base_url,
+                api_key=profile.api_key,
+                api_key_env=profile.api_key_env,
+                headers=dict(profile.headers),
+            )
+        self.client = build_chat_client(profile, timeout=self.config.request_timeout)
+
+    def current_profile(self) -> ModelProfile:
+        return self.client.profile
+
+    def profile_names(self) -> list[str]:
+        return self.profile_store.names()
+
     def set_project_context(self, project_context: str, files: list[str] | None = None) -> None:
         self.project_context = project_context.strip()
         self.project_context_files = list(files or [])
         self.reset()
 
+    def set_profile(self, profile: str) -> None:
+        self.active_profile_name = profile.strip()
+        self.model_override = None
+        self._rebuild_client()
+
+    def reload_profiles(self) -> None:
+        current_profile_name = self.active_profile_name
+        self.profile_store = load_profile_store(self.config.model_profiles_path)
+        if current_profile_name not in self.profile_store.profiles:
+            self.active_profile_name = self.profile_store.default_profile
+            self.model_override = None
+        self._rebuild_client()
+
+    def save_profile(self, profile: ModelProfile, make_default: bool = False) -> None:
+        update_profile_store(self.profile_store, profile, make_default=make_default)
+        save_profile_store(self.profile_store)
+        self.profile_store = load_profile_store(self.profile_store.path)
+
     def set_model(self, model: str) -> None:
-        self.config.model = model.strip()
-        self.client = OllamaClient(
-            model=self.config.model,
-            base_url=self.config.base_url,
-            timeout=self.config.request_timeout,
-        )
+        self.model_override = model.strip()
+        self._rebuild_client()
 
     def available_models(self) -> tuple[list[str], str | None]:
         response = self.client.list_models()
         if "error" in response:
             return [], str(response["error"])
 
-        names: list[str] = []
-        for model in response.get("models", []):
-            if not isinstance(model, dict):
-                continue
-            name = model.get("model") or model.get("name")
-            if isinstance(name, str) and name:
-                names.append(name)
+        names = [name for name in response.get("models", []) if isinstance(name, str) and name]
         return names, None
 
     def reset(self) -> None:
@@ -93,28 +120,41 @@ class Agent:
                 return {}
         return {}
 
-    def _normalize_tool_call(self, tool_call: dict[str, Any], iteration: int, index: int) -> tuple[str, dict[str, Any], str]:
+    def _normalize_tool_call(
+        self,
+        tool_call: dict[str, Any],
+        iteration: int,
+        index: int,
+    ) -> tuple[str, dict[str, Any], str]:
         function = tool_call.get("function", {})
         name = function.get("name", "")
         arguments = self._normalize_arguments(function.get("arguments", {}))
         tool_call_id = tool_call.get("id") or str(
-            function.get("index", f"call_{iteration}_{index}"))
+            function.get("index", f"call_{iteration}_{index}")
+        )
         return name, arguments, tool_call_id
 
-    def _merge_tool_calls(self, existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _merge_tool_calls(
+        self,
+        existing: list[dict[str, Any]],
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         merged: dict[str, dict[str, Any]] = {}
         ordered_keys: list[str] = []
 
         for tool_call in [*existing, *incoming]:
             function = tool_call.get("function", {})
-            key = str(tool_call.get("id") or function.get(
-                "index") or f"{function.get('name', '')}:{json.dumps(function.get('arguments', {}), sort_keys=True, default=str)}")
+            key = str(
+                tool_call.get("id")
+                or function.get("index")
+                or f"{function.get('name', '')}:{json.dumps(function.get('arguments', {}), sort_keys=True, default=str)}"
+            )
             if key not in merged:
                 merged[key] = {
                     **tool_call,
                     "function": {
                         **function,
-                        "arguments": self._normalize_arguments(function.get("arguments", {})),
+                        "arguments": function.get("arguments", {}),
                     },
                 }
                 ordered_keys.append(key)
@@ -125,12 +165,15 @@ class Agent:
             if function.get("name"):
                 current_function["name"] = function["name"]
 
-            incoming_arguments = self._normalize_arguments(
-                function.get("arguments", {}))
+            incoming_arguments = function.get("arguments", {})
             existing_arguments = current_function.get("arguments", {})
             if isinstance(existing_arguments, dict) and isinstance(incoming_arguments, dict):
                 current_function["arguments"] = {
-                    **existing_arguments, **incoming_arguments}
+                    **existing_arguments,
+                    **incoming_arguments,
+                }
+            elif isinstance(existing_arguments, str) and isinstance(incoming_arguments, str):
+                current_function["arguments"] = existing_arguments + incoming_arguments
             elif incoming_arguments:
                 current_function["arguments"] = incoming_arguments
 
@@ -149,8 +192,7 @@ class Agent:
             result = str(tool_result["result"]).strip()
             if not result:
                 continue
-            blocks.append(
-                f"**{tool_result['name']}**\n\n```text\n{result}\n```")
+            blocks.append(f"**{tool_result['name']}**\n\n```text\n{result}\n```")
         if not blocks:
             return ""
         return "\n\nHere are the tool results:\n\n" + "\n\n".join(blocks)
@@ -173,26 +215,32 @@ class Agent:
         for iteration in range(self.config.max_iterations):
             full_response_parts: list[str] = []
             full_tool_calls: list[dict[str, Any]] = []
-            yield {"type": "debug", "label": "iteration_start", "data": {"iteration": iteration + 1, "message_count": len(self.messages)}}
+            yield {
+                "type": "debug",
+                "label": "iteration_start",
+                "data": {"iteration": iteration + 1, "message_count": len(self.messages)},
+            }
 
             for chunk in self.client.chat_stream(self.messages, tools=self.tools):
-                yield {"type": "debug", "label": "ollama_chunk", "data": chunk}
+                yield {"type": "debug", "label": "llm_chunk", "data": chunk}
                 if "error" in chunk:
                     error_message = f"API Error: {chunk['error']}"
                     yield {"type": "error", "message": error_message}
                     return
 
-                message = chunk.get("message", {})
-                content = message.get("content") or ""
+                content = chunk.get("content") or ""
                 if content:
                     full_response_parts.append(content)
                     yield {"type": "content_delta", "delta": content}
 
-                tool_calls = message.get("tool_calls") or []
+                tool_calls = chunk.get("tool_calls") or []
                 if tool_calls:
-                    full_tool_calls = self._merge_tool_calls(
-                        full_tool_calls, tool_calls)
-                    yield {"type": "debug", "label": "merged_tool_calls", "data": full_tool_calls}
+                    full_tool_calls = self._merge_tool_calls(full_tool_calls, tool_calls)
+                    yield {
+                        "type": "debug",
+                        "label": "merged_tool_calls",
+                        "data": full_tool_calls,
+                    }
 
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
@@ -204,33 +252,49 @@ class Agent:
             self._trim_history()
 
             if not full_tool_calls:
-                if self._should_append_tool_results(assistant_message["content"], recent_tool_results):
-                    suffix = self._format_tool_results_for_fallback(
-                        recent_tool_results)
+                if self._should_append_tool_results(
+                    assistant_message["content"], recent_tool_results
+                ):
+                    suffix = self._format_tool_results_for_fallback(recent_tool_results)
                     if suffix:
                         assistant_message["content"] += suffix
                         self.messages[-1]["content"] = assistant_message["content"]
-                        yield {"type": "debug", "label": "assistant_tool_result_fallback", "data": {"tool_count": len(recent_tool_results)}}
+                        yield {
+                            "type": "debug",
+                            "label": "assistant_tool_result_fallback",
+                            "data": {"tool_count": len(recent_tool_results)},
+                        }
                         yield {"type": "content_delta", "delta": suffix}
-                yield {"type": "debug", "label": "assistant_message_complete", "data": assistant_message}
-                yield {"type": "assistant_done", "content": assistant_message["content"]}
+                yield {
+                    "type": "debug",
+                    "label": "assistant_message_complete",
+                    "data": assistant_message,
+                }
+                yield {
+                    "type": "assistant_done",
+                    "content": assistant_message["content"],
+                }
                 return
 
             for index, tool_call in enumerate(full_tool_calls):
                 name, arguments, tool_call_id = self._normalize_tool_call(
-                    tool_call, iteration, index)
+                    tool_call,
+                    iteration,
+                    index,
+                )
                 if not name:
                     result = "Error: received malformed tool call from model."
                     self.messages.append(
                         {
                             "role": "tool",
-                            "tool_name": "<invalid>",
+                            "name": "<invalid>",
                             "content": result,
                             "tool_call_id": tool_call_id,
                         }
                     )
                     recent_tool_results.append(
-                        {"name": "<invalid>", "arguments": {}, "result": result})
+                        {"name": "<invalid>", "arguments": {}, "result": result}
+                    )
                     yield {"type": "tool_result", "name": "<invalid>", "result": result}
                     continue
 
@@ -239,18 +303,23 @@ class Agent:
                 yield {
                     "type": "debug",
                     "label": "tool_execution",
-                    "data": {"name": name, "arguments": arguments, "result_preview": result[:1000]},
+                    "data": {
+                        "name": name,
+                        "arguments": arguments,
+                        "result_preview": result[:1000],
+                    },
                 }
                 self.messages.append(
                     {
                         "role": "tool",
-                        "tool_name": name,
+                        "name": name,
                         "content": result,
                         "tool_call_id": tool_call_id,
                     }
                 )
                 recent_tool_results.append(
-                    {"name": name, "arguments": arguments, "result": result})
+                    {"name": name, "arguments": arguments, "result": result}
+                )
                 self._trim_history()
                 yield {"type": "tool_result", "name": name, "result": result}
 

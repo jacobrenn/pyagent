@@ -6,8 +6,8 @@ Use this skill when changing `tools.py`, tool registration, or tool behavior exp
 
 - Prefer dedicated tools over shell workarounds.
 - Keep tools predictable and easy for models to use.
-- Preserve backward compatibility unless a breaking change is explicitly desired.
 - Keep tool output concise but informative.
+- Keep tool schemas portable across supported providers.
 
 ## Current tool categories
 
@@ -39,14 +39,14 @@ Examples:
 - filename discovery should use `find_files`
 - file edits should use `edit_file`
 
-### Backward compatibility matters
+### Provider portability matters
 
-`edit_file` currently supports both:
+Tool definitions are sent to both native Ollama and OpenAI-compatible endpoints.
+When changing tool schemas:
 
-- the newer `edits=[...]` shape
-- the older `old_text` / `new_text` shape
-
-Avoid removing compatibility unless the user asks for it.
+- keep them plain JSON-schema-like objects
+- avoid provider-specific assumptions in tool metadata
+- preserve stable argument names unless a breaking change is intended
 
 ## Shell safety guidance
 
