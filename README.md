@@ -74,7 +74,7 @@ If the current working directory contains `AGENTS.md`, `*.skill`, or files under
 PyAgent loads named profiles from JSON. By default it looks for:
 
 ```text
-~/pyagent/models.json
+~/.pyagent/models.json
 ```
 
 You can override the location with:

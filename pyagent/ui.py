@@ -19,8 +19,8 @@ from .model_profiles import ModelProfile, default_base_url_for_provider
 from .project_context import load_project_context
 
 
-PROMPT_INPUT_MIN_HEIGHT = 3
-PROMPT_INPUT_MAX_HEIGHT = 8
+PROMPT_INPUT_MIN_HEIGHT = 8
+PROMPT_INPUT_MAX_HEIGHT = 20
 
 
 def _truncate(text: str, max_chars: int = 500) -> str:
@@ -136,8 +136,8 @@ class PyAgentApp(App):
     }
 
     #app-shell {
-        width: 90%;
-        max-width: 120;
+        width: 95%;
+        max-width: 100%;
         height: 1fr;
         min-height: 24;
     }
@@ -161,7 +161,7 @@ class PyAgentApp(App):
     }
 
     #user-input {
-        height: 3;
+        height: 5;   # matches the new minimum height
         margin-top: 1;
         border: round #3d4f6b;
     }
