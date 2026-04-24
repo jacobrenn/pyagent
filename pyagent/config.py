@@ -38,9 +38,7 @@ class AppConfig:
     bash_timeout_default: int = 60
     bash_blocked_substrings: tuple[str, ...] = (
         "sudo ",
-        " rm ",
         "rm -",
-        " mv ",
         "chmod ",
         "chown ",
         "shutdown",
