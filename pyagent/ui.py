@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 from difflib import get_close_matches
+import re
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -30,6 +31,9 @@ def _truncate(text: str, max_chars: int = 500) -> str:
 
 
 class ChatMessage(Vertical):
+    CODE_BLOCK_PATTERN = re.compile(r"```(?:[^\n]*)\n(.*?)```", re.DOTALL)
+    LONG_CODE_LINE_LIMIT = 120
+
     def __init__(
         self,
         role: str,
@@ -43,9 +47,11 @@ class ChatMessage(Vertical):
         self.finalized = finalized
         self.render_mode = render_mode
         self._label = Label(self._label_text(), classes=f"role-label {role}")
-        self._stream_widget = Static(
+        self._stream_widget = Label(
             content, markup=False, classes="stream-content")
         self._markdown_widget = Markdown(content, classes="markdown-content")
+        self._plain_text_widget = Label(
+            content, markup=False, classes="plain-text-content")
 
     def _label_text(self) -> str:
         names = {
@@ -56,19 +62,31 @@ class ChatMessage(Vertical):
         }
         return names.get(self.role, self.role.title())
 
+    def _has_long_code_block_line(self) -> bool:
+        for match in self.CODE_BLOCK_PATTERN.finditer(self.content):
+            code = match.group(1)
+            if any(len(line) > self.LONG_CODE_LINE_LIMIT for line in code.splitlines()):
+                return True
+        return False
+
     def compose(self) -> ComposeResult:
         yield self._label
         yield self._stream_widget
         yield self._markdown_widget
+        yield self._plain_text_widget
 
     def on_mount(self) -> None:
         self._sync_mode()
 
     def _sync_mode(self) -> None:
         use_markdown = self.render_mode == "markdown"
-        self._stream_widget.display = (not self.finalized) or not use_markdown
-        self._markdown_widget.display = self.finalized and use_markdown
-        if self.finalized and use_markdown:
+        use_plain_text = self.finalized and use_markdown and self._has_long_code_block_line()
+        self._stream_widget.display = ((not self.finalized) or not use_markdown) and not use_plain_text
+        self._markdown_widget.display = self.finalized and use_markdown and not use_plain_text
+        self._plain_text_widget.display = use_plain_text
+        if use_plain_text:
+            self._plain_text_widget.update(self.content)
+        elif self.finalized and use_markdown:
             self._markdown_widget.update(self.content)
         else:
             self._stream_widget.update(self.content)
@@ -219,9 +237,11 @@ class PyAgentApp(App):
     }
 
     .stream-content,
-    .markdown-content {
+    .markdown-content,
+    .plain-text-content {
         width: 1fr;
         height: auto;
+        overflow-x: hidden;
     }
     """
 

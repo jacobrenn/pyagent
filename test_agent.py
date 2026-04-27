@@ -25,7 +25,7 @@ from pyagent.tools import (
     list_files,
     search_text,
 )
-from pyagent.ui import PyAgentApp
+from pyagent.ui import ChatMessage, PyAgentApp
 
 
 class DummyClient:
@@ -323,6 +323,15 @@ class AgentTests(unittest.TestCase):
 
 
 class UiCommandTests(unittest.TestCase):
+    def test_chat_message_detects_long_lines_in_fenced_code_blocks(self) -> None:
+        message = ChatMessage(
+            "assistant",
+            "Here is code:\n\n```python\n" + ("x" * 200) + "\n```",
+            finalized=True,
+        )
+
+        self.assertTrue(message._has_long_code_block_line())
+
     def test_unknown_command_suggests_close_match(self) -> None:
         app = PyAgentApp()
 

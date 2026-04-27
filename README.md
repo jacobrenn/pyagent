@@ -5,7 +5,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 ## Features
 
 - **Streaming chat UI** built with Textual
-- **Markdown rendering** for final assistant and tool messages
+- **Markdown rendering** for final assistant and tool messages, with a plain-text fallback for fenced code blocks that contain very long lines so transcript content does not get clipped
 - **Tool use** for shell commands, file search/text search, file reads/writes/appends/edits, listing files, and calculation
 - **Optional text-only mode** by disabling all model tool calling for a session
 - **Provider support** for:
