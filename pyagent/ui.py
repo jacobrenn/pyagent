@@ -81,7 +81,8 @@ class ChatMessage(Vertical):
     def _sync_mode(self) -> None:
         use_markdown = self.render_mode == "markdown"
         use_plain_text = self.finalized and use_markdown and self._has_long_code_block_line()
-        self._stream_widget.display = ((not self.finalized) or not use_markdown) and not use_plain_text
+        self._stream_widget.display = (
+            (not self.finalized) or not use_markdown) and not use_plain_text
         self._markdown_widget.display = self.finalized and use_markdown and not use_plain_text
         self._plain_text_widget.display = use_plain_text
         if use_plain_text:

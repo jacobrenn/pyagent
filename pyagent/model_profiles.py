@@ -132,7 +132,8 @@ def _store_from_json(path: str, payload: dict[str, Any]) -> ProfileStore:
 
 def _env_profile() -> ModelProfile:
     provider = normalize_provider(os.getenv("PYAGENT_PROVIDER", "ollama"))
-    model = os.getenv("PYAGENT_MODEL", "gemma4:latest").strip() or "gemma4:latest"
+    model = os.getenv(
+        "PYAGENT_MODEL", "gemma4:latest").strip() or "gemma4:latest"
     default_base_url = default_base_url_for_provider(provider)
     return ModelProfile(
         name="default",
