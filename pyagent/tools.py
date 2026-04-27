@@ -269,7 +269,7 @@ def read_file(path: str, start_line: int = 1, end_line: int | None = None) -> st
     numbered = [f"{start_index + index + 1}: {line.rstrip()}" for index,
                 line in enumerate(selected)]
     content = "\n".join(numbered)
-    return _truncate(content if content else "<empty>")
+    return content if content else "<empty>"
 
 
 def write_file(path: str, content: str) -> str:
