@@ -39,8 +39,6 @@ class AppConfig:
     bash_blocked_substrings: tuple[str, ...] = (
         "sudo ",
         "rm -",
-        "chmod ",
-        "chown ",
         "shutdown",
         "reboot",
         "mkfs",
