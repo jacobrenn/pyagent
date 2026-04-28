@@ -86,7 +86,7 @@ In `pyagent/agent.py`:
 
 - The model may stop after a tool call with an incomplete answer.
 - Preserve the existing fallback behavior that appends tool output when needed.
-- If changing message history or system prompt composition, make sure project context still gets applied after reset.
+- If changing message history or system prompt composition (which now includes loading from a configurable file), make sure project context still gets applied after reset.
 - Keep provider-specific request/stream formatting out of the core loop when possible.
 
 ## Model/profile conventions
