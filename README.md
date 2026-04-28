@@ -203,6 +203,7 @@ Environment variables:
 
 - `PYAGENT_PROFILE` — default profile name to select
 - `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/pyagent/models.json` location
+- `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding the default `~/.pyagent/system_prompt.txt` location
 - `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
 - `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn (`-1` means infinite)
 - `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep

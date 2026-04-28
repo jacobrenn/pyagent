@@ -292,6 +292,12 @@ class PyAgentApp(App):
             ),
             finalized=True,
         )
+        if self.agent.prompt_file_created:
+            self._add_message(
+                "system",
+                f"Default system prompt has been created at `{self.agent.prompt_file_path}`. You can edit this file to customize the agent's personality.",
+                finalized=True,
+            )
         if self.project_context_files:
             loaded_files = "\n".join(
                 f"- `{path}`" for path in self.project_context_files)

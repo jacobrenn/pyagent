@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import json
 from typing import Any
 
@@ -30,11 +31,39 @@ class Agent:
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.project_context = project_context.strip()
         self.project_context_files = list(project_context_files or [])
+        self.prompt_file_created = False
+        self.prompt_file_path = None
+        
+        created, path = self._ensure_system_prompt_file()
+        if created:
+            self.prompt_file_created = True
+            self.prompt_file_path = path
+            
         self._rebuild_client()
         self.reset()
 
+    def _ensure_system_prompt_file(self) -> tuple[bool, str | None]:
+        path = self.config.system_prompt_path
+        if os.path.exists(path):
+            return False, None
+        
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(SYSTEM_PROMPT)
+            return True, path
+        except (IOError, OSError) as exc:
+            return False, str(exc)
+
     def _system_prompt(self) -> str:
-        prompt = SYSTEM_PROMPT
+        try:
+            with open(self.config.system_prompt_path, "r", encoding="utf-8") as f:
+                prompt = f.read().strip()
+            if not prompt:
+                prompt = SYSTEM_PROMPT
+        except (FileNotFoundError, IOError):
+            prompt = SYSTEM_PROMPT
+
         if not self.config.tools_enabled:
             prompt += (
                 "\n\nTool calling is disabled for this session. Do not call tools. "

@@ -13,6 +13,10 @@ def _default_profiles_path() -> str:
     return str(Path.home() / ".pyagent" / "models.json")
 
 
+def _default_system_prompt_path() -> str:
+    return str(Path.home() / ".pyagent" / "system_prompt.txt")
+
+
 SYSTEM_PROMPT = (
     "You are PyAgent, a capable coding assistant operating in a tool-use loop. You have access to tools to "
     "inspect the file system, search for files and text, read and write files, append to files, edit "
@@ -32,6 +36,7 @@ class AppConfig:
     stream_batch_interval: float = 0.05
     default_profile: str | None = None
     model_profiles_path: str = _default_profiles_path()
+    system_prompt_path: str = _default_system_prompt_path()
     tools_enabled: bool = True
     bash_enabled: bool = True
     bash_readonly_mode: bool = False
@@ -88,6 +93,10 @@ class AppConfig:
             model_profiles_path=os.getenv(
                 "PYAGENT_MODEL_PROFILES_PATH",
                 defaults.model_profiles_path,
+            ),
+            system_prompt_path=os.getenv(
+                "PYAGENT_SYSTEM_PROMPT_PATH",
+                defaults.system_prompt_path,
             ),
             tools_enabled=os.getenv("PYAGENT_TOOLS_ENABLED", str(
                 defaults.tools_enabled)).lower()
