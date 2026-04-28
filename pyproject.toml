@@ -17,5 +17,5 @@ dependencies = [
 [project.scripts]
 PyAgent = "pyagent.main:main"
 
-[tool.setuptools]
-packages = ["pyagent"]
+[tool.setuptools.packages.find]
+include = ["pyagent*"]

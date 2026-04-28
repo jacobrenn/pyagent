@@ -1197,6 +1197,12 @@ class UserGlobalContextTests(unittest.TestCase):
         self.assertTrue(any(label.startswith("~/.pyagent/") for label in files))
 
 
+class PackagingTests(unittest.TestCase):
+    def test_pyproject_includes_pyagent_subpackages(self) -> None:
+        pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('include = ["pyagent*"]', pyproject)
+
+
 class ScaffoldTests(unittest.TestCase):
     def test_create_user_tool_writes_compilable_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
