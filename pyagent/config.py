@@ -4,6 +4,14 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 
+from .user_runtime import (
+    DEFAULT_TOOL_RUNNER,
+    DEFAULT_USER_DIR,
+    TOOL_RUNNER_ENV_VAR,
+    USER_DIR_ENV_VAR,
+    resolve_user_dir,
+)
+
 
 def _parse_csv_env(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
@@ -11,6 +19,10 @@ def _parse_csv_env(value: str) -> tuple[str, ...]:
 
 def _default_profiles_path() -> str:
     return str(Path.home() / ".pyagent" / "models.json")
+
+
+def _default_user_dir() -> str:
+    return str(resolve_user_dir())
 
 
 SYSTEM_PROMPT = (
@@ -59,6 +71,11 @@ class AppConfig:
         "wc",
         "which",
     )
+    user_dir: str = DEFAULT_USER_DIR
+    user_tools_enabled: bool = True
+    user_tool_timeout: float = 60.0
+    user_tool_describe_timeout: float = 10.0
+    tool_runner: str = DEFAULT_TOOL_RUNNER
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -117,4 +134,23 @@ class AppConfig:
                     ",".join(defaults.bash_readonly_prefixes),
                 )
             ),
+            user_dir=os.getenv(USER_DIR_ENV_VAR, defaults.user_dir),
+            user_tools_enabled=os.getenv(
+                "PYAGENT_USER_TOOLS_ENABLED",
+                str(defaults.user_tools_enabled),
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            user_tool_timeout=float(
+                os.getenv(
+                    "PYAGENT_USER_TOOL_TIMEOUT",
+                    str(defaults.user_tool_timeout),
+                )
+            ),
+            user_tool_describe_timeout=float(
+                os.getenv(
+                    "PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT",
+                    str(defaults.user_tool_describe_timeout),
+                )
+            ),
+            tool_runner=os.getenv(TOOL_RUNNER_ENV_VAR, defaults.tool_runner),
         )

@@ -21,10 +21,14 @@ Core files:
 - `pyagent/ui.py` — Textual app, transcript rendering, prompt input, slash commands, prompt history/search, context inspection, scroll behavior
 - `pyagent/agent.py` — agent loop, tool-call handling, provider switching, fallback behavior after tool results
 - `pyagent/tools.py` — tool registry plus built-in tools
+- `pyagent/external_tools.py` — discovery, schema cache, and subprocess execution for user-managed tools under `~/.pyagent/tools/`
+- `pyagent/scaffold.py` + `pyagent/templates/tool_template.py` — `/tools new` scaffolding
+- `pyagent/user_runtime.py` — single source of truth for `~/.pyagent/` paths and runner availability
 - `pyagent/config.py` — environment-driven runtime config and system prompt
 - `pyagent/model_profiles.py` — loads saved model profiles from JSON and env fallback
 - `pyagent/llm_client.py` — provider-specific clients and streaming normalization
-- `pyagent/project_context.py` — loads `AGENTS.md` / skill files into project context
+- `pyagent/project_context.py` — loads user-global (`~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`) and project-local (`AGENTS.md`, `skills/**`, `*.skill`) instructions into the system prompt
+- `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`
 - `test_agent.py` — unit tests
 
 ## Development priorities
@@ -46,6 +50,12 @@ If implementing agent-facing capabilities, prefer:
 - search tools over shell grep
 - file editing tools over raw shell edits
 - config-driven behavior over hard-coded toggles
+
+### Built-in vs user-managed tools
+
+Built-in tools live in `pyagent/tools.py`. They are stable, in-process, and ship with the core install.
+
+User-supplied tools belong under `~/.pyagent/tools/` as standalone UV scripts (PEP 723 + click) and should **not** be added to `pyagent/tools.py`. Discovery and execution live in `pyagent/external_tools.py`. The contract is `uv run <script> describe` and `uv run <script> invoke --args-file <path>`. See `README.md` ("Custom tools and skills") and `skills/tools.md` for the full layout and contract. Built-ins always win on name collisions; `/tools` reports the conflict.
 
 ### Shell safety
 
@@ -89,18 +99,23 @@ In `pyagent/agent.py`:
 
 ## Project-context loading
 
-This repo auto-loads project instructions from:
+This repo auto-loads agent instructions from two layered sources:
 
-- `AGENTS.md`
-- `*.skill`
-- `skills/**/*.md`
-- `skills/**/*.skill`
+- **User-global** (loaded first):
+  - `~/.pyagent/AGENTS.md`
+  - `~/.pyagent/skills/**/*.md`
+  - `~/.pyagent/skills/**/*.skill`
+- **Project-local** (loaded next, layered on top):
+  - `AGENTS.md`
+  - `*.skill`
+  - `skills/**/*.md`
+  - `skills/**/*.skill`
 
 If you change that behavior:
 
-- keep limits on prompt/context size
+- keep limits on prompt/context size (per-section budgets must stay)
 - keep startup loading transparent in the UI
-- preserve `/reload_context` and `/context`
+- preserve `/reload_context` and `/context`, including the global-vs-project labelling
 - update tests and docs
 
 ## Testing requirements
@@ -122,10 +137,11 @@ Examples:
 
 - new slash commands
 - changed slash-command output or suggestions
-- new tools or tool semantics
-- new env vars
+- new tools or tool semantics (built-in or external)
+- new env vars (including `PYAGENT_USER_DIR`, `PYAGENT_USER_TOOLS_ENABLED`, `PYAGENT_USER_TOOL_TIMEOUT`, `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT`, `PYAGENT_TOOL_RUNNER`)
 - changed keybindings
-- project-context loading behavior
+- project-context loading behavior or user-global skills
+- external tool contract / UV-script schema
 - provider/profile configuration
 - profile reload or in-TUI profile editing behavior
 
@@ -149,6 +165,7 @@ Changes in these areas are generally welcome if requested:
 - cleaner UI rendering
 - stronger tests
 - better project-context loading
+- richer user-extension layer (template improvements, additional reference tools under `examples/tools/`)
 
 ## Avoid
 
@@ -157,3 +174,5 @@ Changes in these areas are generally welcome if requested:
 - breaking current slash commands / keybindings silently
 - replacing dedicated tools with shell-only logic
 - removing tests to make refactors easier
+- adding user-managed tools to `pyagent/tools.py` instead of the persistent `~/.pyagent/tools/` layer
+- pulling heavy optional dependencies into the core install when they belong in a per-tool PEP 723 block

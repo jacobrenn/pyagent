@@ -4,6 +4,12 @@ import json
 from typing import Any
 
 from .config import AppConfig, SYSTEM_PROMPT
+from .external_tools import (
+    DiscoveryResult,
+    build_external_tool_specs,
+    default_runner_command,
+    discover_external_tools,
+)
 from .llm_client import build_chat_client
 from .model_profiles import ModelProfile, ProfileStore, load_profile_store, save_profile_store, update_profile_store
 from .tools import ToolRegistry, create_default_tool_registry
@@ -18,6 +24,7 @@ class Agent:
         tool_registry: ToolRegistry | None = None,
         project_context: str = "",
         project_context_files: list[str] | None = None,
+        external_tool_discovery: DiscoveryResult | None = None,
     ):
         self.config = config or AppConfig.from_env()
         self.profile_store: ProfileStore = load_profile_store(
@@ -25,13 +32,62 @@ class Agent:
         )
         self.active_profile_name = profile or self.config.default_profile or self.profile_store.default_profile
         self.model_override = model.strip() if model else None
-        self.tool_registry = tool_registry or create_default_tool_registry(
-            self.config)
+        self.external_tool_discovery: DiscoveryResult | None = external_tool_discovery
+        if tool_registry is None:
+            self.external_tool_discovery = (
+                external_tool_discovery
+                if external_tool_discovery is not None
+                else self._discover_external_tools()
+            )
+            self.tool_registry = create_default_tool_registry(
+                self.config,
+                external_specs=self._external_specs_from_discovery(self.external_tool_discovery),
+            )
+        else:
+            self.tool_registry = tool_registry
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.project_context = project_context.strip()
         self.project_context_files = list(project_context_files or [])
         self._rebuild_client()
         self.reset()
+
+    def _discover_external_tools(self) -> DiscoveryResult | None:
+        if not self.config.user_tools_enabled:
+            return None
+        try:
+            return discover_external_tools(
+                user_dir=self.config.user_dir,
+                runner=self.config.tool_runner,
+                describe_timeout=self.config.user_tool_describe_timeout,
+            )
+        except Exception:
+            return None
+
+    def _external_specs_from_discovery(self, discovery: DiscoveryResult | None):
+        if discovery is None:
+            return None
+        return build_external_tool_specs(
+            discovery,
+            invoke_timeout=self.config.user_tool_timeout,
+            runner_command=default_runner_command(discovery.runner),
+        )
+
+    def reload_external_tools(self) -> DiscoveryResult | None:
+        """Re-scan ``~/.pyagent/tools/`` and rebuild the tool registry.
+
+        Tool calling state is preserved (`tools_enabled`, system prompt
+        composition); only the registry contents change. The conversation
+        is reset so the model sees a clean tool surface.
+        """
+        discovery = self._discover_external_tools()
+        self.external_tool_discovery = discovery
+        self.tool_registry = create_default_tool_registry(
+            self.config,
+            external_specs=self._external_specs_from_discovery(discovery),
+        )
+        self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
+        self.reset()
+        return discovery
 
     def _system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT

@@ -20,6 +20,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
 - **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
 - **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup, with `/context` and `/reload_context` for inspection and refresh
+- **Persistent custom tools and skills** under `~/.pyagent/` that survive `pip install --upgrade`. Each user-managed tool is a standalone UV script (PEP 723) with click subcommands, so adding a new tool with new dependencies never touches the core install
 
 ## Requirements
 
@@ -154,9 +155,14 @@ When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the mode
 
 ## Runtime slash commands
 
-- `/tools` — show current tool status and available tool definitions
+- `/tools` — show current tool status, built-in tools, external user tools, and any broken/disabled scripts
 - `/tools on` — enable model tool calling for the current session
 - `/tools off` — disable model tool calling for the current session
+- `/tools reload` — re-scan `~/.pyagent/tools/` and rebuild the tool registry (also available as `/reload_tools`)
+- `/tools new <name>` — scaffold a starter UV-script tool at `~/.pyagent/tools/<name>.py`
+- `/tools enable <name>` — move a script out of `~/.pyagent/tools/disabled/`
+- `/tools disable <name>` — move a script into `~/.pyagent/tools/disabled/`
+- `/tools open <name>` — print the absolute path to a tool script
 
 Changing tool mode at runtime resets the current conversation so the updated system prompt is applied cleanly.
 
@@ -177,9 +183,9 @@ Changing tool mode at runtime resets the current conversation so the updated sys
 - `/cwd` — show current working directory
 - `/history` — show recent prompt history
 - `/history search <text>` — search saved prompt history for matching prompts
-- `/context` — show loaded project instruction files and context size
+- `/context` — show loaded user-global and project instruction files and context size
 - `/prompt` — show the active system prompt
-- `/reload_context` — reload `AGENTS.md` and local skill files and report added or removed files
+- `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files and report added/removed files
 - `/debug on|off` — show or hide the debug pane
 
 Unknown slash commands may suggest a close match, for example `/stats` may suggest `/status`.
@@ -212,6 +218,11 @@ Environment variables:
 - `PYAGENT_BASH_TIMEOUT_DEFAULT` — default bash timeout in seconds
 - `PYAGENT_BASH_BLOCKED_SUBSTRINGS` — comma-separated dangerous bash fragments to block
 - `PYAGENT_BASH_READONLY_PREFIXES` — comma-separated allowed prefixes in read-only mode
+- `PYAGENT_USER_DIR` — root for user-managed tools, skills, and `models.json` (default `~/.pyagent`)
+- `PYAGENT_USER_TOOLS_ENABLED` — discover and register external tools under `~/.pyagent/tools/` (`true` by default)
+- `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation (default `60`)
+- `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch (default `10`)
+- `PYAGENT_TOOL_RUNNER` — runner used to execute external tools (`uv` only for now)
 
 Fallback profile env vars when no profile file exists:
 
@@ -220,6 +231,105 @@ Fallback profile env vars when no profile file exists:
 - `PYAGENT_BASE_URL`
 - `PYAGENT_API_KEY`
 - `PYAGENT_API_KEY_ENV`
+
+## Custom tools and skills
+
+Anything you add for yourself — custom tools, custom skills, custom `AGENTS.md` instructions — should live under `~/.pyagent/` so a `pip install --upgrade` of PyAgent does not wipe it out. Built-in tools (`bash`, `list_files`, `find_files`, `search_text`, `read_file`, `write_file`, `append_file`, `edit_file`, `calculator`) stay inside the package; user tools layer on top.
+
+### Layout
+
+```text
+~/.pyagent/
+├── models.json                      # named model profiles (existing)
+├── AGENTS.md                        # optional user-global agent instructions
+├── skills/                          # user-global skills (*.md, *.skill)
+└── tools/                           # user tools (one UV script per tool)
+    ├── <my_tool>.py
+    ├── disabled/                    # listed in /tools but not registered
+    └── .cache/manifests.json        # auto schema cache (path+mtime+size keyed)
+```
+
+### Custom tools (UV scripts with click subcommands)
+
+Each user tool is a single self-contained Python file. PyAgent runs it through [`uv`](https://docs.astral.sh/uv/) so its dependencies are declared inline (PEP 723) and installed into an isolated venv on first invocation. The core PyAgent install never grows when you add a new tool.
+
+Every tool must implement two CLI subcommands:
+
+- `uv run <script> describe` — print a JSON manifest with `name`, `description`, `parameters` (a JSON-Schema-shaped object), and an optional `version`. The output is cached by path + mtime + size, so subsequent startups skip the subprocess.
+- `uv run <script> invoke --args-file <path>` — read the tool arguments as a JSON object from `<path>`, print the result to stdout, and exit non-zero with an error on stderr if anything goes wrong.
+
+Use `/tools new <name>` from inside PyAgent to scaffold a starter file, or write one by hand. Skeleton:
+
+```python
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["click", "huggingface_hub", "datasets"]
+# ///
+import json
+import sys
+from pathlib import Path
+import click
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
+def describe():
+    click.echo(json.dumps({
+        "name": "my_tool",
+        "description": "What this tool does — sent verbatim to the model.",
+        "parameters": {
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"],
+        },
+        "version": "1",
+    }))
+
+
+@cli.command()
+@click.option("--args-file", required=True, type=click.Path(exists=True, path_type=Path))
+def invoke(args_file):
+    args = json.loads(args_file.read_text())
+    click.echo(my_logic(**args))
+
+
+if __name__ == "__main__":
+    cli()
+```
+
+### Reference example: `search_hf_datasets`
+
+`examples/tools/search_hf_datasets.py` is a fully fleshed-out reference tool (Hugging Face dataset search) using the same contract. To install it for yourself:
+
+```bash
+mkdir -p ~/.pyagent/tools
+cp examples/tools/search_hf_datasets.py ~/.pyagent/tools/
+```
+
+Then inside PyAgent run `/tools reload`. UV will install `huggingface_hub` and `datasets` on first invocation, into the script's own venv — your PyAgent install stays lean.
+
+### Lifecycle
+
+- New / changed scripts: `/tools reload` re-scans the directory and rebuilds the registry. The schema cache invalidates automatically when the file's path, mtime, or size changes.
+- Temporarily turn a tool off: `/tools disable <name>` moves it to `~/.pyagent/tools/disabled/` (still listed in `/tools`, not registered).
+- Re-enable: `/tools enable <name>`.
+- Locate a script: `/tools open <name>` prints the absolute path.
+- Name collisions: built-ins always win. If your script's `name` collides with a built-in, `/tools` shows a warning row with the colliding script path so you can rename it.
+- Bad scripts (timeout, non-zero `describe`, malformed JSON) are listed under "Broken external tools" and skipped; healthy tools keep loading.
+- Missing `uv`: external tools are disabled at startup with a clear banner; built-ins continue to work.
+
+### Custom skills and `AGENTS.md`
+
+`~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**/*.md`, and `~/.pyagent/skills/**/*.skill` are loaded into the system prompt at startup as **user-global** instructions, layered before any project-specific `AGENTS.md` or `skills/` files in the current working directory. `/context` lists each source with its scope, and `/reload_context` re-scans both layers.
+
+### Trust boundary
+
+`~/.pyagent/tools/` is user-owned. PyAgent enforces wall-clock timeouts (`PYAGENT_USER_TOOL_TIMEOUT`, `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT`) but does not otherwise sandbox these scripts. Treat any tool you drop into `~/.pyagent/tools/` the same as you would any code you choose to run.
 
 ## Quick CLI smoke test
 
