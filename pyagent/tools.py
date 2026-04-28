@@ -12,6 +12,9 @@ from .config import AppConfig
 
 MAX_TOOL_OUTPUT_CHARS = 12_000
 
+BUILTIN_ORIGIN = "builtin"
+EXTERNAL_ORIGIN = "external"
+
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
@@ -31,9 +34,45 @@ class ToolSpec:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CollisionInfo:
+    name: str
+    builtin_origin: str
+    external_path: str | None
+
+
 class ToolRegistry:
-    def __init__(self, specs: list[ToolSpec]):
-        self._specs = {spec.name: spec for spec in specs}
+    def __init__(
+        self,
+        builtin_specs: list[ToolSpec],
+        external_specs: list[ToolSpec] | None = None,
+    ):
+        self._specs: dict[str, ToolSpec] = {}
+        self._origins: dict[str, str] = {}
+        self._sources: dict[str, str | None] = {}
+        self._collisions: list[CollisionInfo] = []
+
+        for spec in builtin_specs:
+            self._specs[spec.name] = spec
+            self._origins[spec.name] = BUILTIN_ORIGIN
+            self._sources[spec.name] = None
+
+        for spec in external_specs or []:
+            handler = spec.handler
+            external_path = getattr(handler, "script_path", None)
+            external_path_str = str(external_path) if external_path is not None else None
+            if spec.name in self._specs and self._origins[spec.name] == BUILTIN_ORIGIN:
+                self._collisions.append(
+                    CollisionInfo(
+                        name=spec.name,
+                        builtin_origin=BUILTIN_ORIGIN,
+                        external_path=external_path_str,
+                    )
+                )
+                continue
+            self._specs[spec.name] = spec
+            self._origins[spec.name] = EXTERNAL_ORIGIN
+            self._sources[spec.name] = external_path_str
 
     def definitions(self) -> list[dict[str, Any]]:
         return [spec.definition() for spec in self._specs.values()]
@@ -43,6 +82,18 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return list(self._specs)
+
+    def origin(self, name: str) -> str | None:
+        return self._origins.get(name)
+
+    def source(self, name: str) -> str | None:
+        return self._sources.get(name)
+
+    def names_by_origin(self, origin: str) -> list[str]:
+        return [name for name, item_origin in self._origins.items() if item_origin == origin]
+
+    def collisions(self) -> list[CollisionInfo]:
+        return list(self._collisions)
 
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
         if name not in self._specs:
@@ -391,198 +442,205 @@ def calculator(num1: str | float, num2: str | float, operation: str) -> str:
     return f"Operation '{operation}' not supported"
 
 
-def create_default_tool_registry(config: AppConfig | None = None) -> ToolRegistry:
-    runtime_config = config or AppConfig.from_env()
-
+def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
     def bash_handler(command: str, timeout: int | None = None) -> str:
-        return bash(command=command, timeout=timeout, config=runtime_config)
+        return bash(command=command, timeout=timeout, config=config)
 
-    return ToolRegistry(
-        [
-            ToolSpec(
-                name="bash",
-                description=(
-                    "Execute a bash command in the current working directory. This tool may be restricted "
-                    "by safety policy or read-only mode."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "The bash command to run."},
-                        "timeout": {
-                            "type": ["integer", "null"],
-                            "description": "Optional timeout in seconds.",
-                            "default": runtime_config.bash_timeout_default,
-                        },
-                    },
-                    "required": ["command"],
-                },
-                handler=bash_handler,
+    return [
+        ToolSpec(
+            name="bash",
+            description=(
+                "Execute a bash command in the current working directory. This tool may be restricted "
+                "by safety policy or read-only mode."
             ),
-            ToolSpec(
-                name="list_files",
-                description="List files and folders under a path up to a limited depth.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "The path to inspect.", "default": "."},
-                        "max_depth": {
-                            "type": "integer",
-                            "description": "Maximum directory depth to descend.",
-                            "default": 2,
-                        },
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The bash command to run."},
+                    "timeout": {
+                        "type": ["integer", "null"],
+                        "description": "Optional timeout in seconds.",
+                        "default": config.bash_timeout_default,
                     },
                 },
-                handler=list_files,
-            ),
-            ToolSpec(
-                name="find_files",
-                description="Find files by substring or glob-style pattern.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Substring or glob-style filename query."},
-                        "path": {"type": "string", "description": "Base path to search.", "default": "."},
-                        "max_results": {
-                            "type": "integer",
-                            "description": "Maximum number of matching paths to return.",
-                            "default": 100,
-                        },
+                "required": ["command"],
+            },
+            handler=bash_handler,
+        ),
+        ToolSpec(
+            name="list_files",
+            description="List files and folders under a path up to a limited depth.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The path to inspect.", "default": "."},
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum directory depth to descend.",
+                        "default": 2,
                     },
-                    "required": ["query"],
                 },
-                handler=find_files,
-            ),
-            ToolSpec(
-                name="search_text",
-                description="Search for text inside files and return matching lines with paths and line numbers.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Text to search for."},
-                        "path": {"type": "string", "description": "Base path to search.", "default": "."},
-                        "glob": {
-                            "type": "string",
-                            "description": "Optional glob filter for filenames.",
-                            "default": "*",
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "Maximum number of matching lines to return.",
-                            "default": 50,
-                        },
+            },
+            handler=list_files,
+        ),
+        ToolSpec(
+            name="find_files",
+            description="Find files by substring or glob-style pattern.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Substring or glob-style filename query."},
+                    "path": {"type": "string", "description": "Base path to search.", "default": "."},
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of matching paths to return.",
+                        "default": 100,
                     },
-                    "required": ["query"],
                 },
-                handler=search_text,
-            ),
-            ToolSpec(
-                name="read_file",
-                description="Read the contents of a text file, optionally limited by line range.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "The path to the file."},
-                        "start_line": {
-                            "type": "integer",
-                            "description": "The first 1-based line number to read.",
-                            "default": 1,
-                        },
-                        "end_line": {
-                            "type": ["integer", "null"],
-                            "description": "Optional last line number (inclusive-style slice endpoint).",
-                            "default": None,
-                        },
+                "required": ["query"],
+            },
+            handler=find_files,
+        ),
+        ToolSpec(
+            name="search_text",
+            description="Search for text inside files and return matching lines with paths and line numbers.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Text to search for."},
+                    "path": {"type": "string", "description": "Base path to search.", "default": "."},
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional glob filter for filenames.",
+                        "default": "*",
                     },
-                    "required": ["path"],
-                },
-                handler=read_file,
-            ),
-            ToolSpec(
-                name="write_file",
-                description="Write content to a file, overwriting it if it already exists.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "The path to the file."},
-                        "content": {"type": "string", "description": "The content to write."},
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of matching lines to return.",
+                        "default": 50,
                     },
-                    "required": ["path", "content"],
                 },
-                handler=write_file,
-            ),
-            ToolSpec(
-                name="append_file",
-                description="Append content to the end of a file, creating it if needed.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "The path to the file."},
-                        "content": {"type": "string", "description": "The content to append."},
+                "required": ["query"],
+            },
+            handler=search_text,
+        ),
+        ToolSpec(
+            name="read_file",
+            description="Read the contents of a text file, optionally limited by line range.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The path to the file."},
+                    "start_line": {
+                        "type": "integer",
+                        "description": "The first 1-based line number to read.",
+                        "default": 1,
                     },
-                    "required": ["path", "content"],
+                    "end_line": {
+                        "type": ["integer", "null"],
+                        "description": "Optional last line number (inclusive-style slice endpoint).",
+                        "default": None,
+                    },
                 },
-                handler=append_file,
+                "required": ["path"],
+            },
+            handler=read_file,
+        ),
+        ToolSpec(
+            name="write_file",
+            description="Write content to a file, overwriting it if it already exists.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The path to the file."},
+                    "content": {"type": "string", "description": "The content to write."},
+                },
+                "required": ["path", "content"],
+            },
+            handler=write_file,
+        ),
+        ToolSpec(
+            name="append_file",
+            description="Append content to the end of a file, creating it if needed.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The path to the file."},
+                    "content": {"type": "string", "description": "The content to append."},
+                },
+                "required": ["path", "content"],
+            },
+            handler=append_file,
+        ),
+        ToolSpec(
+            name="edit_file",
+            description=(
+                "Replace one or more unique exact text blocks in a file. Prefer the edits array for multiple "
+                "replacements; old_text/new_text is also supported for compatibility."
             ),
-            ToolSpec(
-                name="edit_file",
-                description=(
-                    "Replace one or more unique exact text blocks in a file. Prefer the edits array for multiple "
-                    "replacements; old_text/new_text is also supported for compatibility."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "The path to the file."},
-                        "edits": {
-                            "type": "array",
-                            "description": "List of exact text replacements to apply.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "old_text": {
-                                        "type": "string",
-                                        "description": "The exact existing text to replace. It must be unique.",
-                                    },
-                                    "new_text": {
-                                        "type": "string",
-                                        "description": "The replacement text.",
-                                    },
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The path to the file."},
+                    "edits": {
+                        "type": "array",
+                        "description": "List of exact text replacements to apply.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_text": {
+                                    "type": "string",
+                                    "description": "The exact existing text to replace. It must be unique.",
                                 },
-                                "required": ["old_text", "new_text"],
+                                "new_text": {
+                                    "type": "string",
+                                    "description": "The replacement text.",
+                                },
                             },
-                        },
-                        "old_text": {
-                            "type": "string",
-                            "description": "Single exact existing text block to replace.",
-                        },
-                        "new_text": {
-                            "type": "string",
-                            "description": "Replacement text for old_text.",
+                            "required": ["old_text", "new_text"],
                         },
                     },
-                    "required": ["path"],
-                },
-                handler=edit_file,
-            ),
-            ToolSpec(
-                name="calculator",
-                description="Run a simple arithmetic operation on two numbers.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "num1": {"type": "string", "description": "The first number."},
-                        "num2": {"type": "string", "description": "The second number."},
-                        "operation": {
-                            "type": "string",
-                            "description": "One of +, -, *, /, addition, subtraction, multiplication, division.",
-                        },
+                    "old_text": {
+                        "type": "string",
+                        "description": "Single exact existing text block to replace.",
                     },
-                    "required": ["num1", "num2", "operation"],
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text for old_text.",
+                    },
                 },
-                handler=calculator,
-            ),
-        ]
+                "required": ["path"],
+            },
+            handler=edit_file,
+        ),
+        ToolSpec(
+            name="calculator",
+            description="Run a simple arithmetic operation on two numbers.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "num1": {"type": "string", "description": "The first number."},
+                    "num2": {"type": "string", "description": "The second number."},
+                    "operation": {
+                        "type": "string",
+                        "description": "One of +, -, *, /, addition, subtraction, multiplication, division.",
+                    },
+                },
+                "required": ["num1", "num2", "operation"],
+            },
+            handler=calculator,
+        ),
+    ]
+
+
+def create_default_tool_registry(
+    config: AppConfig | None = None,
+    external_specs: list[ToolSpec] | None = None,
+) -> ToolRegistry:
+    runtime_config = config or AppConfig.from_env()
+    return ToolRegistry(
+        builtin_specs=_default_builtin_specs(runtime_config),
+        external_specs=external_specs,
     )
 
 

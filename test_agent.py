@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
+import textwrap
+import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from pyagent.agent import Agent
 from pyagent.config import AppConfig
+from pyagent.external_tools import (
+    DEFAULT_DESCRIBE_TIMEOUT_SECONDS,
+    DEFAULT_INVOKE_TIMEOUT_SECONDS,
+    ExternalToolHandler,
+    build_external_tool_specs,
+    discover_external_tools,
+)
 from pyagent.llm_client import OpenAICompatibleClient, OllamaClient, build_chat_client
 from pyagent.model_profiles import (
     ModelProfile,
@@ -15,8 +27,19 @@ from pyagent.model_profiles import (
     save_profile_store,
     update_profile_store,
 )
-from pyagent.project_context import discover_project_instruction_files, load_project_context
+from pyagent.project_context import (
+    GLOBAL_SCOPE,
+    PROJECT_SCOPE,
+    discover_project_instruction_files,
+    discover_user_global_instruction_files,
+    load_full_context,
+    load_project_context,
+)
+from pyagent.scaffold import ScaffoldError, create_user_tool
 from pyagent.tools import (
+    BUILTIN_ORIGIN,
+    EXTERNAL_ORIGIN,
+    ToolSpec,
     append_file,
     bash,
     create_default_tool_registry,
@@ -26,6 +49,7 @@ from pyagent.tools import (
     search_text,
 )
 from pyagent.ui import ChatMessage, PyAgentApp
+from pyagent.user_runtime import RunnerStatus
 
 
 class DummyClient:
@@ -807,6 +831,527 @@ class ProjectContextTests(unittest.TestCase):
         self.assertIn("Always run tests after edits.", context)
         self.assertIn("Always run tests after edits.",
                       agent.messages[0]["content"])
+
+
+def _write_external_tool_script(
+    target_dir: Path,
+    name: str,
+    *,
+    body: str | None = None,
+    sleep_seconds: float = 0.0,
+    fail_describe: bool = False,
+    invalid_json: bool = False,
+) -> Path:
+    """Write a hand-parsed test tool script that mimics the external-tool contract."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    script_path = target_dir / f"{name}.py"
+    describe_payload = json.dumps(
+        {
+            "name": name,
+            "description": f"Test tool {name}",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Echo input"},
+                },
+                "required": ["text"],
+            },
+            "version": "1",
+        }
+    )
+    if invalid_json:
+        describe_output = "this-is-not-json"
+    else:
+        describe_output = describe_payload
+
+    script_template = textwrap.dedent(
+        f'''
+        import json
+        import sys
+        import time
+
+        SLEEP_SECONDS = {sleep_seconds!r}
+
+        def main():
+            if SLEEP_SECONDS:
+                time.sleep(SLEEP_SECONDS)
+
+            if len(sys.argv) < 2:
+                sys.exit(2)
+
+            command = sys.argv[1]
+            if command == "describe":
+                if {fail_describe!r}:
+                    print("describe error", file=sys.stderr)
+                    sys.exit(3)
+                print({describe_output!r})
+                return
+
+            if command == "invoke":
+                idx = sys.argv.index("--args-file")
+                path = sys.argv[idx + 1]
+                with open(path, "r", encoding="utf-8") as f:
+                    args = json.load(f)
+                print({body!r}.format(**args) if {body!r} else "echo:" + args.get("text", ""))
+                return
+
+            sys.exit(2)
+
+        if __name__ == "__main__":
+            main()
+        '''
+    ).lstrip()
+    script_path.write_text(script_template, encoding="utf-8")
+    return script_path
+
+
+def _python_runner_command() -> list[str]:
+    return [sys.executable]
+
+
+def _python_runner_status() -> RunnerStatus:
+    return RunnerStatus(
+        name="python", available=True, executable=sys.executable, message=None
+    )
+
+
+class ExternalToolDiscoveryTests(unittest.TestCase):
+    def test_discovers_scripts_and_caches_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            _write_external_tool_script(tools_dir, "echo_tool")
+
+            first = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+            )
+            cache_path = user_dir / "tools" / ".cache" / "manifests.json"
+
+            self.assertEqual(len(first.loaded), 1)
+            self.assertEqual(first.loaded[0].manifest.name, "echo_tool")
+            self.assertTrue(cache_path.is_file())
+
+            with mock.patch("pyagent.external_tools._describe_script") as describe_mock:
+                describe_mock.side_effect = AssertionError(
+                    "should hit the schema cache for unchanged scripts"
+                )
+                second = discover_external_tools(
+                    user_dir=user_dir,
+                    runner_command=_python_runner_command(),
+                    runner_status=_python_runner_status(),
+                    describe_timeout=5.0,
+                )
+
+            self.assertEqual(len(second.loaded), 1)
+            self.assertEqual(second.loaded[0].manifest.name, "echo_tool")
+
+    def test_cache_invalidates_when_script_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            script = _write_external_tool_script(tools_dir, "echo_tool")
+
+            discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+            )
+
+            time.sleep(0.01)
+            script.write_text(
+                script.read_text(encoding="utf-8") + "\n# modification\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch(
+                "pyagent.external_tools._describe_script",
+                wraps=__import__("pyagent.external_tools", fromlist=["_describe_script"])._describe_script,
+            ) as describe_mock:
+                discover_external_tools(
+                    user_dir=user_dir,
+                    runner_command=_python_runner_command(),
+                    runner_status=_python_runner_status(),
+                    describe_timeout=5.0,
+                )
+
+            self.assertEqual(describe_mock.call_count, 1)
+
+    def test_describe_timeout_marks_tool_broken(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            _write_external_tool_script(tools_dir, "slow_tool", sleep_seconds=2.0)
+
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=0.5,
+                cache_enabled=False,
+            )
+
+            self.assertEqual(len(result.loaded), 0)
+            self.assertEqual(len(result.broken), 1)
+            self.assertIn("timed out", result.broken[0].error or "")
+
+    def test_invalid_describe_json_marks_tool_broken(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            _write_external_tool_script(tools_dir, "bad_tool", invalid_json=True)
+
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+                cache_enabled=False,
+            )
+
+            self.assertEqual(len(result.loaded), 0)
+            self.assertEqual(len(result.broken), 1)
+            self.assertIn("did not emit valid JSON", result.broken[0].error or "")
+
+    def test_missing_runner_disables_external_tools_gracefully(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            _write_external_tool_script(tools_dir, "echo_tool")
+
+            unavailable = RunnerStatus(
+                name="uv",
+                available=False,
+                executable=None,
+                message="uv was not found on PATH.",
+            )
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=unavailable,
+                describe_timeout=5.0,
+            )
+
+            self.assertFalse(result.runner_available)
+            self.assertEqual(len(result.loaded), 0)
+            self.assertEqual(len(result.broken), 1)
+            self.assertIn("uv was not found", result.broken[0].error or "")
+
+    def test_disabled_directory_listed_but_not_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            disabled_dir = tools_dir / "disabled"
+            _write_external_tool_script(tools_dir, "echo_tool")
+            _write_external_tool_script(disabled_dir, "shelved_tool")
+
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+            )
+
+            loaded_names = [entry.manifest.name for entry in result.loaded]
+            disabled_paths = [str(entry.script_path) for entry in result.disabled]
+
+            self.assertEqual(loaded_names, ["echo_tool"])
+            self.assertEqual(len(result.disabled), 1)
+            self.assertTrue(any(path.endswith("shelved_tool.py") for path in disabled_paths))
+
+
+class ExternalToolHandlerTests(unittest.TestCase):
+    def test_invoke_returns_stdout_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            script = _write_external_tool_script(tools_dir, "echo_tool")
+
+            handler = ExternalToolHandler(
+                script,
+                runner_command=_python_runner_command(),
+                invoke_timeout=10.0,
+            )
+            result = handler(text="hello")
+
+        self.assertEqual(result.strip(), "echo:hello")
+
+    def test_invoke_timeout_returns_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            tools_dir = user_dir / "tools"
+            script = _write_external_tool_script(
+                tools_dir, "slow_tool", sleep_seconds=3.0
+            )
+
+            handler = ExternalToolHandler(
+                script,
+                runner_command=_python_runner_command(),
+                invoke_timeout=0.5,
+            )
+            start = time.monotonic()
+            result = handler(text="hello")
+            elapsed = time.monotonic() - start
+
+        self.assertIn("exceeded its", result)
+        self.assertIn("timeout", result)
+        self.assertLess(elapsed, 5.0)
+
+
+class ToolRegistryCompositionTests(unittest.TestCase):
+    def test_builtin_wins_on_collision_and_collisions_are_reported(self) -> None:
+        config = AppConfig()
+        external = ToolSpec(
+            name="calculator",
+            description="Should NOT replace the built-in",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda **_: "external",
+        )
+        registry = create_default_tool_registry(config, external_specs=[external])
+
+        self.assertEqual(registry.origin("calculator"), BUILTIN_ORIGIN)
+        self.assertEqual(
+            registry.execute("calculator", {"num1": "1", "num2": "2", "operation": "+"}),
+            "3.0",
+        )
+        self.assertEqual(len(registry.collisions()), 1)
+        self.assertEqual(registry.collisions()[0].name, "calculator")
+
+    def test_external_specs_register_and_track_origin_and_source(self) -> None:
+        config = AppConfig()
+        handler = lambda **kwargs: f"echo:{kwargs.get('text', '')}"
+        handler.script_path = "/tmp/echo_tool.py"  # type: ignore[attr-defined]
+        external = ToolSpec(
+            name="echo_tool",
+            description="Echo tool",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+            handler=handler,
+        )
+        registry = create_default_tool_registry(config, external_specs=[external])
+
+        self.assertIn("echo_tool", registry.names())
+        self.assertEqual(registry.origin("echo_tool"), EXTERNAL_ORIGIN)
+        self.assertEqual(registry.source("echo_tool"), "/tmp/echo_tool.py")
+        self.assertEqual(registry.names_by_origin(EXTERNAL_ORIGIN), ["echo_tool"])
+        self.assertEqual(registry.execute("echo_tool", {"text": "hi"}), "echo:hi")
+
+
+class UserGlobalContextTests(unittest.TestCase):
+    def test_load_full_context_layers_global_and_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir) / "userhome"
+            (user_dir / "skills").mkdir(parents=True)
+            (user_dir / "AGENTS.md").write_text(
+                "Always check the user-global agent file.", encoding="utf-8"
+            )
+            (user_dir / "skills" / "global_skill.md").write_text(
+                "Global skill content.", encoding="utf-8"
+            )
+
+            project_dir = Path(temp_dir) / "project"
+            project_dir.mkdir()
+            (project_dir / "AGENTS.md").write_text(
+                "Project-only rule.", encoding="utf-8"
+            )
+
+            text, sources = load_full_context(project_dir, user_dir=user_dir)
+
+            scopes = {source.scope for source in sources}
+            labels = [source.label for source in sources]
+
+            self.assertEqual(scopes, {GLOBAL_SCOPE, PROJECT_SCOPE})
+            self.assertTrue(any(label.startswith("~/.pyagent/") for label in labels))
+            self.assertIn("AGENTS.md", labels)
+            self.assertIn("Always check the user-global agent file.", text)
+            self.assertIn("Project-only rule.", text)
+            self.assertIn("User-global instructions", text)
+            self.assertIn("Project-specific instructions", text)
+
+    def test_discover_user_global_skips_missing_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            files = discover_user_global_instruction_files(Path(temp_dir))
+        self.assertEqual(files, [])
+
+    def test_load_project_context_compatibility_returns_labelled_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir) / "userhome"
+            user_dir.mkdir()
+            (user_dir / "AGENTS.md").write_text("global", encoding="utf-8")
+
+            project_dir = Path(temp_dir) / "project"
+            project_dir.mkdir()
+            (project_dir / "AGENTS.md").write_text("project", encoding="utf-8")
+
+            text, files = load_project_context(project_dir, user_dir=user_dir)
+
+        self.assertIn("global", text)
+        self.assertIn("project", text)
+        self.assertEqual(len(files), 2)
+        self.assertTrue(any(label.startswith("~/.pyagent/") for label in files))
+
+
+class ScaffoldTests(unittest.TestCase):
+    def test_create_user_tool_writes_compilable_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = create_user_tool("demo_tool", user_dir=temp_dir)
+
+            self.assertTrue(path.is_file())
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("describe", content)
+            self.assertIn("invoke", content)
+            compile(content, str(path), "exec")
+
+    def test_create_user_tool_refuses_overwrite_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            create_user_tool("demo_tool", user_dir=temp_dir)
+            with self.assertRaises(ScaffoldError):
+                create_user_tool("demo_tool", user_dir=temp_dir)
+
+    def test_create_user_tool_rejects_invalid_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(ScaffoldError):
+                create_user_tool("9bad-name!", user_dir=temp_dir)
+
+
+class UiToolsCommandTests(unittest.TestCase):
+    def _make_app_with_temp_user_dir(self, temp_dir: str) -> PyAgentApp:
+        config = AppConfig(user_dir=temp_dir, user_tools_enabled=True)
+        app = PyAgentApp.__new__(PyAgentApp)
+        # Skip Textual __init__ entirely; we only exercise pure-Python helpers.
+        from pyagent.agent import Agent
+
+        agent = Agent(config=config)
+        app.agent = agent
+        app.project_context = ""
+        app.context_sources = []
+        app.project_context_files = []
+        app.is_processing = False
+        app.debug_visible = False
+        app.input_history = []
+        app.input_history_index = None
+        app.input_history_draft = ""
+        return app
+
+    def test_tools_command_lists_builtin_and_external_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._make_app_with_temp_user_dir(temp_dir)
+            notes: list[str] = []
+            app._add_system_note = notes.append
+
+            handled = app._handle_slash_command("/tools")
+
+            self.assertTrue(handled)
+            self.assertIn("Built-in tools:", notes[-1])
+            self.assertIn("External tools", notes[-1])
+
+    def test_tools_new_creates_script_and_warns_on_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._make_app_with_temp_user_dir(temp_dir)
+            notes: list[str] = []
+            app._add_system_note = notes.append
+
+            self.assertTrue(app._handle_slash_command("/tools new my_tool"))
+            self.assertIn("Created starter tool", notes[-1])
+            self.assertTrue(
+                (Path(temp_dir) / "tools" / "my_tool.py").is_file()
+            )
+
+            self.assertTrue(app._handle_slash_command("/tools new my_tool"))
+            self.assertIn("Could not create tool", notes[-1])
+
+    def test_tools_disable_then_enable_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools_dir = Path(temp_dir) / "tools"
+            tools_dir.mkdir(parents=True)
+            (tools_dir / "echo.py").write_text("# placeholder", encoding="utf-8")
+
+            app = self._make_app_with_temp_user_dir(temp_dir)
+            notes: list[str] = []
+            app._add_system_note = notes.append
+
+            self.assertTrue(app._handle_slash_command("/tools disable echo"))
+            self.assertIn("Moved tool", notes[-1])
+            self.assertTrue((tools_dir / "disabled" / "echo.py").is_file())
+            self.assertFalse((tools_dir / "echo.py").exists())
+
+            self.assertTrue(app._handle_slash_command("/tools enable echo"))
+            self.assertTrue((tools_dir / "echo.py").is_file())
+            self.assertFalse((tools_dir / "disabled" / "echo.py").exists())
+
+    def test_tools_open_returns_path_or_friendly_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools_dir = Path(temp_dir) / "tools"
+            tools_dir.mkdir(parents=True)
+            (tools_dir / "echo.py").write_text("# placeholder", encoding="utf-8")
+
+            app = self._make_app_with_temp_user_dir(temp_dir)
+            notes: list[str] = []
+            app._add_system_note = notes.append
+
+            self.assertTrue(app._handle_slash_command("/tools open echo"))
+            self.assertIn("Tool script path", notes[-1])
+
+            self.assertTrue(app._handle_slash_command("/tools open does_not_exist"))
+            self.assertIn("No tool named", notes[-1])
+
+    def test_help_text_mentions_new_tool_subcommands(self) -> None:
+        app = PyAgentApp()
+        text = app._command_help_text()
+        self.assertIn("`/tools reload`", text)
+        self.assertIn("`/tools new <name>`", text)
+        self.assertIn("`/tools enable <name>`", text)
+        self.assertIn("`/tools open <name>`", text)
+
+
+class AgentExternalToolsTests(unittest.TestCase):
+    def test_agent_constructor_handles_missing_user_dir_gracefully(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AppConfig(user_dir=temp_dir, user_tools_enabled=True)
+            agent = Agent(config=config)
+
+            self.assertEqual(agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), [])
+            self.assertGreater(
+                len(agent.tool_registry.names_by_origin(BUILTIN_ORIGIN)), 0
+            )
+
+    def test_reload_external_tools_picks_up_new_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AppConfig(
+                user_dir=temp_dir,
+                user_tools_enabled=True,
+                tool_runner="python",
+            )
+            agent = Agent(config=config)
+            self.assertEqual(agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), [])
+
+            tools_dir = Path(temp_dir) / "tools"
+            _write_external_tool_script(tools_dir, "echo_tool")
+
+            with mock.patch(
+                "pyagent.agent.discover_external_tools",
+                lambda **kwargs: discover_external_tools(
+                    user_dir=kwargs.get("user_dir", temp_dir),
+                    runner_command=_python_runner_command(),
+                    runner_status=_python_runner_status(),
+                    describe_timeout=kwargs.get("describe_timeout", 5.0),
+                ),
+            ), mock.patch(
+                "pyagent.agent.default_runner_command",
+                lambda runner=None: _python_runner_command(),
+            ):
+                discovery = agent.reload_external_tools()
+
+            self.assertIsNotNone(discovery)
+            self.assertEqual(
+                agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), ["echo_tool"]
+            )
 
 
 def demo() -> None:

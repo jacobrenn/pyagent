@@ -16,8 +16,11 @@ from textual.message import Message
 from textual.widgets import Footer, Header, Label, Markdown, RichLog, Static, TextArea
 
 from .agent import Agent
+from .external_tools import find_tool_script, move_tool_script
 from .model_profiles import ModelProfile, default_base_url_for_provider
-from .project_context import load_project_context
+from .project_context import GLOBAL_SCOPE, PROJECT_SCOPE, load_full_context
+from .scaffold import ScaffoldError, create_user_tool
+from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
 
 
 PROMPT_INPUT_MIN_HEIGHT = 8
@@ -248,8 +251,11 @@ class PyAgentApp(App):
 
     def __init__(self, profile: str | None = None, model: str | None = None):
         super().__init__()
-        self.project_context, self.project_context_files = load_project_context(
+        self.project_context, self.context_sources = load_full_context(
             os.getcwd())
+        self.project_context_files = [
+            source.label for source in self.context_sources
+        ]
         self.agent = Agent(
             model=model,
             profile=profile,
@@ -387,15 +393,19 @@ class PyAgentApp(App):
             "- `/model <name>` — override the current profile's model for this session\n"
             "\n"
             "Context and prompts\n"
-            "- `/context` — show loaded project instruction sources\n"
+            "- `/context` — show loaded user-global and project instruction sources\n"
             "- `/prompt` — show the active system prompt\n"
             "- `/history` — show recent prompt history\n"
             "- `/history search <text>` — search saved prompt history\n"
-            "- `/reload_context` — reload `AGENTS.md` and local skill files\n"
+            "- `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files\n"
             "\n"
             "Tools and debugging\n"
-            "- `/tools` — show tool status and available tools\n"
+            "- `/tools` — show tool status, built-in and external tools\n"
             "- `/tools on|off` — enable or disable model tool calling for this session\n"
+            "- `/tools reload` — re-scan `~/.pyagent/tools/` and rebuild the registry\n"
+            "- `/tools new <name>` — scaffold a starter UV-script tool in `~/.pyagent/tools/`\n"
+            "- `/tools enable <name>` / `/tools disable <name>` — move a tool in or out of `tools/disabled/`\n"
+            "- `/tools open <name>` — print the absolute path to a tool script\n"
             "- `/debug on|off` — show or hide the debug pane"
         )
 
@@ -403,14 +413,30 @@ class PyAgentApp(App):
         files = self.agent.project_context_files
         total_chars = len(self.agent.project_context)
         if not files:
-            return "Project context:\n- No `AGENTS.md` or skill files loaded."
+            return (
+                "Project context:\n"
+                "- No `AGENTS.md`, user-global skills, or project skill files loaded."
+            )
+        global_paths = [
+            source.label for source in self.context_sources if source.scope == GLOBAL_SCOPE
+        ]
+        project_paths = [
+            source.label for source in self.context_sources if source.scope == PROJECT_SCOPE
+        ]
         lines = [
             "Project context:",
             f"- Files loaded: `{len(files)}`",
             f"- Context size: `{total_chars}` characters",
-            "- Sources:",
         ]
-        lines.extend(f"  - `{path}`" for path in files)
+        if global_paths:
+            lines.append("- User-global sources:")
+            lines.extend(f"  - `{path}`" for path in global_paths)
+        if project_paths:
+            lines.append("- Project sources:")
+            lines.extend(f"  - `{path}`" for path in project_paths)
+        if not global_paths and not project_paths:
+            lines.append("- Sources:")
+            lines.extend(f"  - `{path}`" for path in files)
         return "\n".join(lines)
 
     def _unknown_command_message(self, command: str) -> str:
@@ -429,6 +455,7 @@ class PyAgentApp(App):
             "/context",
             "/reload_profiles",
             "/reload_context",
+            "/reload_tools",
             "/debug",
         ]
         suggestion = get_close_matches(
@@ -511,6 +538,173 @@ class PyAgentApp(App):
             return {}, "`provider` and `model` are required."
         return options, None
 
+    def _tools_usage_text(self) -> str:
+        return (
+            "Usage:\n"
+            "- `/tools` — list tool status, built-in and external tools\n"
+            "- `/tools on|off` — enable or disable model tool calling for this session\n"
+            "- `/tools reload` — re-scan `~/.pyagent/tools/` and rebuild the registry\n"
+            "- `/tools new <name>` — scaffold a starter tool in `~/.pyagent/tools/<name>.py`\n"
+            "- `/tools enable <name>` — move a script out of `tools/disabled/`\n"
+            "- `/tools disable <name>` — move a script into `tools/disabled/`\n"
+            "- `/tools open <name>` — print the absolute path to a tool script"
+        )
+
+    def _format_tools_list(self) -> str:
+        registry = self.agent.tool_registry
+        builtin_names = sorted(registry.names_by_origin(BUILTIN_ORIGIN))
+        external_names = sorted(registry.names_by_origin(EXTERNAL_ORIGIN))
+        lines = [
+            "Tools:",
+            f"- Status: `{'on' if self.agent.config.tools_enabled else 'off'}`",
+            f"- User-tools enabled: `{self.agent.config.user_tools_enabled}`",
+            f"- User dir: `{self.agent.config.user_dir}`",
+            f"- Tool runner: `{self.agent.config.tool_runner}`",
+        ]
+        discovery = self.agent.external_tool_discovery
+        if discovery and not discovery.runner_available and discovery.runner_message:
+            lines.append(f"- Runner unavailable: {discovery.runner_message}")
+        lines.append("")
+        lines.append("Built-in tools:")
+        if builtin_names:
+            lines.extend(f"- `{name}`" for name in builtin_names)
+        else:
+            lines.append("- _none_")
+
+        lines.append("")
+        lines.append("External tools (`~/.pyagent/tools/`):")
+        if external_names:
+            for name in external_names:
+                source = registry.source(name) or ""
+                suffix = f" — `{source}`" if source else ""
+                lines.append(f"- `{name}`{suffix}")
+        else:
+            lines.append("- _none registered_")
+
+        if discovery is not None:
+            if discovery.broken:
+                lines.append("")
+                lines.append("Broken external tools (skipped):")
+                for entry in discovery.broken:
+                    lines.append(
+                        f"- `{entry.script_path}` — {entry.error or 'unknown error'}"
+                    )
+            if discovery.disabled:
+                lines.append("")
+                lines.append("Disabled external tools (`tools/disabled/`):")
+                for entry in discovery.disabled:
+                    lines.append(f"- `{entry.script_path}`")
+
+        collisions = registry.collisions()
+        if collisions:
+            lines.append("")
+            lines.append(
+                "Name collisions (built-in wins; rename the external script to register it):"
+            )
+            for collision in collisions:
+                external_path = collision.external_path or "<unknown>"
+                lines.append(f"- `{collision.name}` — external: `{external_path}`")
+
+        return "\n".join(lines)
+
+    def _handle_tools_command(self, args: list[str]) -> bool:
+        if not args:
+            self._add_system_note(self._format_tools_list())
+            return True
+
+        action = args[0].lower()
+        rest = args[1:]
+
+        if action in {"on", "off"} and not rest:
+            enabled = action == "on"
+            self.agent.set_tools_enabled(enabled)
+            state = "enabled" if enabled else "disabled"
+            self._add_system_note(
+                f"Tools {state} for this session. Conversation reset so the updated system prompt takes effect."
+            )
+            self._set_status(self._ready_status())
+            return True
+
+        if action == "reload" and not rest:
+            discovery = self.agent.reload_external_tools()
+            registry = self.agent.tool_registry
+            external_count = len(registry.names_by_origin(EXTERNAL_ORIGIN))
+            details = [
+                f"Reloaded external tools from `{self.agent.config.user_dir}/tools/`.",
+                f"Built-in tools: `{len(registry.names_by_origin(BUILTIN_ORIGIN))}`",
+                f"External tools registered: `{external_count}`",
+            ]
+            if discovery is not None:
+                if discovery.broken:
+                    details.append(
+                        f"Skipped due to errors: `{len(discovery.broken)}`"
+                    )
+                if discovery.disabled:
+                    details.append(
+                        f"Disabled scripts: `{len(discovery.disabled)}`"
+                    )
+                if not discovery.runner_available and discovery.runner_message:
+                    details.append(
+                        f"Runner unavailable: {discovery.runner_message}"
+                    )
+            self._add_system_note("\n".join(details))
+            self._set_status(self._ready_status())
+            return True
+
+        if action == "new":
+            if len(rest) != 1:
+                self._add_system_note("Usage: `/tools new <name>`")
+                return True
+            try:
+                created = create_user_tool(
+                    rest[0], user_dir=self.agent.config.user_dir
+                )
+            except ScaffoldError as exc:
+                self._add_system_note(f"Could not create tool: {exc}")
+                return True
+            self._add_system_note(
+                f"Created starter tool at `{created}`.\n\n"
+                "Edit it, then run `/tools reload` to register it. "
+                "The script declares its dependencies via PEP 723 inline metadata, "
+                "so `uv run` will install them automatically on first invocation."
+            )
+            return True
+
+        if action in {"enable", "disable"}:
+            if len(rest) != 1:
+                self._add_system_note(f"Usage: `/tools {action} <name>`")
+                return True
+            new_path, error = move_tool_script(
+                rest[0],
+                user_dir=self.agent.config.user_dir,
+                enable=(action == "enable"),
+            )
+            if error or new_path is None:
+                self._add_system_note(error or "Unknown error.")
+                return True
+            self._add_system_note(
+                f"Moved tool to `{new_path}`.\n\nRun `/tools reload` to apply the change."
+            )
+            return True
+
+        if action == "open":
+            if len(rest) != 1:
+                self._add_system_note("Usage: `/tools open <name>`")
+                return True
+            located = find_tool_script(
+                rest[0], user_dir=self.agent.config.user_dir
+            )
+            if located is None:
+                self._add_system_note(
+                    f"No tool named `{rest[0]}` was found under `{self.agent.config.user_dir}/tools/`."
+                )
+                return True
+            self._add_system_note(f"Tool script path: `{located}`")
+            return True
+
+        self._add_system_note(self._tools_usage_text())
+        return True
+
     def _handle_slash_command(self, raw_input: str) -> bool:
         if not raw_input.startswith("/"):
             return False
@@ -530,29 +724,10 @@ class PyAgentApp(App):
             return True
 
         if command == "/tools":
-            if len(args) == 1 and args[0].lower() in {"on", "off"}:
-                enabled = args[0].lower() == "on"
-                self.agent.set_tools_enabled(enabled)
-                state = "enabled" if enabled else "disabled"
-                self._add_system_note(
-                    f"Tools {state} for this session. Conversation reset so the updated system prompt takes effect."
-                )
-                self._set_status(self._ready_status())
-                return True
+            return self._handle_tools_command(args)
 
-            if args:
-                self._add_system_note("Usage: `/tools` or `/tools on|off`")
-                return True
-
-            tool_names = "\n".join(
-                f"- `{name}`" for name in self.agent.tool_registry.names())
-            self._add_system_note(
-                "Tools:\n"
-                f"- Status: `{'on' if self.agent.config.tools_enabled else 'off'}`\n"
-                "- Available tool definitions:\n"
-                f"{tool_names}"
-            )
-            return True
+        if command == "/reload_tools":
+            return self._handle_tools_command(["reload"])
 
         if command == "/profiles":
             if len(args) == 1 and args[0].lower() == "reload":
@@ -810,8 +985,11 @@ class PyAgentApp(App):
 
         if command == "/reload_context":
             previous_files = set(self.agent.project_context_files)
-            self.project_context, self.project_context_files = load_project_context(
+            self.project_context, self.context_sources = load_full_context(
                 os.getcwd())
+            self.project_context_files = [
+                source.label for source in self.context_sources
+            ]
             self.agent.set_project_context(
                 self.project_context, self.project_context_files)
             current_files = set(self.project_context_files)
@@ -826,7 +1004,7 @@ class PyAgentApp(App):
                     "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
             if not self.project_context_files:
                 details = [
-                    "Reloaded project instructions. No `AGENTS.md` or skill files were found."
+                    "Reloaded project instructions. No user-global or project instruction files were found."
                 ]
             self._add_system_note("\n\n".join(details))
             self._set_status(self._ready_status())
