@@ -60,7 +60,8 @@ class ToolRegistry:
         for spec in external_specs or []:
             handler = spec.handler
             external_path = getattr(handler, "script_path", None)
-            external_path_str = str(external_path) if external_path is not None else None
+            external_path_str = str(
+                external_path) if external_path is not None else None
             if spec.name in self._specs and self._origins[spec.name] == BUILTIN_ORIGIN:
                 self._collisions.append(
                     CollisionInfo(
@@ -413,35 +414,6 @@ def edit_file(
     return f"Successfully edited {path} with {count} replacement{'s' if count != 1 else ''}"
 
 
-def calculator(num1: str | float, num2: str | float, operation: str) -> str:
-    """Run a simple arithmetic calculator on two numbers."""
-    try:
-        first = float(num1)
-        second = float(num2)
-    except ValueError as exc:
-        return f"Invalid number: {exc}"
-
-    aliases = {
-        "+": "addition",
-        "-": "subtraction",
-        "*": "multiplication",
-        "/": "division",
-    }
-    operation = aliases.get(operation, operation)
-
-    if operation == "addition":
-        return str(first + second)
-    if operation == "subtraction":
-        return str(first - second)
-    if operation == "multiplication":
-        return str(first * second)
-    if operation == "division":
-        if second == 0:
-            return "Division by zero is not defined"
-        return str(first / second)
-    return f"Operation '{operation}' not supported"
-
-
 def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
     def bash_handler(command: str, timeout: int | None = None) -> str:
         return bash(command=command, timeout=timeout, config=config)
@@ -612,23 +584,6 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 "required": ["path"],
             },
             handler=edit_file,
-        ),
-        ToolSpec(
-            name="calculator",
-            description="Run a simple arithmetic operation on two numbers.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "num1": {"type": "string", "description": "The first number."},
-                    "num2": {"type": "string", "description": "The second number."},
-                    "operation": {
-                        "type": "string",
-                        "description": "One of +, -, *, /, addition, subtraction, multiplication, division.",
-                    },
-                },
-                "required": ["num1", "num2", "operation"],
-            },
-            handler=calculator,
         ),
     ]
 

@@ -198,7 +198,8 @@ class DatasetReport:
                 splits_text = ", ".join(splits) if splits else "_unknown_"
                 lines.append(f"- `{config}`: splits = {splits_text}")
             if len(self.configs) > 5:
-                lines.append(f"- _... and {len(self.configs) - 5} more configs_")
+                lines.append(
+                    f"- _... and {len(self.configs) - 5} more configs_")
 
         if include_samples and self.sample_schema:
             lines.append("")
@@ -208,7 +209,8 @@ class DatasetReport:
             for column, dtype in list(self.sample_schema.items())[:12]:
                 lines.append(f"| `{column}` | `{dtype}` |")
             if len(self.sample_schema) > 12:
-                lines.append(f"| _..._ | _{len(self.sample_schema) - 12} more columns_ |")
+                lines.append(
+                    f"| _..._ | _{len(self.sample_schema) - 12} more columns_ |")
 
         if include_samples and self.sample_rows:
             lines.append("")
@@ -232,7 +234,8 @@ class DatasetReport:
 
         if include_samples and self.sample_error:
             lines.append("")
-            lines.append(f"_Schema/sample fetch unavailable: {self.sample_error}_")
+            lines.append(
+                f"_Schema/sample fetch unavailable: {self.sample_error}_")
 
         return "\n".join(lines)
 
@@ -255,7 +258,8 @@ def _populate_report_from_dataset_info(ds: Any) -> DatasetReport:
         tags=tags,
         downloads=getattr(ds, "downloads", 0) or 0,
         likes=getattr(ds, "likes", 0) or 0,
-        last_modified=_format_last_modified(getattr(ds, "last_modified", None)),
+        last_modified=_format_last_modified(
+            getattr(ds, "last_modified", None)),
     )
     metadata = _extract_metadata_from_tags(tags)
     report.languages = metadata["languages"]
@@ -293,7 +297,8 @@ def _enrich_report_with_samples(
     for config in report.configs[:3]:
         try:
             report.splits[config] = list(
-                get_dataset_split_names(report.id, config_name=config, token=hf_token)
+                get_dataset_split_names(
+                    report.id, config_name=config, token=hf_token)
             )
         except Exception:
             continue
@@ -372,7 +377,8 @@ def _run_with_timeout(
         except BaseException as exc:  # noqa: BLE001 - propagate to caller
             box["error"] = exc
 
-    thread = threading.Thread(target=runner, name="pyagent-hf-search", daemon=True)
+    thread = threading.Thread(
+        target=runner, name="pyagent-hf-search", daemon=True)
     thread.start()
     thread.join(timeout=timeout)
 
@@ -478,7 +484,8 @@ def _run_dataset_search(
         f"size_categories={size_categories or '-'}, extra_tags={extra_tags or '-'}"
     )
     output.append(f"**Sort**: `{sort}` ({sort_direction})")
-    output.append(f"**Returned**: {len(reports)} of top {bounded_max_results} requested")
+    output.append(
+        f"**Returned**: {len(reports)} of top {bounded_max_results} requested")
     if include_samples:
         enriched = max(0, len(reports) - enrichment_skipped)
         output.append(
@@ -521,7 +528,8 @@ def search_hf_datasets(
 
     bounded_max_results = max(1, min(int(max_results or 1), MAX_RESULTS))
     sample_rows = max(1, min(int(sample_rows or DEFAULT_SAMPLE_ROWS), 10))
-    enrichment_budget = max(0, min(int(max_enriched or 0), bounded_max_results))
+    enrichment_budget = max(
+        0, min(int(max_enriched or 0), bounded_max_results))
     effective_timeout = _resolve_tool_timeout(tool_timeout)
 
     languages = _as_list(filter_language)

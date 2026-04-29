@@ -42,7 +42,8 @@ class Agent:
             )
             self.tool_registry = create_default_tool_registry(
                 self.config,
-                external_specs=self._external_specs_from_discovery(self.external_tool_discovery),
+                external_specs=self._external_specs_from_discovery(
+                    self.external_tool_discovery),
             )
         else:
             self.tool_registry = tool_registry
@@ -51,12 +52,12 @@ class Agent:
         self.project_context_files = list(project_context_files or [])
         self.prompt_file_created = False
         self.prompt_file_path = None
-        
+
         created, path = self._ensure_system_prompt_file()
         if created:
             self.prompt_file_created = True
             self.prompt_file_path = path
-            
+
         self._rebuild_client()
         self.reset()
 
@@ -97,12 +98,12 @@ class Agent:
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.reset()
         return discovery
-    
+
     def _ensure_system_prompt_file(self) -> tuple[bool, str | None]:
         path = self.config.system_prompt_path
         if os.path.exists(path):
             return False, None
-        
+
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:

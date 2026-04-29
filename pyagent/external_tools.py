@@ -57,11 +57,14 @@ class ExternalToolManifest:
 
         description = str(payload.get("description") or "").strip()
         if not description:
-            raise ValueError("describe output is missing a non-empty 'description'")
+            raise ValueError(
+                "describe output is missing a non-empty 'description'")
 
-        parameters = payload.get("parameters") or {"type": "object", "properties": {}}
+        parameters = payload.get("parameters") or {
+            "type": "object", "properties": {}}
         if not isinstance(parameters, dict):
-            raise ValueError("describe output 'parameters' must be a JSON object")
+            raise ValueError(
+                "describe output 'parameters' must be a JSON object")
 
         version = str(payload.get("version") or "1").strip() or "1"
 
@@ -131,7 +134,8 @@ def _save_cache(cache_path: Path, entries: dict[str, dict[str, Any]]) -> None:
     try:
         ensure_user_subdir(cache_path.parent)
         cache_path.write_text(
-            json.dumps({"version": CACHE_VERSION, "entries": entries}, indent=2) + "\n",
+            json.dumps({"version": CACHE_VERSION,
+                       "entries": entries}, indent=2) + "\n",
             encoding="utf-8",
         )
     except OSError:
@@ -234,7 +238,8 @@ def _describe_script(
     timeout: float,
 ) -> tuple[ExternalToolManifest | None, str | None]:
     command = _build_command(runner_command, script_path, "describe")
-    returncode, stdout, stderr, timed_out = _run_subprocess(command, timeout=timeout)
+    returncode, stdout, stderr, timed_out = _run_subprocess(
+        command, timeout=timeout)
 
     if timed_out:
         return None, f"`describe` timed out after {timeout:.0f}s"
@@ -278,11 +283,13 @@ def discover_external_tools(
     not re-run the (potentially slow) ``uv run`` for unchanged scripts.
     """
     resolved_user_dir = (
-        Path(user_dir).expanduser().resolve() if user_dir is not None else resolve_user_dir()
+        Path(user_dir).expanduser().resolve(
+        ) if user_dir is not None else resolve_user_dir()
     )
     tools_dir = user_tools_dir(resolved_user_dir)
     runner_name = runner or resolve_tool_runner()
-    command_prefix = list(runner_command) if runner_command is not None else default_runner_command(runner_name)
+    command_prefix = list(
+        runner_command) if runner_command is not None else default_runner_command(runner_name)
     status = runner_status or check_runner_available(runner_name)
     cache_path = user_tools_cache_dir(resolved_user_dir) / CACHE_FILE_NAME
 
@@ -338,12 +345,14 @@ def discover_external_tools(
 
         if manifest is None:
             result.broken.append(
-                ExternalToolEntry(script_path=script_path, error=error or "unknown describe failure")
+                ExternalToolEntry(script_path=script_path,
+                                  error=error or "unknown describe failure")
             )
             continue
 
         fresh_cache[cache_key] = manifest.to_dict()
-        result.loaded.append(ExternalToolEntry(script_path=script_path, manifest=manifest))
+        result.loaded.append(ExternalToolEntry(
+            script_path=script_path, manifest=manifest))
 
     for script_path in _disabled_scripts(tools_dir):
         result.disabled.append(
@@ -432,7 +441,8 @@ def build_external_tool_specs(
     runner_command: Sequence[str] | None = None,
 ) -> list[ToolSpec]:
     """Convert successfully-discovered manifests into :class:`ToolSpec`s."""
-    command_prefix = list(runner_command) if runner_command is not None else default_runner_command(discovery.runner)
+    command_prefix = list(
+        runner_command) if runner_command is not None else default_runner_command(discovery.runner)
     specs: list[ToolSpec] = []
     for entry in discovery.loaded:
         manifest = entry.manifest
@@ -466,7 +476,8 @@ def move_tool_script(
     The ``name`` argument may include or omit the ``.py`` suffix.
     """
     resolved_user_dir = (
-        Path(user_dir).expanduser().resolve() if user_dir is not None else resolve_user_dir()
+        Path(user_dir).expanduser().resolve(
+        ) if user_dir is not None else resolve_user_dir()
     )
     tools = user_tools_dir(resolved_user_dir)
     disabled_dir = user_tools_disabled_dir(resolved_user_dir)
@@ -499,7 +510,8 @@ def find_tool_script(
     user_dir: Path | str | None = None,
 ) -> Path | None:
     resolved_user_dir = (
-        Path(user_dir).expanduser().resolve() if user_dir is not None else resolve_user_dir()
+        Path(user_dir).expanduser().resolve(
+        ) if user_dir is not None else resolve_user_dir()
     )
     tools = user_tools_dir(resolved_user_dir)
     file_name = name if name.endswith(".py") else f"{name}.py"

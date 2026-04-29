@@ -969,7 +969,8 @@ class ExternalToolDiscoveryTests(unittest.TestCase):
 
             with mock.patch(
                 "pyagent.external_tools._describe_script",
-                wraps=__import__("pyagent.external_tools", fromlist=["_describe_script"])._describe_script,
+                wraps=__import__("pyagent.external_tools", fromlist=[
+                                 "_describe_script"])._describe_script,
             ) as describe_mock:
                 discover_external_tools(
                     user_dir=user_dir,
@@ -984,7 +985,8 @@ class ExternalToolDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             user_dir = Path(temp_dir)
             tools_dir = user_dir / "tools"
-            _write_external_tool_script(tools_dir, "slow_tool", sleep_seconds=2.0)
+            _write_external_tool_script(
+                tools_dir, "slow_tool", sleep_seconds=2.0)
 
             result = discover_external_tools(
                 user_dir=user_dir,
@@ -1002,7 +1004,8 @@ class ExternalToolDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             user_dir = Path(temp_dir)
             tools_dir = user_dir / "tools"
-            _write_external_tool_script(tools_dir, "bad_tool", invalid_json=True)
+            _write_external_tool_script(
+                tools_dir, "bad_tool", invalid_json=True)
 
             result = discover_external_tools(
                 user_dir=user_dir,
@@ -1014,7 +1017,8 @@ class ExternalToolDiscoveryTests(unittest.TestCase):
 
             self.assertEqual(len(result.loaded), 0)
             self.assertEqual(len(result.broken), 1)
-            self.assertIn("did not emit valid JSON", result.broken[0].error or "")
+            self.assertIn("did not emit valid JSON",
+                          result.broken[0].error or "")
 
     def test_missing_runner_disables_external_tools_gracefully(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1056,11 +1060,13 @@ class ExternalToolDiscoveryTests(unittest.TestCase):
             )
 
             loaded_names = [entry.manifest.name for entry in result.loaded]
-            disabled_paths = [str(entry.script_path) for entry in result.disabled]
+            disabled_paths = [str(entry.script_path)
+                              for entry in result.disabled]
 
             self.assertEqual(loaded_names, ["echo_tool"])
             self.assertEqual(len(result.disabled), 1)
-            self.assertTrue(any(path.endswith("shelved_tool.py") for path in disabled_paths))
+            self.assertTrue(any(path.endswith("shelved_tool.py")
+                            for path in disabled_paths))
 
 
 class ExternalToolHandlerTests(unittest.TestCase):
@@ -1110,11 +1116,13 @@ class ToolRegistryCompositionTests(unittest.TestCase):
             parameters={"type": "object", "properties": {}},
             handler=lambda **_: "external",
         )
-        registry = create_default_tool_registry(config, external_specs=[external])
+        registry = create_default_tool_registry(
+            config, external_specs=[external])
 
         self.assertEqual(registry.origin("calculator"), BUILTIN_ORIGIN)
         self.assertEqual(
-            registry.execute("calculator", {"num1": "1", "num2": "2", "operation": "+"}),
+            registry.execute(
+                "calculator", {"num1": "1", "num2": "2", "operation": "+"}),
             "3.0",
         )
         self.assertEqual(len(registry.collisions()), 1)
@@ -1134,13 +1142,16 @@ class ToolRegistryCompositionTests(unittest.TestCase):
             },
             handler=handler,
         )
-        registry = create_default_tool_registry(config, external_specs=[external])
+        registry = create_default_tool_registry(
+            config, external_specs=[external])
 
         self.assertIn("echo_tool", registry.names())
         self.assertEqual(registry.origin("echo_tool"), EXTERNAL_ORIGIN)
         self.assertEqual(registry.source("echo_tool"), "/tmp/echo_tool.py")
-        self.assertEqual(registry.names_by_origin(EXTERNAL_ORIGIN), ["echo_tool"])
-        self.assertEqual(registry.execute("echo_tool", {"text": "hi"}), "echo:hi")
+        self.assertEqual(registry.names_by_origin(
+            EXTERNAL_ORIGIN), ["echo_tool"])
+        self.assertEqual(registry.execute(
+            "echo_tool", {"text": "hi"}), "echo:hi")
 
 
 class UserGlobalContextTests(unittest.TestCase):
@@ -1167,7 +1178,8 @@ class UserGlobalContextTests(unittest.TestCase):
             labels = [source.label for source in sources]
 
             self.assertEqual(scopes, {GLOBAL_SCOPE, PROJECT_SCOPE})
-            self.assertTrue(any(label.startswith("~/.pyagent/") for label in labels))
+            self.assertTrue(any(label.startswith("~/.pyagent/")
+                            for label in labels))
             self.assertIn("AGENTS.md", labels)
             self.assertIn("Always check the user-global agent file.", text)
             self.assertIn("Project-only rule.", text)
@@ -1194,7 +1206,8 @@ class UserGlobalContextTests(unittest.TestCase):
         self.assertIn("global", text)
         self.assertIn("project", text)
         self.assertEqual(len(files), 2)
-        self.assertTrue(any(label.startswith("~/.pyagent/") for label in files))
+        self.assertTrue(any(label.startswith("~/.pyagent/")
+                        for label in files))
 
 
 class PackagingTests(unittest.TestCase):
@@ -1304,7 +1317,8 @@ class UiToolsCommandTests(unittest.TestCase):
             self.assertTrue(app._handle_slash_command("/tools open echo"))
             self.assertIn("Tool script path", notes[-1])
 
-            self.assertTrue(app._handle_slash_command("/tools open does_not_exist"))
+            self.assertTrue(app._handle_slash_command(
+                "/tools open does_not_exist"))
             self.assertIn("No tool named", notes[-1])
 
     def test_help_text_mentions_new_tool_subcommands(self) -> None:
@@ -1322,7 +1336,8 @@ class AgentExternalToolsTests(unittest.TestCase):
             config = AppConfig(user_dir=temp_dir, user_tools_enabled=True)
             agent = Agent(config=config)
 
-            self.assertEqual(agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), [])
+            self.assertEqual(
+                agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), [])
             self.assertGreater(
                 len(agent.tool_registry.names_by_origin(BUILTIN_ORIGIN)), 0
             )
@@ -1335,7 +1350,8 @@ class AgentExternalToolsTests(unittest.TestCase):
                 tool_runner="python",
             )
             agent = Agent(config=config)
-            self.assertEqual(agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), [])
+            self.assertEqual(
+                agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), [])
 
             tools_dir = Path(temp_dir) / "tools"
             _write_external_tool_script(tools_dir, "echo_tool")
@@ -1356,7 +1372,8 @@ class AgentExternalToolsTests(unittest.TestCase):
 
             self.assertIsNotNone(discovery)
             self.assertEqual(
-                agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), ["echo_tool"]
+                agent.tool_registry.names_by_origin(
+                    EXTERNAL_ORIGIN), ["echo_tool"]
             )
 
 

@@ -23,7 +23,8 @@ def _default_profiles_path() -> str:
 
 def _default_user_dir() -> str:
     return str(resolve_user_dir())
-  
+
+
 def _default_system_prompt_path() -> str:
     return str(Path.home() / ".pyagent" / "system_prompt.txt")
 

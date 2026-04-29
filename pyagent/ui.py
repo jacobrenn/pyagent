@@ -603,7 +603,8 @@ class PyAgentApp(App):
             )
             for collision in collisions:
                 external_path = collision.external_path or "<unknown>"
-                lines.append(f"- `{collision.name}` — external: `{external_path}`")
+                lines.append(
+                    f"- `{collision.name}` — external: `{external_path}`")
 
         return "\n".join(lines)
 

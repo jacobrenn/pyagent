@@ -43,7 +43,8 @@ def create_user_tool(
     """
     tool_name = _normalize_tool_name(name)
     resolved = (
-        Path(user_dir).expanduser().resolve() if user_dir is not None else resolve_user_dir()
+        Path(user_dir).expanduser().resolve(
+        ) if user_dir is not None else resolve_user_dir()
     )
     tools = ensure_user_subdir(user_tools_dir(resolved))
     target = tools / f"{tool_name}.py"
