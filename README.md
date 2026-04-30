@@ -6,7 +6,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 
 - **Streaming chat UI** built with Textual
 - **Markdown rendering** for final assistant and tool messages, with a plain-text fallback for fenced code blocks that contain very long lines so transcript content does not get clipped
-- **Tool use** for shell commands, file search/text search, file reads/writes/appends/edits, listing files, and calculation
+- **Tool use** for shell commands, file search/text search, file reads/writes/appends/edits, and listing files
 - **Optional text-only mode** by disabling all model tool calling for a session
 - **Provider support** for:
   - native **Ollama** chat endpoints
@@ -18,6 +18,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Scrollable transcript** with mouse wheel, `↑` / `↓`, or `PgUp` / `PgDn`
 - **Multi-line prompt input** with `Shift+Enter`; press `Enter` to send, the input box auto-grows as you type, and the prompt area shows a helper hint
 - **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
+- **Keyboard shortcuts** including `Ctrl+L` to clear the conversation, `Ctrl+D` to toggle the debug pane, and transcript scrolling with `↑` / `↓` / `PgUp` / `PgDn` / `Home` / `End`
 - **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
 - **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup, with `/context` and `/reload_context` for inspection and refresh
 - **Persistent custom tools and skills** under `~/.pyagent/` that survive `pip install --upgrade`. Each user-managed tool is a standalone UV script (PEP 723) with click subcommands, so adding a new tool with new dependencies never touches the core install
@@ -186,9 +187,22 @@ Changing tool mode at runtime resets the current conversation so the updated sys
 - `/context` — show loaded user-global and project instruction files and context size
 - `/prompt` — show the active system prompt
 - `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files and report added/removed files
+- `/debug` — show whether the debug pane is currently on or off
 - `/debug on|off` — show or hide the debug pane
 
 Unknown slash commands may suggest a close match, for example `/stats` may suggest `/status`.
+
+## Keyboard shortcuts
+
+- `Enter` — send the current prompt
+- `Shift+Enter` — insert a newline in the prompt box
+- `Ctrl+P` / `Ctrl+N` — move through prompt history
+- `↑` / `↓` — scroll the chat transcript
+- `PgUp` / `PgDn` — page through the chat transcript
+- `Home` / `End` — jump to the top or bottom of the chat transcript
+- `Ctrl+L` — clear the conversation
+- `Ctrl+D` — toggle the debug pane
+- `Ctrl+C` — quit the app
 
 ### Profile creation from the TUI
 
@@ -208,7 +222,7 @@ Examples:
 Environment variables:
 
 - `PYAGENT_PROFILE` — default profile name to select
-- `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/pyagent/models.json` location
+- `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/.pyagent/models.json` location
 - `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding the default `~/.pyagent/system_prompt.txt` location
 - `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
 - `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn (`-1` means infinite)
@@ -223,7 +237,7 @@ Environment variables:
 - `PYAGENT_USER_TOOLS_ENABLED` — discover and register external tools under `~/.pyagent/tools/` (`true` by default)
 - `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation (default `60`)
 - `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch (default `10`)
-- `PYAGENT_TOOL_RUNNER` — runner used to execute external tools (`uv` only for now)
+- `PYAGENT_TOOL_RUNNER` — executable used to run external tools (defaults to `uv`; advanced override)
 
 Fallback profile env vars when no profile file exists:
 
@@ -233,9 +247,43 @@ Fallback profile env vars when no profile file exists:
 - `PYAGENT_API_KEY`
 - `PYAGENT_API_KEY_ENV`
 
+## Custom system prompt
+
+PyAgent stores the active system prompt in a text file. By default that file is:
+
+```text
+~/.pyagent/system_prompt.txt
+```
+
+On first run, PyAgent creates that file automatically if it does not already exist.
+
+You can override the location with:
+
+- `PYAGENT_SYSTEM_PROMPT_PATH`
+
+Examples:
+
+```bash
+export PYAGENT_SYSTEM_PROMPT_PATH="$HOME/.config/pyagent/my_prompt.txt"
+PyAgent
+```
+
+Or edit the default prompt file directly:
+
+```bash
+mkdir -p ~/.pyagent
+$EDITOR ~/.pyagent/system_prompt.txt
+```
+
+A few useful notes:
+
+- `/prompt` shows the currently active system prompt inside the TUI.
+- The system prompt is loaded when the conversation is initialized or reset, so after editing the file you should use `/clear` to start a fresh conversation with the updated prompt.
+- Project and user instruction files (`AGENTS.md`, `skills/**`, `*.skill`) are layered onto the base system prompt automatically.
+
 ## Custom tools and skills
 
-Anything you add for yourself — custom tools, custom skills, custom `AGENTS.md` instructions — should live under `~/.pyagent/` so a `pip install --upgrade` of PyAgent does not wipe it out. Built-in tools (`bash`, `list_files`, `find_files`, `search_text`, `read_file`, `write_file`, `append_file`, `edit_file`, `calculator`) stay inside the package; user tools layer on top.
+Anything you add for yourself — custom tools, custom skills, custom `AGENTS.md` instructions — should live under `~/.pyagent/` so a `pip install --upgrade` of PyAgent does not wipe it out. Built-in tools (`bash`, `list_files`, `find_files`, `search_text`, `read_file`, `write_file`, `append_file`, `edit_file`) stay inside the package; user tools layer on top.
 
 ### Layout
 
@@ -256,10 +304,10 @@ Each user tool is a single self-contained Python file. PyAgent runs it through [
 
 Every tool must implement two CLI subcommands:
 
-- `uv run <script> describe` — print a JSON manifest with `name`, `description`, `parameters` (a JSON-Schema-shaped object), and an optional `version`. The output is cached by path + mtime + size, so subsequent startups skip the subprocess.
-- `uv run <script> invoke --args-file <path>` — read the tool arguments as a JSON object from `<path>`, print the result to stdout, and exit non-zero with an error on stderr if anything goes wrong.
+- `<runner> run <script> describe` — print a JSON manifest with `name`, `description`, `parameters` (a JSON-Schema-shaped object), and an optional `version`. By default `<runner>` is `uv`. The output is cached by path + mtime + size, so subsequent startups skip the subprocess.
+- `<runner> run <script> invoke --args-file <path>` — read the tool arguments as a JSON object from `<path>`, print the result to stdout, and exit non-zero with an error on stderr if anything goes wrong. By default `<runner>` is `uv`.
 
-Use `/tools new <name>` from inside PyAgent to scaffold a starter file, or write one by hand. Skeleton:
+Use `/tools new <name>` from inside PyAgent to scaffold a starter file, or write one by hand. The built-in scaffold and examples use `uv`, which is the recommended runner. Skeleton:
 
 ```python
 #!/usr/bin/env -S uv run --script

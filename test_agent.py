@@ -1111,7 +1111,7 @@ class ToolRegistryCompositionTests(unittest.TestCase):
     def test_builtin_wins_on_collision_and_collisions_are_reported(self) -> None:
         config = AppConfig()
         external = ToolSpec(
-            name="calculator",
+            name="list_files",
             description="Should NOT replace the built-in",
             parameters={"type": "object", "properties": {}},
             handler=lambda **_: "external",
@@ -1119,14 +1119,10 @@ class ToolRegistryCompositionTests(unittest.TestCase):
         registry = create_default_tool_registry(
             config, external_specs=[external])
 
-        self.assertEqual(registry.origin("calculator"), BUILTIN_ORIGIN)
-        self.assertEqual(
-            registry.execute(
-                "calculator", {"num1": "1", "num2": "2", "operation": "+"}),
-            "3.0",
-        )
+        self.assertEqual(registry.origin("list_files"), BUILTIN_ORIGIN)
+        self.assertNotEqual(registry.execute("list_files", {}), "external")
         self.assertEqual(len(registry.collisions()), 1)
-        self.assertEqual(registry.collisions()[0].name, "calculator")
+        self.assertEqual(registry.collisions()[0].name, "list_files")
 
     def test_external_specs_register_and_track_origin_and_source(self) -> None:
         config = AppConfig()
