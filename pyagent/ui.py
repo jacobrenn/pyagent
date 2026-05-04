@@ -21,6 +21,7 @@ from .model_profiles import ModelProfile, default_base_url_for_provider
 from .project_context import GLOBAL_SCOPE, PROJECT_SCOPE, load_full_context
 from .scaffold import ScaffoldError, create_user_tool
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
+from .commands import COMMAND_REGISTRY
 
 
 PROMPT_INPUT_MIN_HEIGHT = 8
