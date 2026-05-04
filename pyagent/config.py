@@ -18,7 +18,7 @@ def _parse_csv_env(value: str) -> tuple[str, ...]:
 
 
 def _default_profiles_path() -> str:
-    return str(Path.home() / ".pyagent" / "models.json")
+    return str(Path.home() / ".pyagent" / "profiles.json")
 
 
 def _default_user_dir() -> str:

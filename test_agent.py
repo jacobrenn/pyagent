@@ -258,7 +258,7 @@ class AgentTests(unittest.TestCase):
 
     def test_set_profile_rebuilds_client(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            profile_path = os.path.join(temp_dir, "models.json")
+            profile_path = os.path.join(temp_dir, "profiles.json")
             with open(profile_path, "w", encoding="utf-8") as file:
                 json.dump(
                     {
@@ -304,7 +304,7 @@ class AgentTests(unittest.TestCase):
 
     def test_reload_profiles_refreshes_store_from_disk(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            profile_path = os.path.join(temp_dir, "models.json")
+            profile_path = os.path.join(temp_dir, "profiles.json")
             with open(profile_path, "w", encoding="utf-8") as file:
                 json.dump(
                     {
@@ -633,7 +633,7 @@ class ClientTests(unittest.TestCase):
 
     def test_rebuild_client_closes_previous_client(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            profile_path = os.path.join(temp_dir, "models.json")
+            profile_path = os.path.join(temp_dir, "profiles.json")
             with open(profile_path, "w", encoding="utf-8") as file:
                 json.dump(
                     {
@@ -665,7 +665,7 @@ class ClientTests(unittest.TestCase):
 class ProfileStoreTests(unittest.TestCase):
     def test_load_profile_store_from_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = os.path.join(temp_dir, "models.json")
+            path = os.path.join(temp_dir, "profiles.json")
             with open(path, "w", encoding="utf-8") as file:
                 json.dump(
                     {
@@ -690,7 +690,7 @@ class ProfileStoreTests(unittest.TestCase):
 
     def test_update_and_save_profile_store_round_trips_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = os.path.join(temp_dir, "models.json")
+            path = os.path.join(temp_dir, "profiles.json")
             store = load_profile_store(path)
             profile = ModelProfile(
                 name="openai-test",

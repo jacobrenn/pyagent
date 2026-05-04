@@ -203,8 +203,10 @@ def load_profile_store(path: str | None = None) -> ProfileStore:
         return _store_from_json(str(profile_path), payload)
 
     fallback_profile = _env_profile()
-    return ProfileStore(
+    store = ProfileStore(
         path=str(profile_path),
         default_profile=fallback_profile.name,
         profiles={fallback_profile.name: fallback_profile},
     )
+    save_profile_store(store)
+    return store

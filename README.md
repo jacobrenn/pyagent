@@ -34,7 +34,13 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 
 ## Installation
 
-Install PyAgent locally from the repo root:
+Install PyAgent via pip:
+
+```bash
+pip install pyagent-harness
+```
+
+If you are developing and want to install locally from the repo root:
 
 ```bash
 python -m pip install -e .
@@ -53,7 +59,7 @@ PyAgent uses the `openai` Python SDK for OpenAI-compatible profiles and keeps th
 After installation, run PyAgent from any directory with:
 
 ```bash
-PyAgent
+pyagent
 ```
 
 You can also launch it as a module:
@@ -65,8 +71,8 @@ python -m pyagent
 To choose a saved profile and optionally override its model for the current session:
 
 ```bash
-PyAgent --profile local-qwen
-PyAgent --profile openai-gpt4 --model gpt-4.1-mini
+pyagent --profile local-qwen
+pyagent --profile openai-gpt4 --model gpt-4.1-mini
 ```
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can inspect the currently loaded sources with `/context` and refresh them while the app is running with `/reload_context`.
@@ -75,9 +81,7 @@ If the current working directory contains `AGENTS.md`, `*.skill`, or files under
 
 PyAgent loads named profiles from JSON. By default it looks for:
 
-```text
-~/.pyagent/models.json
-```
+~/.pyagent/profiles.json
 
 You can override the location with:
 
@@ -222,7 +226,7 @@ Examples:
 Environment variables:
 
 - `PYAGENT_PROFILE` — default profile name to select
-- `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/.pyagent/models.json` location
+- `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/.pyagent/profiles.json` location
 - `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding the default `~/.pyagent/system_prompt.txt` location
 - `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
 - `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn (`-1` means infinite)
@@ -233,7 +237,7 @@ Environment variables:
 - `PYAGENT_BASH_TIMEOUT_DEFAULT` — default bash timeout in seconds
 - `PYAGENT_BASH_BLOCKED_SUBSTRINGS` — comma-separated dangerous bash fragments to block
 - `PYAGENT_BASH_READONLY_PREFIXES` — comma-separated allowed prefixes in read-only mode
-- `PYAGENT_USER_DIR` — root for user-managed tools, skills, and `models.json` (default `~/.pyagent`)
+- `PYAGENT_USER_DIR` — root for user-managed tools, skills, and `profiles.json` (default `~/.pyagent`)
 - `PYAGENT_USER_TOOLS_ENABLED` — discover and register external tools under `~/.pyagent/tools/` (`true` by default)
 - `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation (default `60`)
 - `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch (default `10`)
@@ -265,7 +269,7 @@ Examples:
 
 ```bash
 export PYAGENT_SYSTEM_PROMPT_PATH="$HOME/.config/pyagent/my_prompt.txt"
-PyAgent
+pyagent
 ```
 
 Or edit the default prompt file directly:
@@ -289,7 +293,7 @@ Anything you add for yourself — custom tools, custom skills, custom `AGENTS.md
 
 ```text
 ~/.pyagent/
-├── models.json                      # named model profiles (existing)
+├── profiles.json                      # named model profiles (existing)
 ├── AGENTS.md                        # optional user-global agent instructions
 ├── skills/                          # user-global skills (*.md, *.skill)
 └── tools/                           # user tools (one UV script per tool)
