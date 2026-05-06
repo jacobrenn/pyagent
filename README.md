@@ -54,8 +54,9 @@ pip install -r requirements.txt
 
 PyAgent uses the `openai` Python SDK for OpenAI-compatible profiles and keeps the native Ollama HTTP path for Ollama profiles.
 
-## Running the TUI
+## Running PyAgent
 
+### Interactive Mode (TUI)
 After installation, run PyAgent from any directory with:
 
 ```bash
@@ -68,11 +69,25 @@ You can also launch it as a module:
 python -m pyagent
 ```
 
+### Single-Shot Mode (CLI)
+You can run a single prompt and exit directly from the command line:
+
+```bash
+pyagent --prompt "What files are in the current directory?"
+```
+
+### Options
 To choose a saved profile and optionally override its model for the current session:
 
 ```bash
 pyagent --profile local-qwen
 pyagent --profile openai-gpt4 --model gpt-4.1-mini
+```
+
+You can combine these with the `--prompt` flag:
+
+```bash
+pyagent --profile openai-gpt4 --prompt "Summarize the contents of README.md"
 ```
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can inspect the currently loaded sources with `/context` and refresh them while the app is running with `/reload_context`.

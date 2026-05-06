@@ -48,8 +48,67 @@ from pyagent.tools import (
     list_files,
     search_text,
 )
+# ... existing imports ...
 from pyagent.ui import ChatMessage, PyAgentApp
 from pyagent.user_runtime import RunnerStatus
+from pyagent.main import main as main_entry # Add this import
+
+# ... (all existing test classes) ...
+
+class MainCliTests(unittest.TestCase):
+    def test_single_shot_mode_prints_response_and_exits(self) -> None:
+        # Mock the Agent to avoid real LLM calls
+        with mock.patch("pyagent.main.Agent") as MockAgent:
+            mock_agent_instance = MockAgent.return_value
+            # Simulate the generator returned by agent.run()
+            mock_agent_instance.run.return_value = [
+                {"type": "content_delta", "delta": "Hello "},
+                {"type": "content_delta", "delta": "World!"},
+                {"type": "assistant_done", "content": "Hello World!"},
+            ]
+
+            # Mock sys.argv to simulate: pyagent --prompt "Hi"
+            with mock.patch("sys.argv", ["pyagent", "--prompt", "Hi"]):
+                with mock.patch("sys.stdout") as mock_stdout:
+                    # We expect sys.exit(0) to be called
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry()
+                    
+                    self.assertEqual(cm.exception.code, 0)
+                    # The current implementation in main.py only prints the final content 
+                    # from the assistant_done event.
+                    mock_stdout.write.assert_called_with("Hello World!")
+
+    def test_single_shot_mode_passes_profile_and_model(self) -> None:
+        with mock.patch("pyagent.main.Agent") as MockAgent:
+            mock_agent_instance = MockAgent.return_value
+            mock_agent_instance.run.return_value = [
+                {"type": "assistant_done", "content": "Done"}
+            ]
+
+            # Simulate: pyagent --profile my-profile --model my-model --prompt "Hi"
+            with mock.patch("sys.argv", ["pyagent", "--profile", "my-profile", "--model", "my-model", "--prompt", "Hi"]):
+                with mock.patch("sys.stdout"):
+                    with self.assertRaises(SystemExit):
+                        main_entry()
+                    
+                    # Verify Agent was instantiated with the correct overrides
+                    MockAgent.assert_called_once_with(profile="my-profile", model="my-model")
+
+    def test_interactive_mode_launches_app(self) -> None:
+        with mock.patch("pyagent.main.PyAgentApp") as MockApp:
+            # Mock the run method of the app
+            mock_app_instance = MockApp.return_value
+            
+            # Simulate: pyagent (no prompt)
+            with mock.patch("sys.argv", ["pyagent"]):
+                main_entry()
+                
+                MockApp.assert_called_once()
+                mock_app_instance.run.assert_called_once()
+
+# ... (remaining file) ...
+
 
 
 class DummyClient:
