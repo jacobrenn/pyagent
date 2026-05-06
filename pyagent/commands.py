@@ -11,6 +11,7 @@ from .project_context import GLOBAL_SCOPE, PROJECT_SCOPE
 if TYPE_CHECKING:
     from .ui import PyAgentApp
 
+
 def _truncate(text: str, max_chars: int = 500) -> str:
     if len(text) <= max_chars:
         return text
@@ -18,8 +19,10 @@ def _truncate(text: str, max_chars: int = 500) -> str:
 
 # --- Helper Parsers ---
 
+
 def _parse_bool_option(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _parse_max_iterations(value: str) -> tuple[int | None, str | None]:
     try:
@@ -29,6 +32,7 @@ def _parse_max_iterations(value: str) -> tuple[int | None, str | None]:
     if iterations == 0 or iterations < -1:
         return None, "Max iterations must be a positive integer or `-1` for infinite."
     return iterations, None
+
 
 def _parse_profile_add_options(app: PyAgentApp, args: list[str]) -> tuple[dict[str, Any], str | None]:
     if not args:
@@ -63,9 +67,11 @@ def _parse_profile_add_options(app: PyAgentApp, args: list[str]) -> tuple[dict[s
 
 # --- Command Handlers ---
 
+
 def handle_help(app: PyAgentApp, args: list[str]) -> bool:
     app._add_system_note(app._command_help_text())
     return True
+
 
 def handle_tools(app: PyAgentApp, args: list[str]) -> bool:
     if not args:
@@ -77,7 +83,8 @@ def handle_tools(app: PyAgentApp, args: list[str]) -> bool:
         enabled = action == "on"
         app.agent.set_tools_enabled(enabled)
         state = "enabled" if enabled else "disabled"
-        app._add_system_note(f"Tools {state} for this session. Conversation reset so the updated system prompt takes effect.")
+        app._add_system_note(
+            f"Tools {state} for this session. Conversation reset so the updated system prompt takes effect.")
         app._set_status(app._ready_status())
         return True
     if action == "reload" and not rest:
@@ -91,11 +98,14 @@ def handle_tools(app: PyAgentApp, args: list[str]) -> bool:
         ]
         if discovery is not None:
             if discovery.broken:
-                details.append(f"Skipped due to errors: `{len(discovery.broken)}`")
+                details.append(
+                    f"Skipped due to errors: `{len(discovery.broken)}`")
             if discovery.disabled:
-                details.append(f"Disabled scripts: `{len(discovery.disabled)}`")
+                details.append(
+                    f"Disabled scripts: `{len(discovery.disabled)}`")
             if not discovery.runner_available and discovery.runner_message:
-                details.append(f"Runner unavailable: {discovery.runner_message}")
+                details.append(
+                    f"Runner unavailable: {discovery.runner_message}")
         app._add_system_note("\n".join(details))
         app._set_status(app._ready_status())
         return True
@@ -104,21 +114,25 @@ def handle_tools(app: PyAgentApp, args: list[str]) -> bool:
             app._add_system_note("Usage: `/tools new <name>`")
             return True
         try:
-            created = create_user_tool(rest[0], user_dir=app.agent.config.user_dir)
+            created = create_user_tool(
+                rest[0], user_dir=app.agent.config.user_dir)
         except ScaffoldError as exc:
             app._add_system_note(f"Could not create tool: {exc}")
             return True
-        app._add_system_note(f"Created starter tool at `{created}`.\n\nEdit it, then run `/tools reload` to register it.")
+        app._add_system_note(
+            f"Created starter tool at `{created}`.\n\nEdit it, then run `/tools reload` to register it.")
         return True
     if action in {"enable", "disable"}:
         if len(rest) != 1:
             app._add_system_note(f"Usage: `/tools {action} <name>`")
             return True
-        new_path, error = move_tool_script(rest[0], user_dir=app.agent.config.user_dir, enable=(action == "enable"))
+        new_path, error = move_tool_script(
+            rest[0], user_dir=app.agent.config.user_dir, enable=(action == "enable"))
         if error or new_path is None:
             app._add_system_note(error or "Unknown error.")
             return True
-        app._add_system_note(f"Moved tool to `{new_path}`.\n\nRun `/tools reload` to apply the change.")
+        app._add_system_note(
+            f"Moved tool to `{new_path}`.\n\nRun `/tools reload` to apply the change.")
         return True
     if action == "open":
         if len(rest) != 1:
@@ -126,12 +140,14 @@ def handle_tools(app: PyAgentApp, args: list[str]) -> bool:
             return True
         located = find_tool_script(rest[0], user_dir=app.agent.config.user_dir)
         if located is None:
-            app._add_system_note(f"No tool named `{rest[0]}` was found under `{app.agent.config.user_dir}/tools/`.")
+            app._add_system_note(
+                f"No tool named `{rest[0]}` was found under `{app.agent.config.user_dir}/tools/`.")
             return True
         app._add_system_note(f"Tool script path: `{located}`")
         return True
     app._add_system_note(app._tools_usage_text())
     return True
+
 
 def handle_profiles(app: PyAgentApp, args: list[str]) -> bool:
     if len(args) == 1 and args[0].lower() == "reload":
@@ -140,7 +156,8 @@ def handle_profiles(app: PyAgentApp, args: list[str]) -> bool:
         except ValueError as exc:
             app._add_system_note(f"Could not reload profiles: `{exc}`")
             return True
-        app._add_system_note(f"Reloaded profiles from `{app.agent.profile_store.path}`. Active profile: `{app.agent.current_profile().name}`.")
+        app._add_system_note(
+            f"Reloaded profiles from `{app.agent.profile_store.path}`. Active profile: `{app.agent.current_profile().name}`.")
         app._set_status(app._ready_status())
         return True
     current = app.agent.current_profile().name
@@ -149,18 +166,25 @@ def handle_profiles(app: PyAgentApp, args: list[str]) -> bool:
     for name in app.agent.profile_names():
         profile = app.agent.profile_store.get(name)
         markers = []
-        if name == current: markers.append("current")
-        if name == default_name: markers.append("default")
+        if name == current:
+            markers.append("current")
+        if name == default_name:
+            markers.append("default")
         marker_text = f" ({', '.join(markers)})" if markers else ""
-        auth = f"api_key_env={profile.api_key_env}" if profile.api_key_env else ("inline api key" if profile.api_key else "no api key")
-        lines.append(f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}` • {auth}")
-    app._add_system_note("Saved profiles:\n" + ("\n".join(lines) if lines else "<no profiles>") + f"\n\nProfile file: `{app.agent.profile_store.path}`")
+        auth = f"api_key_env={profile.api_key_env}" if profile.api_key_env else (
+            "inline api key" if profile.api_key else "no api key")
+        lines.append(
+            f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}` • {auth}")
+    app._add_system_note("Saved profiles:\n" + ("\n".join(lines) if lines else "<no profiles>") +
+                         f"\n\nProfile file: `{app.agent.profile_store.path}`")
     return True
+
 
 def handle_profile(app: PyAgentApp, args: list[str]) -> bool:
     if not args:
         profile = app.agent.current_profile()
-        app._add_system_note(f"Current profile:\n- Name: `{profile.name}`\n- Provider: `{profile.provider}`\n- Model: `{profile.model}`\n- Base URL: `{profile.base_url}`\n- API key env: `{profile.api_key_env or '<none>'}`")
+        app._add_system_note(
+            f"Current profile:\n- Name: `{profile.name}`\n- Provider: `{profile.provider}`\n- Model: `{profile.model}`\n- Base URL: `{profile.base_url}`\n- API key env: `{profile.api_key_env or '<none>'}`")
         return True
     if args[0].lower() == "add":
         options, error = _parse_profile_add_options(app, args[1:])
@@ -174,21 +198,27 @@ def handle_profile(app: PyAgentApp, args: list[str]) -> bool:
         make_default = bool(options.get("default", False))
         switch_to = bool(options.get("switch", False))
         try:
-            base_url = str(options.get("base_url") or default_base_url_for_provider(provider)).strip()
+            base_url = str(options.get("base_url")
+                           or default_base_url_for_provider(provider)).strip()
             profile = ModelProfile(
                 name=profile_name, provider=provider, model=model, base_url=base_url,
                 api_key=str(options.get("api_key", "")).strip() or None,
-                api_key_env=str(options.get("api_key_env", "")).strip() or None,
+                api_key_env=str(options.get(
+                    "api_key_env", "")).strip() or None,
                 headers={str(k): str(v) for k, v in headers.items()},
             )
             app.agent.save_profile(profile, make_default=make_default)
-            if switch_to: app.agent.set_profile(profile.name)
+            if switch_to:
+                app.agent.set_profile(profile.name)
         except ValueError as exc:
             app._add_system_note(f"Could not save profile: `{exc}`")
             return True
-        details = [f"Saved profile `{profile.name}`.", f"Provider: `{profile.provider}`", f"Model: `{profile.model}`", f"Base URL: `{profile.base_url}`", f"Profile file: `{app.agent.profile_store.path}`"]
-        if make_default: details.append("Set as default profile.")
-        if switch_to: details.append("Switched to the new profile.")
+        details = [f"Saved profile `{profile.name}`.", f"Provider: `{profile.provider}`", f"Model: `{profile.model}`",
+                   f"Base URL: `{profile.base_url}`", f"Profile file: `{app.agent.profile_store.path}`"]
+        if make_default:
+            details.append("Set as default profile.")
+        if switch_to:
+            details.append("Switched to the new profile.")
         app._add_system_note("\n".join(details))
         app._set_status(app._ready_status())
         return True
@@ -199,14 +229,17 @@ def handle_profile(app: PyAgentApp, args: list[str]) -> bool:
     except ValueError as exc:
         app._add_system_note(str(exc))
         return True
-    app._add_system_note(f"Switched profile from `{old_profile}` to `{app.agent.current_profile().name}`. Conversation preserved.")
+    app._add_system_note(
+        f"Switched profile from `{old_profile}` to `{app.agent.current_profile().name}`. Conversation preserved.")
     app._set_status(app._ready_status())
     return True
+
 
 def handle_model(app: PyAgentApp, args: list[str]) -> bool:
     profile = app.agent.current_profile()
     if not args:
-        app._add_system_note(f"Current model:\n- Profile: `{profile.name}`\n- Provider: `{profile.provider}`\n- Model: `{profile.model}`\nUsage:\n- `/model list` — list models from the current endpoint\n- `/model <name>` — override the active profile's model")
+        app._add_system_note(
+            f"Current model:\n- Profile: `{profile.name}`\n- Provider: `{profile.provider}`\n- Model: `{profile.model}`\nUsage:\n- `/model list` — list models from the current endpoint\n- `/model <name>` — override the active profile's model")
         return True
     if len(args) == 1 and args[0].lower() == "list":
         model_names, error = app.agent.available_models()
@@ -214,9 +247,11 @@ def handle_model(app: PyAgentApp, args: list[str]) -> bool:
             app._add_system_note(f"Could not list models: `{error}`")
             return True
         if not model_names:
-            app._add_system_note("This endpoint did not report any available models.")
+            app._add_system_note(
+                "This endpoint did not report any available models.")
             return True
-        app._add_system_note(f"Available models for `{profile.name}`:\n" + "\n".join(f"- `{name}`" for name in model_names))
+        app._add_system_note(
+            f"Available models for `{profile.name}`:\n" + "\n".join(f"- `{name}`" for name in model_names))
         return True
     new_model = " ".join(args).strip()
     if not new_model:
@@ -227,9 +262,11 @@ def handle_model(app: PyAgentApp, args: list[str]) -> bool:
         app._add_system_note(f"Already using model `{new_model}`.")
         return True
     app.agent.set_model(new_model)
-    app._add_system_note(f"Switched model from `{old_model}` to `{new_model}` within profile `{profile.name}`.")
+    app._add_system_note(
+        f"Switched model from `{old_model}` to `{new_model}` within profile `{profile.name}`.")
     app._set_status(app._ready_status())
     return True
+
 
 def handle_max_iterations(app: PyAgentApp, args: list[str]) -> bool:
     if len(args) != 1:
@@ -240,9 +277,11 @@ def handle_max_iterations(app: PyAgentApp, args: list[str]) -> bool:
         app._add_system_note(error)
         return True
     app.agent.config.max_iterations = max_iterations
-    app._add_system_note(f"Set agent tool-loop max iterations to {app._max_iterations_text()} for this session.")
+    app._add_system_note(
+        f"Set agent tool-loop max iterations to {app._max_iterations_text()} for this session.")
     app._set_status(app._ready_status())
     return True
+
 
 def handle_status(app: PyAgentApp, args: list[str]) -> bool:
     profile = app.agent.current_profile()
@@ -254,9 +293,11 @@ def handle_status(app: PyAgentApp, args: list[str]) -> bool:
     )
     return True
 
+
 def handle_cwd(app: PyAgentApp, args: list[str]) -> bool:
     app._add_system_note(f"Current working directory: `{os.getcwd()}`")
     return True
+
 
 def handle_history(app: PyAgentApp, args: list[str]) -> bool:
     if args and args[0].lower() == "search":
@@ -264,28 +305,38 @@ def handle_history(app: PyAgentApp, args: list[str]) -> bool:
         if not query:
             app._add_system_note("Usage: `/history search <text>`")
             return True
-        matches = [entry for entry in app.input_history if query.lower() in entry.lower()]
+        matches = [entry for entry in app.input_history if query.lower()
+                   in entry.lower()]
         if not matches:
-            app._add_system_note(f"No prompt history entries matched `{query}`.")
+            app._add_system_note(
+                f"No prompt history entries matched `{query}`.")
             return True
-        history_lines = "\n".join(f"- {_truncate(entry.replace(chr(10), ' ⏎ '), 160)}" for entry in matches[-10:])
-        app._add_system_note(f"Prompt history matches for `{query}`:\n{history_lines}")
+        history_lines = "\n".join(
+            f"- {_truncate(entry.replace(chr(10), ' ⏎ '), 160)}" for entry in matches[-10:])
+        app._add_system_note(
+            f"Prompt history matches for `{query}`:\n{history_lines}")
         return True
     if not app.input_history:
         app._add_system_note("Prompt history is empty.")
     else:
-        history_lines = "\n".join(f"{i + 1}. {_truncate(entry.replace(chr(10), ' ⏎ '), 120)}" for i, entry in enumerate(app.input_history[-10:]))
-        app._add_system_note(f"Recent prompts:\n{history_lines}\n\nTip: use `/history search <text>` to find an older prompt.")
+        history_lines = "\n".join(
+            f"{i + 1}. {_truncate(entry.replace(chr(10), ' ⏎ '), 120)}" for i, entry in enumerate(app.input_history[-10:]))
+        app._add_system_note(
+            f"Recent prompts:\n{history_lines}\n\nTip: use `/history search <text>` to find an older prompt.")
     return True
+
 
 def handle_prompt(app: PyAgentApp, args: list[str]) -> bool:
     system_prompt = app.agent.messages[0]["content"] if app.agent.messages else "<missing>"
-    app._add_system_note(f"Active system prompt:\n\n```text\n{system_prompt}\n```")
+    app._add_system_note(
+        f"Active system prompt:\n\n```text\n{system_prompt}\n```")
     return True
+
 
 def handle_context(app: PyAgentApp, args: list[str]) -> bool:
     app._add_system_note(app._context_status_text())
     return True
+
 
 def handle_reload_profiles(app: PyAgentApp, args: list[str]) -> bool:
     try:
@@ -293,26 +344,35 @@ def handle_reload_profiles(app: PyAgentApp, args: list[str]) -> bool:
     except ValueError as exc:
         app._add_system_note(f"Could not reload profiles: `{exc}`")
         return True
-    app._add_system_note(f"Reloaded profiles from `{app.agent.profile_store.path}`. Active profile: `{app.agent.current_profile().name}`.")
+    app._add_system_note(
+        f"Reloaded profiles from `{app.agent.profile_store.path}`. Active profile: `{app.agent.current_profile().name}`.")
     app._set_status(app._ready_status())
     return True
+
 
 def handle_reload_context(app: PyAgentApp, args: list[str]) -> bool:
     previous_files = set(app.agent.project_context_files)
     app.project_context, app.context_sources = load_full_context(os.getcwd())
-    app.project_context_files = [source.label for source in app.context_sources]
-    app.agent.set_project_context(app.project_context, app.project_context_files)
+    app.project_context_files = [
+        source.label for source in app.context_sources]
+    app.agent.set_project_context(
+        app.project_context, app.project_context_files)
     current_files = set(app.project_context_files)
     added = sorted(current_files - previous_files)
     removed = sorted(previous_files - current_files)
     details = [app._context_status_text()]
-    if added: details.append("Added:\n" + "\n".join(f"- `{path}`" for path in added))
-    if removed: details.append("Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
+    if added:
+        details.append("Added:\n" + "\n".join(f"- `{path}`" for path in added))
+    if removed:
+        details.append(
+            "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
     if not app.project_context_files:
-        details = ["Reloaded project instructions. No user-global or project instruction files were found."]
+        details = [
+            "Reloaded project instructions. No user-global or project instruction files were found."]
     app._add_system_note("\n\n".join(details))
     app._set_status(app._ready_status())
     return True
+
 
 def handle_debug(app: PyAgentApp, args: list[str]) -> bool:
     if not args:
@@ -323,12 +383,14 @@ def handle_debug(app: PyAgentApp, args: list[str]) -> bool:
     if arg in {"on", "off"}:
         app.debug_visible = arg == "on"
         app._debug_log_widget().display = app.debug_visible
-        app._add_system_note(f"Debug pane {'enabled' if app.debug_visible else 'disabled'}.")
+        app._add_system_note(
+            f"Debug pane {'enabled' if app.debug_visible else 'disabled'}.")
         return True
     app._add_system_note("Usage: `/debug on` or `/debug off`")
     return True
 
 # --- Registry ---
+
 
 COMMAND_REGISTRY = {
     "/help": handle_help,
