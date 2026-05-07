@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyagent-harness"
-version = "0.3.0"
+version = "0.3.1"
 description = "A lightweight coding agent built with Textual and a configurable multi-provider backend"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,9 +13,25 @@ dependencies = [
   "requests",
   "openai>=2.14.0",
 ]
+authors = [{name = "Jacob Renn"}]
+keywords = ["agent", "tui", "coding-assistant", "textual", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+license = {text = "MIT"}
 
 [project.scripts]
 pyagent = "pyagent.main:main"
+
+[project.urls]
+"Homepage" = "https://github.com/jacobrenn/pyagent"
+"Repository" = "https://github.com/jacobrenn/pyagent"
+"Bug Tracker" = "https://github.com/jacobrenn/pyagent/issues"
 
 [tool.setuptools.packages.find]
 include = ["pyagent*"]
