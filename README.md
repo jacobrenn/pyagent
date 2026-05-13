@@ -19,7 +19,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Multi-line prompt input** with `Shift+Enter`; press `Enter` to send, the input box auto-grows as you type, and the prompt area shows a helper hint
 - **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
 - **Keyboard shortcuts** including `Ctrl+L` to clear the conversation, `Ctrl+D` to toggle the debug pane, and transcript scrolling with `↑` / `↓` / `PgUp` / `PgDn` / `Home` / `End`
-- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
+- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, `/logging`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
 - **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup, with `/context` and `/reload_context` for inspection and refresh
 - **Persistent custom tools and skills** under `~/.pyagent/` that survive `pip install --upgrade`. Each user-managed tool is a standalone UV script (PEP 723) with click subcommands, so adding a new tool with new dependencies never touches the core install
 
@@ -206,6 +206,7 @@ Changing tool mode at runtime resets the current conversation so the updated sys
 - `/context` — show loaded user-global and project instruction files and context size
 - `/prompt` — show the active system prompt
 - `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files and report added/removed files
+- `/logging on|off` — enable or disable session logging (saved to `~/.pyagent/logs/`)
 - `/debug` — show whether the debug pane is currently on or off
 - `/debug on|off` — show or hide the debug pane
 
