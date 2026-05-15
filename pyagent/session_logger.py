@@ -70,7 +70,8 @@ class SessionLogger:
         }
         if attributes:
             entry["attributes"] = attributes
-        self._file.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        self._file.write(json.dumps(
+            entry, ensure_ascii=False, default=str) + "\n")
         self._file.flush()
 
     def info(self, body: str, attributes: dict[str, Any] | None = None) -> None:

@@ -51,9 +51,10 @@ from pyagent.tools import (
 # ... existing imports ...
 from pyagent.ui import ChatMessage, PyAgentApp
 from pyagent.user_runtime import RunnerStatus
-from pyagent.main import main as main_entry # Add this import
+from pyagent.main import main as main_entry  # Add this import
 
 # ... (all existing test classes) ...
+
 
 class MainCliTests(unittest.TestCase):
     def test_single_shot_mode_prints_response_and_exits(self) -> None:
@@ -73,9 +74,9 @@ class MainCliTests(unittest.TestCase):
                     # We expect sys.exit(0) to be called
                     with self.assertRaises(SystemExit) as cm:
                         main_entry()
-                    
+
                     self.assertEqual(cm.exception.code, 0)
-                    # The current implementation in main.py only prints the final content 
+                    # The current implementation in main.py only prints the final content
                     # from the assistant_done event.
                     mock_stdout.write.assert_called_with("Hello World!")
 
@@ -91,24 +92,24 @@ class MainCliTests(unittest.TestCase):
                 with mock.patch("sys.stdout"):
                     with self.assertRaises(SystemExit):
                         main_entry()
-                    
+
                     # Verify Agent was instantiated with the correct overrides
-                    MockAgent.assert_called_once_with(profile="my-profile", model="my-model")
+                    MockAgent.assert_called_once_with(
+                        profile="my-profile", model="my-model")
 
     def test_interactive_mode_launches_app(self) -> None:
         with mock.patch("pyagent.main.PyAgentApp") as MockApp:
             # Mock the run method of the app
             mock_app_instance = MockApp.return_value
-            
+
             # Simulate: pyagent (no prompt)
             with mock.patch("sys.argv", ["pyagent"]):
                 main_entry()
-                
+
                 MockApp.assert_called_once()
                 mock_app_instance.run.assert_called_once()
 
 # ... (remaining file) ...
-
 
 
 class DummyClient:
@@ -1450,3 +1451,101 @@ def demo() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelProfileCompatibilityTests(unittest.TestCase):
+    def test_profile_from_dict_accepts_legacy_http_kwargs_alias(self) -> None:
+        payload = {
+            "default_profile": "legacy",
+            "profiles": {
+                "legacy": {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "base_url": "https://example.invalid/v1",
+                    "http_kwargs": {"verify": False},
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "profiles.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            store = load_profile_store(str(path))
+
+        self.assertEqual(store.get("legacy").httpx_kwargs, {"verify": False})
+
+    def test_profile_from_dict_prefers_httpx_kwargs_over_legacy_alias(self) -> None:
+        payload = {
+            "default_profile": "legacy",
+            "profiles": {
+                "legacy": {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "base_url": "https://example.invalid/v1",
+                    "http_kwargs": {"verify": False},
+                    "httpx_kwargs": {"verify": True},
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "profiles.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            store = load_profile_store(str(path))
+
+        self.assertEqual(store.get("legacy").httpx_kwargs, {"verify": True})
+
+
+class OpenAICompatibleClientHttpTests(unittest.TestCase):
+    def test_openai_client_does_not_build_httpx_client_without_kwargs(self) -> None:
+        profile = ModelProfile(
+            name="test",
+            provider="openai",
+            model="gpt-test",
+            base_url="https://example.invalid/v1",
+        )
+        client = OpenAICompatibleClient(profile)
+        fake_sdk_client = FakeOpenAIClient()
+
+        with mock.patch("pyagent.llm_client.httpx.Client") as mock_httpx_client:
+            client._client_factory = mock.Mock(return_value=fake_sdk_client)
+            built = client._get_client()
+
+        self.assertIs(built, fake_sdk_client)
+        self.assertIsNone(client._http_client)
+        mock_httpx_client.assert_not_called()
+        client._client_factory.assert_called_once_with(
+            api_key="",
+            base_url="https://example.invalid/v1",
+            default_headers=None,
+            timeout=300.0,
+            max_retries=2,
+        )
+
+    def test_openai_client_builds_httpx_client_when_kwargs_are_present(self) -> None:
+        profile = ModelProfile(
+            name="test",
+            provider="openai",
+            model="gpt-test",
+            base_url="https://example.invalid/v1",
+            httpx_kwargs={"verify": False},
+        )
+        client = OpenAICompatibleClient(profile)
+        fake_sdk_client = FakeOpenAIClient()
+        fake_http_client = mock.Mock()
+
+        with mock.patch("pyagent.llm_client.httpx.Client", return_value=fake_http_client) as mock_httpx_client:
+            client._client_factory = mock.Mock(return_value=fake_sdk_client)
+            built = client._get_client()
+
+        self.assertIs(built, fake_sdk_client)
+        self.assertIs(client._http_client, fake_http_client)
+        mock_httpx_client.assert_called_once_with(verify=False)
+        client._client_factory.assert_called_once_with(
+            api_key="",
+            base_url="https://example.invalid/v1",
+            default_headers=None,
+            timeout=300.0,
+            max_retries=2,
+            http_client=fake_http_client,
+        )

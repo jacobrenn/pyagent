@@ -29,6 +29,7 @@ class ModelProfile:
     api_key: str | None = None
     api_key_env: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    httpx_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def resolved_provider(self) -> str:
         return normalize_provider(self.provider)
@@ -80,6 +81,18 @@ def default_base_url_for_provider(provider: str) -> str:
     return DEFAULT_OLLAMA_BASE_URL if normalized == "ollama" else DEFAULT_OPENAI_BASE_URL
 
 
+def _read_optional_object_field(data: dict[str, Any], *names: str) -> dict[str, Any]:
+    for field_name in names:
+        value = data.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"Profile field '{field_name}' must be an object.")
+        return value
+    return {}
+
+
 def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
     provider = normalize_provider(str(data.get("provider", "ollama")))
     model = str(data.get("model", "")).strip()
@@ -88,10 +101,9 @@ def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
 
     base_url = str(data.get("base_url")
                    or default_base_url_for_provider(provider)).strip()
-    headers = data.get("headers") or {}
-    if not isinstance(headers, dict):
-        raise ValueError(
-            f"Profile '{name}' field 'headers' must be an object.")
+    headers = _read_optional_object_field(data, "headers")
+    httpx_kwargs = _read_optional_object_field(
+        data, "httpx_kwargs", "http_kwargs")
 
     return ModelProfile(
         name=name,
@@ -101,6 +113,7 @@ def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
         api_key=str(data.get("api_key", "")).strip() or None,
         api_key_env=str(data.get("api_key_env", "")).strip() or None,
         headers={str(key): str(value) for key, value in headers.items()},
+        httpx_kwargs=dict(httpx_kwargs),
     )
 
 
@@ -185,6 +198,8 @@ def _profile_to_dict(profile: ModelProfile) -> dict[str, Any]:
         payload["api_key_env"] = profile.api_key_env
     if profile.headers:
         payload["headers"] = dict(sorted(profile.headers.items()))
+    if profile.httpx_kwargs:
+        payload["httpx_kwargs"] = profile.httpx_kwargs
     return payload
 
 

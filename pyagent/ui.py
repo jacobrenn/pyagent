@@ -52,7 +52,8 @@ class ChatMessage(Vertical):
         self.finalized = finalized
         self.render_mode = render_mode
         self._label = Label(self._label_text(), classes=f"role-label {role}")
-        self._stream_widget = Label(content, markup=False, classes="stream-content")
+        self._stream_widget = Label(
+            content, markup=False, classes="stream-content")
         self._markdown_widget = Markdown(content, classes="markdown-content")
         self._plain_text_widget = Label(
             content, markup=False, classes="plain-text-content"
@@ -120,7 +121,8 @@ class ChatMessage(Vertical):
 class PromptInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit", "Send", show=False, priority=True),
-        Binding("shift+enter", "insert_newline", "New line", show=False, priority=True),
+        Binding("shift+enter", "insert_newline",
+                "New line", show=False, priority=True),
         *TextArea.BINDINGS,
     ]
 
@@ -143,11 +145,14 @@ class PyAgentApp(App):
     BINDINGS = [
         Binding("up", "scroll_chat_up", "Scroll chat up", priority=True),
         Binding("down", "scroll_chat_down", "Scroll chat down", priority=True),
-        Binding("pageup", "scroll_chat_page_up", "Scroll chat up", priority=True),
-        Binding("pagedown", "scroll_chat_page_down", "Scroll chat down", priority=True),
+        Binding("pageup", "scroll_chat_page_up",
+                "Scroll chat up", priority=True),
+        Binding("pagedown", "scroll_chat_page_down",
+                "Scroll chat down", priority=True),
         Binding("home", "scroll_chat_home", "Chat top", priority=True),
         Binding("end", "scroll_chat_end", "Chat bottom", priority=True),
-        Binding("ctrl+p", "history_previous", "Previous prompt", priority=True),
+        Binding("ctrl+p", "history_previous",
+                "Previous prompt", priority=True),
         Binding("ctrl+n", "history_next", "Next prompt", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear chat"),
         Binding("ctrl+d", "toggle_debug", "Toggle debug"),
@@ -254,8 +259,10 @@ class PyAgentApp(App):
 
     def __init__(self, profile: str | None = None, model: str | None = None):
         super().__init__()
-        self.project_context, self.context_sources = load_full_context(os.getcwd())
-        self.project_context_files = [source.label for source in self.context_sources]
+        self.project_context, self.context_sources = load_full_context(
+            os.getcwd())
+        self.project_context_files = [
+            source.label for source in self.context_sources]
         self.agent = Agent(
             model=model,
             profile=profile,
@@ -361,7 +368,8 @@ class PyAgentApp(App):
         input_widget = self._prompt_input()
         line_count = max(1, input_widget.text.count("\n") + 1)
         target_height = max(
-            PROMPT_INPUT_MIN_HEIGHT, min(PROMPT_INPUT_MAX_HEIGHT, line_count + 2)
+            PROMPT_INPUT_MIN_HEIGHT, min(
+                PROMPT_INPUT_MAX_HEIGHT, line_count + 2)
         )
         input_widget.styles.height = target_height
 
@@ -500,7 +508,8 @@ class PyAgentApp(App):
             "/logging",
             "/log",
         ]
-        suggestion = get_close_matches(command, known_commands, n=1, cutoff=0.5)
+        suggestion = get_close_matches(
+            command, known_commands, n=1, cutoff=0.5)
         if suggestion:
             return f"Unknown command: `{command}`. Did you mean `{suggestion[0]}`? Use `/help` to see available commands."
         return f"Unknown command: `{command}`. Use `/help` to see available commands."
@@ -571,7 +580,7 @@ class PyAgentApp(App):
             if not normalized_key:
                 return {}, f"Invalid option `{token}`."
             if normalized_key.startswith("header."):
-                header_name = key[len("header.") :].strip()
+                header_name = key[len("header."):].strip()
                 if not header_name:
                     return {}, f"Invalid header option `{token}`."
                 headers = options["headers"]
@@ -654,7 +663,8 @@ class PyAgentApp(App):
             )
             for collision in collisions:
                 external_path = collision.external_path or "<unknown>"
-                lines.append(f"- `{collision.name}` — external: `{external_path}`")
+                lines.append(
+                    f"- `{collision.name}` — external: `{external_path}`")
 
         return "\n".join(lines)
 
@@ -687,11 +697,14 @@ class PyAgentApp(App):
             ]
             if discovery is not None:
                 if discovery.broken:
-                    details.append(f"Skipped due to errors: `{len(discovery.broken)}`")
+                    details.append(
+                        f"Skipped due to errors: `{len(discovery.broken)}`")
                 if discovery.disabled:
-                    details.append(f"Disabled scripts: `{len(discovery.disabled)}`")
+                    details.append(
+                        f"Disabled scripts: `{len(discovery.disabled)}`")
                 if not discovery.runner_available and discovery.runner_message:
-                    details.append(f"Runner unavailable: {discovery.runner_message}")
+                    details.append(
+                        f"Runner unavailable: {discovery.runner_message}")
             self._add_system_note("\n".join(details))
             self._set_status(self._ready_status())
             return True
@@ -701,7 +714,8 @@ class PyAgentApp(App):
                 self._add_system_note("Usage: `/tools new <name>`")
                 return True
             try:
-                created = create_user_tool(rest[0], user_dir=self.agent.config.user_dir)
+                created = create_user_tool(
+                    rest[0], user_dir=self.agent.config.user_dir)
             except ScaffoldError as exc:
                 self._add_system_note(f"Could not create tool: {exc}")
                 return True
@@ -734,7 +748,8 @@ class PyAgentApp(App):
             if len(rest) != 1:
                 self._add_system_note("Usage: `/tools open <name>`")
                 return True
-            located = find_tool_script(rest[0], user_dir=self.agent.config.user_dir)
+            located = find_tool_script(
+                rest[0], user_dir=self.agent.config.user_dir)
             if located is None:
                 self._add_system_note(
                     f"No tool named `{rest[0]}` was found under `{self.agent.config.user_dir}/tools/`."
@@ -766,7 +781,8 @@ class PyAgentApp(App):
             try:
                 logger = SessionLogger.from_config(self.agent.config)
             except Exception as exc:
-                self._add_system_note(f"Could not start session logging: `{exc}`")
+                self._add_system_note(
+                    f"Could not start session logging: `{exc}`")
                 return True
             self._session_logger = logger
             self.logging_enabled = True
@@ -830,7 +846,8 @@ class PyAgentApp(App):
                 try:
                     self.agent.reload_profiles()
                 except ValueError as exc:
-                    self._add_system_note(f"Could not reload profiles: `{exc}`")
+                    self._add_system_note(
+                        f"Could not reload profiles: `{exc}`")
                     return True
                 self._add_system_note(
                     f"Reloaded profiles from `{self.agent.profile_store.path}`. Active profile: `{self.agent.current_profile().name}`."
@@ -900,8 +917,10 @@ class PyAgentApp(App):
                         provider=provider,
                         model=model,
                         base_url=base_url,
-                        api_key=str(options.get("api_key", "")).strip() or None,
-                        api_key_env=str(options.get("api_key_env", "")).strip() or None,
+                        api_key=str(options.get("api_key", "")
+                                    ).strip() or None,
+                        api_key_env=str(options.get(
+                            "api_key_env", "")).strip() or None,
                         headers={
                             str(key): str(value) for key, value in headers.items()
                         },
@@ -974,7 +993,8 @@ class PyAgentApp(App):
 
             new_model = " ".join(args).strip()
             if not new_model:
-                self._add_system_note("Usage: `/model list` or `/model <name>`")
+                self._add_system_note(
+                    "Usage: `/model list` or `/model <name>`")
                 return True
 
             old_model = profile.model
@@ -991,7 +1011,8 @@ class PyAgentApp(App):
 
         if command == "/max_iterations":
             if len(args) != 1:
-                self._add_system_note("Usage: `/max_iterations <positive integer|-1>`")
+                self._add_system_note(
+                    "Usage: `/max_iterations <positive integer|-1>`")
                 return True
 
             max_iterations, error = self._parse_max_iterations(args[0])
@@ -1024,7 +1045,8 @@ class PyAgentApp(App):
             return True
 
         if command == "/cwd":
-            self._add_system_note(f"Current working directory: `{os.getcwd()}`")
+            self._add_system_note(
+                f"Current working directory: `{os.getcwd()}`")
             return True
 
         if command == "/history":
@@ -1092,7 +1114,8 @@ class PyAgentApp(App):
 
         if command == "/reload_context":
             previous_files = set(self.agent.project_context_files)
-            self.project_context, self.context_sources = load_full_context(os.getcwd())
+            self.project_context, self.context_sources = load_full_context(
+                os.getcwd())
             self.project_context_files = [
                 source.label for source in self.context_sources
             ]
@@ -1104,7 +1127,8 @@ class PyAgentApp(App):
             removed = sorted(previous_files - current_files)
             details = [self._context_status_text()]
             if added:
-                details.append("Added:\n" + "\n".join(f"- `{path}`" for path in added))
+                details.append(
+                    "Added:\n" + "\n".join(f"- `{path}`" for path in added))
             if removed:
                 details.append(
                     "Removed:\n" + "\n".join(f"- `{path}`" for path in removed)
@@ -1172,7 +1196,8 @@ class PyAgentApp(App):
     def _schedule_chat_scroll_end(self, force: bool = False) -> None:
         if force or self.chat_auto_follow or self._is_chat_near_bottom():
             self.chat_auto_follow = True
-            self.call_after_refresh(self._chat_container().scroll_end, animate=False)
+            self.call_after_refresh(
+                self._chat_container().scroll_end, animate=False)
 
     def _update_chat_auto_follow(self) -> None:
         self.chat_auto_follow = self._is_chat_near_bottom()
@@ -1209,7 +1234,8 @@ class PyAgentApp(App):
         self._schedule_chat_scroll_end(force=should_autoscroll)
         if self.logging_enabled and self._session_logger is not None:
             try:
-                self._session_logger.log_entry({"role": role, "content": content})
+                self._session_logger.log_entry(
+                    {"role": role, "content": content})
             except Exception:
                 pass
         return message
@@ -1240,7 +1266,8 @@ class PyAgentApp(App):
 
     async def action_clear_chat(self) -> None:
         if self.is_processing:
-            self.notify("Wait for the current response to finish before clearing.")
+            self.notify(
+                "Wait for the current response to finish before clearing.")
             return
         if self.logging_enabled and self._session_logger is not None:
             try:
@@ -1349,7 +1376,8 @@ class PyAgentApp(App):
         def ensure_assistant_message() -> ChatMessage:
             nonlocal assistant_message
             if assistant_message is None:
-                assistant_message = self._add_message("assistant", "", finalized=False)
+                assistant_message = self._add_message(
+                    "assistant", "", finalized=False)
             return assistant_message
 
         def flush_buffer() -> None:
@@ -1430,7 +1458,8 @@ class PyAgentApp(App):
                     continue
 
                 if event_type == "error":
-                    self._log_debug(f"error: {event.get('message', 'Unknown error')}")
+                    self._log_debug(
+                        f"error: {event.get('message', 'Unknown error')}")
                     ensure_assistant_message().append_stream(
                         f"\n\n{event.get('message', 'Unknown error')}"
                     )
@@ -1443,7 +1472,8 @@ class PyAgentApp(App):
                     # Snapshot new messages produced in this turn
                     try:
                         output_messages_snapshot = json.loads(
-                            json.dumps(self.agent.messages[output_index:], default=str)
+                            json.dumps(
+                                self.agent.messages[output_index:], default=str)
                         )
                     except Exception:
                         output_messages_snapshot = list(

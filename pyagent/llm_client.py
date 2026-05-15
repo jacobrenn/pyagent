@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import httpx
 from typing import Any, Iterable
 
 import openai
@@ -152,25 +153,41 @@ class OpenAICompatibleClient(BaseChatClient):
         self.models_url = f"{self.base_url}/models"
         self._client_factory = OpenAI
         self._sdk_client: OpenAI | None = None
+        self._http_client: httpx.Client | None = None
 
     def close(self) -> None:
         if self._sdk_client is not None:
             self._sdk_client.close()
             self._sdk_client = None
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
 
     def _resolved_api_key_for_sdk(self) -> str:
         api_key = self.profile.resolved_api_key()
         return api_key if api_key is not None else ""
 
+    def _client_args(self) -> dict[str, Any]:
+        return {
+            "api_key": self._resolved_api_key_for_sdk(),
+            "base_url": self.base_url,
+            "default_headers": self.profile.headers or None,
+            "timeout": float(self.timeout),
+            "max_retries": 2,
+        }
+
+    def _build_http_client(self) -> httpx.Client | None:
+        if not self.profile.httpx_kwargs:
+            return None
+        return httpx.Client(**self.profile.httpx_kwargs)
+
     def _get_client(self) -> OpenAI:
         if self._sdk_client is None:
-            self._sdk_client = self._client_factory(
-                api_key=self._resolved_api_key_for_sdk(),
-                base_url=self.base_url,
-                default_headers=self.profile.headers or None,
-                timeout=float(self.timeout),
-                max_retries=2,
-            )
+            client_args = self._client_args()
+            self._http_client = self._build_http_client()
+            if self._http_client is not None:
+                client_args["http_client"] = self._http_client
+            self._sdk_client = self._client_factory(**client_args)
         return self._sdk_client
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -142,6 +142,36 @@ Provider values:
 
 OpenAI-compatible profiles use the `openai` Python SDK with the Chat Completions API. This keeps PyAgent on `/v1/chat/completions` rather than the newer Responses API so it remains compatible with OpenAI-style servers such as OpenAI and vLLM.
 
+### OpenAI-compatible transport overrides
+
+OpenAI-compatible profiles may optionally include `httpx_kwargs` to customize the underlying `httpx.Client` used by the OpenAI SDK.
+This is mainly useful for local or self-hosted endpoints that need non-default transport settings.
+
+Example:
+
+```json
+{
+  "default_profile": "local-vllm",
+  "profiles": {
+    "local-vllm": {
+      "provider": "vllm",
+      "base_url": "https://localhost:8000/v1",
+      "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "httpx_kwargs": {
+        "verify": false
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `httpx_kwargs` is only used for OpenAI-compatible providers.
+- If `httpx_kwargs` is omitted, PyAgent uses the SDK's default HTTP client configuration.
+- For backwards compatibility, the older field name `http_kwargs` is still accepted when loading profiles, but `httpx_kwargs` is preferred.
+- If both `httpx_kwargs` and `http_kwargs` are present, `httpx_kwargs` wins.
+
 ### API keys
 
 Profiles can specify either:
@@ -258,6 +288,12 @@ Environment variables:
 - `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation (default `60`)
 - `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch (default `10`)
 - `PYAGENT_TOOL_RUNNER` — executable used to run external tools (defaults to `uv`; advanced override)
+
+Profile JSON fields:
+
+- `headers` — optional object of extra HTTP headers to send with a profile
+- `httpx_kwargs` — optional object of keyword arguments passed to `httpx.Client` for OpenAI-compatible profiles only
+- `http_kwargs` — legacy alias for `httpx_kwargs`, still accepted for compatibility but not recommended for new configs
 
 Fallback profile env vars when no profile file exists:
 
