@@ -20,7 +20,7 @@ A lightweight coding agent built with Textual and a configurable multi-provider 
 - **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
 - **Keyboard shortcuts** including `Ctrl+L` to clear the conversation, `Ctrl+D` to toggle the debug pane, and transcript scrolling with `↑` / `↓` / `PgUp` / `PgDn` / `Home` / `End`
 - **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, `/logging`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
-- **Automatic project instructions** loaded from `AGENTS.md` and local skill files on startup, with `/context` and `/reload_context` for inspection and refresh
+- **Automatic layered instructions** loaded from user-global `~/.pyagent/AGENTS.md` and `~/.pyagent/skills/**`, plus project-local `AGENTS.md` and skill files on startup, with `/context` and `/reload_context` for inspection and refresh
 - **Persistent custom tools and skills** under `~/.pyagent/` that survive `pip install --upgrade`. Each user-managed tool is a standalone UV script (PEP 723) with click subcommands, so adding a new tool with new dependencies never touches the core install
 
 ## Requirements
@@ -233,7 +233,7 @@ Changing tool mode at runtime resets the current conversation so the updated sys
 - `/cwd` — show current working directory
 - `/history` — show recent prompt history
 - `/history search <text>` — search saved prompt history for matching prompts
-- `/context` — show loaded user-global and project instruction files and context size
+- `/context` — show loaded instruction sources and context size, including user-global defaults, auto-loaded global skills, session-loaded user skills, and project-local files
 - `/prompt` — show the active system prompt
 - `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files and report added/removed files
 - `/logging on|off` — enable or disable session logging (saved to `~/.pyagent/logs/`)
@@ -430,7 +430,7 @@ Then inside PyAgent run `/tools reload`. UV will install `huggingface_hub` and `
 
 ### Custom skills and `AGENTS.md`
 
-`~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**/*.md`, and `~/.pyagent/skills/**/*.skill` are loaded into the system prompt at startup as **user-global** instructions, layered before any project-specific `AGENTS.md` or `skills/` files in the current working directory. `/context` lists each source with its scope, and `/reload_context` re-scans both layers.
+`~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**/*.md`, and `~/.pyagent/skills/**/*.skill` are loaded into the system prompt at startup as **user-global** instructions, layered before any project-specific `AGENTS.md` or `skills/` files in the current working directory. `/context` lists these sources separately so you can distinguish user-global defaults, auto-loaded global skills, session-loaded user skills, and project-local files. `/reload_context` re-scans both layers.
 
 ### Trust boundary
 

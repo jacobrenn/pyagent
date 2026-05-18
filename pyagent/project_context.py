@@ -30,6 +30,12 @@ class ContextSource:
         return self.label
 
 
+@dataclass(frozen=True, slots=True)
+class LoadedSkill:
+    path: Path
+    label: str
+
+
 def discover_project_instruction_files(cwd: str | Path) -> list[Path]:
     base = Path(cwd).resolve()
     candidates: list[Path] = []
@@ -67,13 +73,6 @@ def discover_user_global_instruction_files(user_dir: str | Path | None = None) -
     if agents_file.is_file():
         candidates.append(agents_file)
 
-    skills_root = user_skills_dir(base)
-    if skills_root.is_dir():
-        for pattern in ("*.md", "*.skill", "**/*.md", "**/*.skill"):
-            for path in sorted(skills_root.glob(pattern)):
-                if path.is_file():
-                    candidates.append(path)
-
     seen: set[Path] = set()
     unique: list[Path] = []
     for path in candidates:
@@ -83,6 +82,60 @@ def discover_user_global_instruction_files(user_dir: str | Path | None = None) -
         seen.add(resolved)
         unique.append(resolved)
     return unique
+
+
+def discover_user_skill_files(user_dir: str | Path | None = None) -> list[Path]:
+    base = (
+        Path(user_dir).expanduser().resolve()
+        if user_dir is not None
+        else resolve_user_dir()
+    )
+    skills_root = user_skills_dir(base)
+    if not skills_root.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    for pattern in ("*.md", "*.skill", "**/*.md", "**/*.skill"):
+        for path in sorted(skills_root.glob(pattern)):
+            if path.is_file():
+                candidates.append(path.resolve())
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
+
+
+def list_user_skills(user_dir: str | Path | None = None) -> list[LoadedSkill]:
+    base = (
+        Path(user_dir).expanduser().resolve()
+        if user_dir is not None
+        else resolve_user_dir()
+    )
+    skills_root = user_skills_dir(base)
+    skills: list[LoadedSkill] = []
+    for path in discover_user_skill_files(base):
+        try:
+            relative = path.relative_to(skills_root).as_posix()
+        except ValueError:
+            relative = path.name
+        skills.append(LoadedSkill(path=path, label=relative))
+    return skills
+
+
+def resolve_user_skill(skill_name: str, user_dir: str | Path | None = None) -> LoadedSkill | None:
+    wanted = skill_name.strip().strip("/")
+    if not wanted:
+        return None
+    normalized = Path(wanted).as_posix()
+    for skill in list_user_skills(user_dir):
+        if skill.label == normalized:
+            return skill
+    return None
 
 
 def _truncate_content(text: str, max_chars: int) -> tuple[str, bool]:
@@ -161,13 +214,13 @@ def load_full_context(
     cwd: str | Path,
     *,
     user_dir: str | Path | None = None,
+    loaded_user_skills: Iterable[str | Path] | None = None,
 ) -> tuple[str, list[ContextSource]]:
-    """Load both user-global and project-local instructions.
+    """Load user-global instructions plus project-local instructions.
 
-    Returns the composed system-prompt body and a list of
-    :class:`ContextSource` describing each loaded file (with scope).
-    Global context is rendered before project context so project files
-    layer on top.
+    User-global startup context includes ``~/.pyagent/AGENTS.md`` only.
+    Skills under ``~/.pyagent/skills/`` are opt-in and included only when
+    explicitly listed in ``loaded_user_skills``.
     """
     project_base = Path(cwd).resolve()
     resolved_user_dir = (
@@ -180,16 +233,36 @@ def load_full_context(
     sources: list[ContextSource] = []
 
     global_files = discover_user_global_instruction_files(resolved_user_dir)
+    skill_paths: list[Path] = []
+    for skill_ref in loaded_user_skills or []:
+        if isinstance(skill_ref, Path):
+            resolved = skill_ref.expanduser().resolve()
+            if resolved.is_file():
+                skill_paths.append(resolved)
+            continue
+        skill = resolve_user_skill(str(skill_ref), resolved_user_dir)
+        if skill is not None:
+            skill_paths.append(skill.path)
+    seen_global: set[Path] = set()
+    combined_global_files: list[Path] = []
+    for path in [*global_files, *skill_paths]:
+        if path in seen_global:
+            continue
+        seen_global.add(path)
+        combined_global_files.append(path)
+
     global_text, global_sources, _ = _render_section(
-        files=global_files,
+        files=combined_global_files,
         scope=GLOBAL_SCOPE,
         base=resolved_user_dir,
         budget=MAX_USER_GLOBAL_CONTEXT_TOTAL_CHARS,
         section_heading="User-global instructions",
         section_intro=(
             "User-global instructions live under `~/.pyagent/` and apply to every "
-            "PyAgent session for this user. Project-specific instructions, when "
-            "present, layer on top and may override these defaults."
+            "PyAgent session for this user. `~/.pyagent/AGENTS.md` loads by default; "
+            "skills under `~/.pyagent/skills/` load only when explicitly enabled for "
+            "the current session. Project-specific instructions, when present, layer "
+            "on top and may override these defaults."
         ),
     )
     if global_text:
@@ -222,14 +295,12 @@ def load_project_context(
     cwd: str | Path,
     *,
     user_dir: str | Path | None = None,
+    loaded_user_skills: Iterable[str | Path] | None = None,
 ) -> tuple[str, list[str]]:
-    """Compatibility shim that returns ``(text, [labelled paths])``.
-
-    The labels include a ``~/.pyagent/`` prefix for user-global sources
-    and a project-relative path for project-local sources, so the UI can
-    distinguish them at a glance. ``user_dir`` is mostly intended for
-    tests; production callers can rely on the ``PYAGENT_USER_DIR`` env
-    var resolved by :func:`pyagent.user_runtime.resolve_user_dir`.
-    """
-    text, sources = load_full_context(cwd, user_dir=user_dir)
+    """Compatibility shim that returns ``(text, [labelled paths])``."""
+    text, sources = load_full_context(
+        cwd,
+        user_dir=user_dir,
+        loaded_user_skills=loaded_user_skills,
+    )
     return text, [source.label for source in sources]

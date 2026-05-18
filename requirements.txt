@@ -1,5 +1,7 @@
 textual
 requests
+pydantic
+pydantic-core>=2.46.4
 openai>=2.14.0
 uv
 

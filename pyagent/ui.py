@@ -20,7 +20,13 @@ from .agent import Agent
 from .commands import COMMAND_REGISTRY
 from .external_tools import find_tool_script, move_tool_script
 from .model_profiles import ModelProfile, default_base_url_for_provider
-from .project_context import GLOBAL_SCOPE, PROJECT_SCOPE, load_full_context
+from .project_context import (
+    GLOBAL_SCOPE,
+    PROJECT_SCOPE,
+    list_user_skills,
+    load_full_context,
+    resolve_user_skill,
+)
 from .scaffold import ScaffoldError, create_user_tool
 from .session_logger import SessionLogger
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
@@ -259,8 +265,11 @@ class PyAgentApp(App):
 
     def __init__(self, profile: str | None = None, model: str | None = None):
         super().__init__()
+        self.loaded_user_skills: list[str] = []
         self.project_context, self.context_sources = load_full_context(
-            os.getcwd())
+            os.getcwd(),
+            loaded_user_skills=self.loaded_user_skills,
+        )
         self.project_context_files = [
             source.label for source in self.context_sources]
         self.agent = Agent(
@@ -323,7 +332,7 @@ class PyAgentApp(App):
             )
             self._add_message(
                 "system",
-                f"Loaded project instructions:\n{loaded_files}",
+                f"Loaded startup instructions:\n{loaded_files}",
                 finalized=True,
             )
         prompt_input = self.query_one("#user-input", PromptInput)
@@ -437,10 +446,12 @@ class PyAgentApp(App):
             "\n"
             "Context and prompts\n"
             "- `/context` — show loaded user-global and project instruction sources\n"
+            "- `/skills list` — show available `~/.pyagent/skills/` entries and session load state\n"
+            "- `/skills load <path>` / `/skills unload <path>` — opt a user skill in or out for this session\n"
             "- `/prompt` — show the active system prompt\n"
             "- `/history` — show recent prompt history\n"
             "- `/history search <text>` — search saved prompt history\n"
-            "- `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files\n"
+            "- `/reload_context` — reload `~/.pyagent/AGENTS.md`, currently loaded user skills, and local instruction files\n"
             "\n"
             "Tools and debugging\n"
             "- `/tools` — show tool status, built-in and external tools\n"
@@ -459,7 +470,7 @@ class PyAgentApp(App):
         if not files:
             return (
                 "Project context:\n"
-                "- No `AGENTS.md`, user-global skills, or project skill files loaded."
+                "- No `AGENTS.md`, loaded user skills, or project skill files loaded."
             )
         global_paths = [
             source.label
@@ -476,9 +487,31 @@ class PyAgentApp(App):
             f"- Files loaded: `{len(files)}`",
             f"- Context size: `{total_chars}` characters",
         ]
-        if global_paths:
-            lines.append("- User-global sources:")
-            lines.extend(f"  - `{path}`" for path in global_paths)
+        loaded_skills = set(self.loaded_user_skills)
+        global_default_paths = [
+            path for path in global_paths if not path.startswith("~/.pyagent/skills/")
+        ]
+        global_skill_paths = [
+            path for path in global_paths if path.startswith("~/.pyagent/skills/")
+        ]
+        loaded_skill_paths = [
+            path for path in global_skill_paths if path in loaded_skills
+        ]
+        auto_loaded_skill_paths = [
+            path for path in global_skill_paths if path not in loaded_skills
+        ]
+        if global_default_paths:
+            lines.append("- User-global default sources:")
+            lines.extend(f"  - `{path}`" for path in global_default_paths)
+        if auto_loaded_skill_paths:
+            lines.append("- User-global auto-loaded skills:")
+            lines.extend(f"  - `{path}`" for path in auto_loaded_skill_paths)
+        lines.append(
+            f"- User skills loaded this session: `{len(loaded_skills)}`")
+        if loaded_skill_paths:
+            lines.extend(f"  - `{path}`" for path in loaded_skill_paths)
+        elif loaded_skills:
+            lines.extend(f"  - `{name}`" for name in sorted(loaded_skills))
         if project_paths:
             lines.append("- Project sources:")
             lines.extend(f"  - `{path}`" for path in project_paths)
@@ -501,6 +534,7 @@ class PyAgentApp(App):
             "/history",
             "/prompt",
             "/context",
+            "/skills",
             "/reload_profiles",
             "/reload_context",
             "/reload_tools",
@@ -609,6 +643,97 @@ class PyAgentApp(App):
             "- `/tools disable <name>` — move a script into `tools/disabled/`\n"
             "- `/tools open <name>` — print the absolute path to a tool script"
         )
+
+    def _skills_usage_text(self) -> str:
+        return (
+            "Usage:\n"
+            "- `/skills list` — show available user skills under `~/.pyagent/skills/`\n"
+            "- `/skills load <path>` — load a user skill for this session\n"
+            "- `/skills unload <path>` — unload a previously loaded user skill for this session"
+        )
+
+    def _reload_context_details(self) -> str:
+        previous_files = set(self.agent.project_context_files)
+        self.project_context, self.context_sources = load_full_context(
+            os.getcwd(),
+            loaded_user_skills=self.loaded_user_skills,
+        )
+        self.project_context_files = [
+            source.label for source in self.context_sources]
+        self.agent.set_project_context(
+            self.project_context, self.project_context_files)
+        current_files = set(self.project_context_files)
+        added = sorted(current_files - previous_files)
+        removed = sorted(previous_files - current_files)
+        details = [self._context_status_text()]
+        if added:
+            details.append(
+                "Added:\n" + "\n".join(f"- `{path}`" for path in added))
+        if removed:
+            details.append(
+                "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
+        if not self.project_context_files:
+            details = [
+                "Reloaded project instructions. No user-global defaults, loaded user skills, or project instruction files were found."
+            ]
+        return "\n\n".join(details)
+
+    def _handle_skills_command(self, args: list[str]) -> bool:
+        if not args or args[0].lower() == "list":
+            available = list_user_skills(self.agent.config.user_dir)
+            loaded = set(self.loaded_user_skills)
+            lines = [
+                f"User skills directory: `{self.agent.config.user_dir}/skills/`",
+                f"Loaded this session: `{len(loaded)}`",
+                "",
+                "Available user skills:",
+            ]
+            if available:
+                for skill in available:
+                    marker = " (loaded)" if skill in loaded else ""
+                    lines.append(f"- `{skill}`{marker}")
+            else:
+                lines.append("- _none_")
+            self._add_system_note("\n".join(lines))
+            return True
+
+        action = args[0].lower()
+        if action not in {"load", "unload"} or len(args) != 2:
+            self._add_system_note(self._skills_usage_text())
+            return True
+
+        requested = args[1]
+        resolved = resolve_user_skill(requested, self.agent.config.user_dir)
+        if resolved is None:
+            self._add_system_note(
+                f"No user skill named `{requested}` was found under `{self.agent.config.user_dir}/skills/`."
+            )
+            return True
+
+        skill_label = resolved.label
+        if action == "load":
+            if skill_label in self.loaded_user_skills:
+                self._add_system_note(
+                    f"User skill `{skill_label}` is already loaded.")
+                return True
+            self.loaded_user_skills.append(skill_label)
+            self._add_system_note(
+                f"Loaded user skill `{skill_label}` for this session.\n\n{self._reload_context_details()}"
+            )
+            self._set_status(self._ready_status())
+            return True
+
+        if skill_label not in self.loaded_user_skills:
+            self._add_system_note(
+                f"User skill `{skill_label}` is not currently loaded.")
+            return True
+        self.loaded_user_skills = [
+            name for name in self.loaded_user_skills if name != skill_label]
+        self._add_system_note(
+            f"Unloaded user skill `{skill_label}` for this session.\n\n{self._reload_context_details()}"
+        )
+        self._set_status(self._ready_status())
+        return True
 
     def _format_tools_list(self) -> str:
         registry = self.agent.tool_registry
@@ -1100,6 +1225,9 @@ class PyAgentApp(App):
             self._add_system_note(self._context_status_text())
             return True
 
+        if command == "/skills":
+            return self._handle_skills_command(args)
+
         if command == "/reload_profiles":
             try:
                 self.agent.reload_profiles()
@@ -1113,31 +1241,7 @@ class PyAgentApp(App):
             return True
 
         if command == "/reload_context":
-            previous_files = set(self.agent.project_context_files)
-            self.project_context, self.context_sources = load_full_context(
-                os.getcwd())
-            self.project_context_files = [
-                source.label for source in self.context_sources
-            ]
-            self.agent.set_project_context(
-                self.project_context, self.project_context_files
-            )
-            current_files = set(self.project_context_files)
-            added = sorted(current_files - previous_files)
-            removed = sorted(previous_files - current_files)
-            details = [self._context_status_text()]
-            if added:
-                details.append(
-                    "Added:\n" + "\n".join(f"- `{path}`" for path in added))
-            if removed:
-                details.append(
-                    "Removed:\n" + "\n".join(f"- `{path}`" for path in removed)
-                )
-            if not self.project_context_files:
-                details = [
-                    "Reloaded project instructions. No user-global or project instruction files were found."
-                ]
-            self._add_system_note("\n\n".join(details))
+            self._add_system_note(self._reload_context_details())
             self._set_status(self._ready_status())
             return True
 

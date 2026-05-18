@@ -6,7 +6,13 @@ from .model_profiles import ModelProfile, default_base_url_for_provider
 from .external_tools import find_tool_script, move_tool_script
 from .scaffold import ScaffoldError, create_user_tool
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
-from .project_context import GLOBAL_SCOPE, PROJECT_SCOPE
+from .project_context import (
+    GLOBAL_SCOPE,
+    PROJECT_SCOPE,
+    list_user_skills,
+    load_full_context,
+    resolve_user_skill,
+)
 
 if TYPE_CHECKING:
     from .ui import PyAgentApp
@@ -350,13 +356,95 @@ def handle_reload_profiles(app: PyAgentApp, args: list[str]) -> bool:
     return True
 
 
-def handle_reload_context(app: PyAgentApp, args: list[str]) -> bool:
-    previous_files = set(app.agent.project_context_files)
-    app.project_context, app.context_sources = load_full_context(os.getcwd())
+def _reload_context_state(app: PyAgentApp) -> None:
+    app.project_context, app.context_sources = load_full_context(
+        os.getcwd(),
+        user_dir=app.agent.config.user_dir,
+        loaded_user_skills=app.loaded_user_skills,
+    )
     app.project_context_files = [
         source.label for source in app.context_sources]
     app.agent.set_project_context(
         app.project_context, app.project_context_files)
+
+
+def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
+    if not args or args[0].lower() == "list":
+        skills = list_user_skills(app.agent.config.user_dir)
+        loaded = set(app.loaded_user_skills)
+        lines = ["User skills (`~/.pyagent/skills/`):"]
+        if not skills:
+            lines.append("- _none found_")
+        else:
+            for skill in skills:
+                marker = "loaded" if skill.label in loaded else "not loaded"
+                lines.append(f"- `{skill.label}` ({marker})")
+        if loaded and not skills:
+            lines.append("")
+            lines.append("Loaded this session:")
+            lines.extend(f"- `{name}`" for name in sorted(loaded))
+        app._add_system_note("\n".join(lines))
+        return True
+
+    action = args[0].lower()
+    if action not in {"load", "unload"}:
+        app._add_system_note(
+            "Usage: `/skills list`, `/skills load <path>`, or `/skills unload <path>`")
+        return True
+    if len(args) != 2:
+        app._add_system_note(f"Usage: `/skills {action} <path>`")
+        return True
+
+    skill_name = args[1]
+    skill = resolve_user_skill(skill_name, app.agent.config.user_dir)
+    if skill is None:
+        app._add_system_note(
+            f"No user skill named `{skill_name}` was found under `{app.agent.config.user_dir}/skills/`."
+        )
+        return True
+
+    loaded = set(app.loaded_user_skills)
+    if action == "load":
+        if skill.label in loaded:
+            app._add_system_note(
+                f"Skill `{skill.label}` is already loaded for this session.")
+            return True
+        app.loaded_user_skills.append(skill.label)
+        previous_files = set(app.agent.project_context_files)
+        _reload_context_state(app)
+        current_files = set(app.project_context_files)
+        added = sorted(current_files - previous_files)
+        details = [
+            f"Loaded skill `{skill.label}` for this session.", app._context_status_text()]
+        if added:
+            details.append(
+                "Added:\n" + "\n".join(f"- `{path}`" for path in added))
+        app._add_system_note("\n\n".join(details))
+        app._set_status(app._ready_status())
+        return True
+
+    if skill.label not in loaded:
+        app._add_system_note(f"Skill `{skill.label}` is not currently loaded.")
+        return True
+    app.loaded_user_skills = [
+        name for name in app.loaded_user_skills if name != skill.label]
+    previous_files = set(app.agent.project_context_files)
+    _reload_context_state(app)
+    current_files = set(app.project_context_files)
+    removed = sorted(previous_files - current_files)
+    details = [
+        f"Unloaded skill `{skill.label}` for this session.", app._context_status_text()]
+    if removed:
+        details.append(
+            "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
+    app._add_system_note("\n\n".join(details))
+    app._set_status(app._ready_status())
+    return True
+
+
+def handle_reload_context(app: PyAgentApp, args: list[str]) -> bool:
+    previous_files = set(app.agent.project_context_files)
+    _reload_context_state(app)
     current_files = set(app.project_context_files)
     added = sorted(current_files - previous_files)
     removed = sorted(previous_files - current_files)
@@ -405,6 +493,7 @@ COMMAND_REGISTRY = {
     "/history": handle_history,
     "/prompt": handle_prompt,
     "/context": handle_context,
+    "/skills": handle_skills,
     "/reload_profiles": handle_reload_profiles,
     "/reload_context": handle_reload_context,
     "/debug": handle_debug,

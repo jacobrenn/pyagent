@@ -34,6 +34,7 @@ from pyagent.project_context import (
     discover_user_global_instruction_files,
     load_full_context,
     load_project_context,
+    resolve_user_skill,
 )
 from pyagent.scaffold import ScaffoldError, create_user_tool
 from pyagent.tools import (
@@ -183,6 +184,35 @@ def make_tool_call_delta(index: int, id: str | None = None, name: str | None = N
         type="function",
         function=SimpleNamespace(name=name, arguments=arguments),
     )
+
+
+class PyAgentUiContextTests(unittest.TestCase):
+    def test_context_status_separates_auto_loaded_and_session_loaded_skills(self) -> None:
+        app = PyAgentApp()
+        app.project_context = "global and project context"
+        app.context_sources = [
+            SimpleNamespace(scope=GLOBAL_SCOPE, label="~/.pyagent/AGENTS.md"),
+            SimpleNamespace(scope=GLOBAL_SCOPE,
+                            label="~/.pyagent/skills/auto.md"),
+            SimpleNamespace(scope=GLOBAL_SCOPE,
+                            label="~/.pyagent/skills/manual.md"),
+            SimpleNamespace(scope=PROJECT_SCOPE, label="AGENTS.md"),
+        ]
+        app.project_context_files = [
+            source.label for source in app.context_sources]
+        app.agent.project_context = app.project_context
+        app.agent.project_context_files = app.project_context_files
+        app.loaded_user_skills = ["~/.pyagent/skills/manual.md"]
+
+        status = app._context_status_text()
+
+        self.assertIn("- User-global default sources:", status)
+        self.assertIn("  - `~/.pyagent/AGENTS.md`", status)
+        self.assertIn("- User-global auto-loaded skills:", status)
+        self.assertIn("  - `~/.pyagent/skills/auto.md`", status)
+        self.assertIn("- User skills loaded this session: `1`", status)
+        self.assertIn("  - `~/.pyagent/skills/manual.md`", status)
+        self.assertNotIn("User-global skills loaded this session", status)
 
 
 class AgentTests(unittest.TestCase):
@@ -522,6 +552,38 @@ class UiCommandTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertIn("positive integer or `-1` for infinite", notes[-1])
+
+    def test_skills_load_and_unload_resolve_nested_skill_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_path = Path(temp_dir) / "skills" / "python" / "lint.md"
+            skill_path.parent.mkdir(parents=True, exist_ok=True)
+            skill_path.write_text("# lint\n", encoding="utf-8")
+
+            app = PyAgentApp()
+            app.agent.config.user_dir = temp_dir
+            notes: list[str] = []
+            statuses: list[str] = []
+            app._add_system_note = notes.append
+            app._set_status = statuses.append
+            app._reload_context_details = lambda: "Reloaded context."
+
+            self.assertIsNone(resolve_user_skill("python/lint", temp_dir))
+            self.assertEqual(resolve_user_skill(
+                "python/lint.md", temp_dir).label, "python/lint.md")
+
+            handled = app._handle_slash_command("/skills load python/lint.md")
+
+            self.assertTrue(handled)
+            self.assertIn("python/lint.md", app.loaded_user_skills)
+            self.assertIn("Loaded user skill `python/lint.md`", notes[-1])
+            self.assertTrue(statuses)
+
+            handled = app._handle_slash_command(
+                "/skills unload python/lint.md")
+
+            self.assertTrue(handled)
+            self.assertNotIn("python/lint.md", app.loaded_user_skills)
+            self.assertIn("Unloaded user skill `python/lint.md`", notes[-1])
 
 
 class ConfigTests(unittest.TestCase):
