@@ -495,10 +495,12 @@ class PyAgentApp(App):
             path for path in global_paths if path.startswith("~/.pyagent/skills/")
         ]
         loaded_skill_paths = [
-            path for path in global_skill_paths if path in loaded_skills
+            path for path in global_skill_paths
+            if any(skill == path.replace("~/.pyagent/skills/", "") for skill in loaded_skills)
         ]
         auto_loaded_skill_paths = [
-            path for path in global_skill_paths if path not in loaded_skills
+            path for path in global_skill_paths
+            if not any(skill == path.replace("~/.pyagent/skills/", "") for skill in loaded_skills)
         ]
         if global_default_paths:
             lines.append("- User-global default sources:")
@@ -690,7 +692,7 @@ class PyAgentApp(App):
             ]
             if available:
                 for skill in available:
-                    marker = " (loaded)" if skill in loaded else ""
+                    marker = " (loaded)" if skill.label in loaded else ""
                     lines.append(f"- `{skill}`{marker}")
             else:
                 lines.append("- _none_")

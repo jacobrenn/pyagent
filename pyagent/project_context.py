@@ -35,6 +35,9 @@ class LoadedSkill:
     path: Path
     label: str
 
+    def __str__(self):
+        return self.label
+
 
 def discover_project_instruction_files(cwd: str | Path) -> list[Path]:
     base = Path(cwd).resolve()
