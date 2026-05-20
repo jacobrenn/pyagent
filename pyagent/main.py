@@ -1,12 +1,23 @@
 #!/usr/bin/env python
+from importlib.metadata import version
 import argparse
 import sys
 from .ui import PyAgentApp
 from .agent import Agent
 
+def get_version():
+    try:
+        return version('pyagent-harness')
+    except Exception as e:
+        return 'Unknown'
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run PyAgent")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"PyAgent: {get_version()}"
+    )
     parser.add_argument(
         "--profile", help="Saved model profile to use (overrides PYAGENT_PROFILE)")
     parser.add_argument(
