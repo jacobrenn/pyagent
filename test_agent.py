@@ -7,6 +7,8 @@ import tempfile
 import textwrap
 import time
 import unittest
+
+from fastapi.testclient import TestClient
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -52,9 +54,88 @@ from pyagent.tools import (
 # ... existing imports ...
 from pyagent.ui import ChatMessage, PyAgentApp
 from pyagent.user_runtime import RunnerStatus
-from pyagent.main import main as main_entry  # Add this import
+from pyagent.main import build_agent_for_request, main as main_entry, run_single_shot
 
 # ... (all existing test classes) ...
+
+
+class ApiTests(unittest.TestCase):
+    def test_health_endpoint_returns_ok(self) -> None:
+        from pyagent.api import create_app
+
+        client = TestClient(create_app())
+
+        response = client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_run_endpoint_returns_agent_response_payload(self) -> None:
+        from pyagent.api import create_app
+
+        mock_agent = mock.Mock()
+        mock_agent.run.return_value = [
+            {"type": "content_delta", "delta": "Hello "},
+            {"type": "assistant_done", "content": "Hello World!"},
+        ]
+        mock_agent.current_profile.return_value = SimpleNamespace(
+            name="p1", provider="ollama", model="m1"
+        )
+        mock_agent.project_context_files = ["AGENTS.md", "skills/testing.md"]
+
+        client = TestClient(create_app())
+        with mock.patch("pyagent.main.build_agent_for_request", return_value=mock_agent) as mock_build:
+            response = client.post(
+                "/run",
+                json={
+                    "message": "Hi",
+                    "profile": "p1",
+                    "model": "m1",
+                    "cwd": "/tmp",
+                    "skills": ["foo.md"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "response": "Hello World!",
+                "profile": "p1",
+                "provider": "ollama",
+                "model": "m1",
+                "context_files": ["AGENTS.md", "skills/testing.md"],
+            },
+        )
+        mock_build.assert_called_once_with(
+            profile="p1", model="m1", cwd="/tmp", skills=["foo.md"]
+        )
+        mock_agent.run.assert_called_once_with("Hi")
+
+    def test_run_endpoint_rejects_invalid_request_body(self) -> None:
+        from pyagent.api import create_app
+
+        client = TestClient(create_app())
+
+        response = client.post("/run", json={"message": ""})
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_run_endpoint_returns_400_for_bad_request_configuration(self) -> None:
+        from pyagent.api import create_app
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.main.build_agent_for_request",
+            side_effect=ValueError("Unknown skill: nope.md"),
+        ):
+            response = client.post(
+                "/run",
+                json={"message": "Hi", "skills": ["nope.md"]},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "Unknown skill: nope.md"})
 
 
 class MainCliTests(unittest.TestCase):
@@ -160,16 +241,73 @@ class MainCliTests(unittest.TestCase):
         )
 
     def test_interactive_mode_launches_app(self) -> None:
-        with mock.patch("pyagent.main.PyAgentApp") as MockApp:
-            # Mock the run method of the app
-            mock_app_instance = MockApp.return_value
+        fake_ui_module = SimpleNamespace(PyAgentApp=mock.Mock())
+        mock_app_instance = fake_ui_module.PyAgentApp.return_value
 
-            # Simulate: pyagent (no prompt)
+        with mock.patch.dict(sys.modules, {"pyagent.ui": fake_ui_module}, clear=False):
             with mock.patch("sys.argv", ["pyagent"]):
                 main_entry()
 
-                MockApp.assert_called_once()
-                mock_app_instance.run.assert_called_once()
+        fake_ui_module.PyAgentApp.assert_called_once()
+        mock_app_instance.run.assert_called_once()
+
+    def test_run_single_shot_builds_agent_and_returns_final_content(self) -> None:
+        mock_agent = mock.Mock()
+        mock_agent.run.return_value = [
+            {"type": "content_delta", "delta": "Hello "},
+            {"type": "assistant_done", "content": "Hello World!"},
+        ]
+        with mock.patch("pyagent.main.build_agent_for_request", return_value=mock_agent) as mock_build:
+            response = run_single_shot(
+                prompt="Hi", profile="p1", model="m1", skills=["foo.md"])
+
+        self.assertEqual(response, "Hello World!")
+        mock_build.assert_called_once_with(
+            profile="p1", model="m1", skills=["foo.md"])
+
+    def test_build_agent_for_request_loads_context_and_passes_labels(self) -> None:
+        context_sources = [SimpleNamespace(label="~/.pyagent/AGENTS.md")]
+        with mock.patch("pyagent.main.resolve_user_skill", return_value=SimpleNamespace(label="foo.md")), mock.patch(
+            "pyagent.main.load_full_context",
+            return_value=("ctx", context_sources),
+        ) as mock_load_context, mock.patch("pyagent.main.Agent") as MockAgent:
+            build_agent_for_request(
+                profile="prof", model="mod", cwd="/tmp", skills=["foo.md"])
+
+        mock_load_context.assert_called_once_with(
+            "/tmp", loaded_user_skills=["foo.md"])
+        MockAgent.assert_called_once_with(
+            profile="prof",
+            model="mod",
+            project_context="ctx",
+            project_context_files=["~/.pyagent/AGENTS.md"],
+        )
+
+    def test_serve_subcommand_runs_uvicorn(self) -> None:
+        fake_uvicorn = SimpleNamespace(run=mock.Mock())
+        fake_api_module = SimpleNamespace(
+            create_app=mock.Mock(return_value="app-instance"))
+        with mock.patch.dict(sys.modules, {"uvicorn": fake_uvicorn, "pyagent.api": fake_api_module}, clear=False):
+            main_entry(["serve", "--host", "0.0.0.0", "--port", "9000"])
+
+        fake_api_module.create_app.assert_called_once_with()
+        fake_uvicorn.run.assert_called_once_with(
+            "app-instance", host="0.0.0.0", port=9000)
+
+    def test_serve_subcommand_exits_when_dependencies_missing(self) -> None:
+        real_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "uvicorn":
+                raise ImportError("No module named 'uvicorn'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import), mock.patch("sys.stderr") as mock_stderr:
+            with self.assertRaises(SystemExit) as cm:
+                main_entry(["serve"])
+
+        self.assertEqual(cm.exception.code, 2)
+        mock_stderr.write.assert_called()
 
 # ... (remaining file) ...
 

@@ -28,6 +28,12 @@ classifiers = [
 ]
 license = {text = "MIT"}
 
+[project.optional-dependencies]
+api = [
+  "fastapi",
+  "uvicorn"
+]
+
 [project.scripts]
 pyagent = "pyagent.main:main"
 

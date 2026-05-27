@@ -40,10 +40,34 @@ Install PyAgent via pip:
 pip install pyagent-harness
 ```
 
+Install PyAgent with API support:
+
+```bash
+pip install pyagent-harness[api]
+```
+
 If you are developing and want to install locally from the repo root:
 
 ```bash
 python -m pip install -e .
+```
+
+If you want the local editable install with API support:
+
+```bash
+python -m pip install -e '.[api]'
+```
+
+If you want a non-editable local install from the current directory:
+
+```bash
+python -m pip install .
+```
+
+And with API support from the current directory:
+
+```bash
+python -m pip install '.[api]'
 ```
 
 If you only want the dependencies without installing the package entry point, this still works:
@@ -108,6 +132,66 @@ pyagent --profile openai-gpt4 --model gpt-4.1-mini --skills repo/review.md --pro
 ```
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can inspect the currently loaded sources with `/context` and refresh them while the app is running with `/reload_context`.
+
+### HTTP API
+PyAgent also includes an optional FastAPI server so you can use the same agent loop over HTTP instead of the TUI.
+
+Install the extra runtime pieces first:
+
+```bash
+pip install pyagent-harness[api]
+```
+
+If you are running from a local checkout instead of installing from an index:
+
+```bash
+python -m pip install '.[api]'
+```
+
+Then start the API server:
+
+```bash
+pyagent serve
+```
+
+Optional bind overrides:
+
+```bash
+pyagent serve --host 0.0.0.0 --port 8000
+```
+
+Endpoints:
+
+- `GET /health` — basic health check
+- `POST /run` — run a single non-streaming agent turn
+
+Example request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "Summarize README.md",
+    "profile": "local-qwen",
+    "model": "qwen2.5-coder:7b",
+    "cwd": ".",
+    "skills": ["code-review.md"]
+  }'
+```
+
+Example response:
+
+```json
+{
+  "response": "...",
+  "profile": "local-qwen",
+  "provider": "ollama",
+  "model": "qwen2.5-coder:7b",
+  "context_files": ["~/.pyagent/AGENTS.md", "AGENTS.md"]
+}
+```
+
+The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error instead of exploding theatrically.
 
 ## Model profiles
 

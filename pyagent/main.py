@@ -3,8 +3,8 @@ from importlib.metadata import version
 import argparse
 import os
 import sys
+from typing import Any
 
-from .ui import PyAgentApp
 from .agent import Agent
 from .project_context import load_full_context, resolve_user_skill
 
@@ -44,7 +44,48 @@ def _validate_skills(skills: list[str], *, user_dir: str | None = None) -> list[
     return validated
 
 
-def main() -> None:
+def build_agent_for_request(
+    *,
+    profile: str | None = None,
+    model: str | None = None,
+    cwd: str | None = None,
+    skills: list[str] | None = None,
+) -> Agent:
+    validated_skills = _validate_skills(skills or [])
+    project_context, context_sources = load_full_context(
+        cwd or os.getcwd(),
+        loaded_user_skills=validated_skills,
+    )
+    project_context_files = [source.label for source in context_sources]
+    return Agent(
+        profile=profile,
+        model=model,
+        project_context=project_context,
+        project_context_files=project_context_files,
+    )
+
+
+def run_single_shot(
+    *,
+    prompt: str,
+    profile: str | None = None,
+    model: str | None = None,
+    skills: list[str] | None = None,
+) -> str:
+    agent = build_agent_for_request(
+        profile=profile,
+        model=model,
+        skills=skills,
+    )
+    response = ""
+    for event in agent.run(prompt):
+        if event.get("type") == "assistant_done":
+            response = event["content"]
+            break
+    return response
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run PyAgent")
     parser.add_argument(
         "--version",
@@ -61,7 +102,26 @@ def main() -> None:
     )
     parser.add_argument("--prompt", type=str,
                         help="Single prompt to run and exit")
-    args = parser.parse_args()
+    subparsers = parser.add_subparsers(dest="command")
+    serve_parser = subparsers.add_parser(
+        "serve", help="Run the PyAgent HTTP API")
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1", help="Host to bind")
+    serve_parser.add_argument(
+        "--port", type=int, default=8000, help="Port to bind")
+    args = parser.parse_args(argv)
+
+    if args.command == "serve":
+        try:
+            import uvicorn
+            from .api import create_app
+        except (ImportError, RuntimeError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            sys.stderr.flush()
+            sys.exit(2)
+
+        uvicorn.run(create_app(), host=args.host, port=args.port)
+        return
 
     parsed_skills = _parse_skills_arg(args.skills)
     if parsed_skills and args.prompt is None:
@@ -72,37 +132,23 @@ def main() -> None:
 
     if args.prompt is not None:
         try:
-            validated_skills = _validate_skills(parsed_skills)
+            response = run_single_shot(
+                prompt=args.prompt,
+                profile=args.profile,
+                model=args.model,
+                skills=parsed_skills,
+            )
         except ValueError as exc:
             sys.stderr.write(f"{exc}\n")
             sys.stderr.flush()
             sys.exit(2)
-
-        project_context, context_sources = load_full_context(
-            os.getcwd(),
-            loaded_user_skills=validated_skills,
-        )
-        project_context_files = [source.label for source in context_sources]
-
-        # single-shot mode
-        agent = Agent(
-            profile=args.profile,
-            model=args.model,
-            project_context=project_context,
-            project_context_files=project_context_files,
-        )
-        response = []
-        for event in agent.run(args.prompt):
-            if event.get("type") == "assistant_done":
-                response = [
-                    event["content"]
-                ]
-                break
-        sys.stdout.write("".join(response))
+        sys.stdout.write(response)
         sys.stdout.flush()
         sys.exit(0)
 
     # interactive mode
+    from .ui import PyAgentApp
+
     app = PyAgentApp(profile=args.profile, model=args.model)
     app.run()
 
