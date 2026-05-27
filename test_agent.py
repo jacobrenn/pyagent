@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import tempfile
 import textwrap
@@ -55,6 +56,7 @@ from pyagent.tools import (
 from pyagent.ui import ChatMessage, PyAgentApp
 from pyagent.user_runtime import RunnerStatus
 from pyagent.main import build_agent_for_request, main as main_entry, run_single_shot
+from urllib import error
 
 # ... (all existing test classes) ...
 
@@ -82,6 +84,10 @@ class ApiTests(unittest.TestCase):
             name="p1", provider="ollama", model="m1"
         )
         mock_agent.project_context_files = ["AGENTS.md", "skills/testing.md"]
+        mock_agent.messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello World!"},
+        ]
 
         client = TestClient(create_app())
         with mock.patch("pyagent.main.build_agent_for_request", return_value=mock_agent) as mock_build:
@@ -104,6 +110,7 @@ class ApiTests(unittest.TestCase):
                 "profile": "p1",
                 "provider": "ollama",
                 "model": "m1",
+                "messages": mock_agent.messages,
                 "context_files": ["AGENTS.md", "skills/testing.md"],
             },
         )
@@ -1810,3 +1817,196 @@ class OpenAICompatibleClientHttpTests(unittest.TestCase):
             max_retries=2,
             http_client=fake_http_client,
         )
+
+
+class _FakeUrlOpenResponse:
+    def __init__(self, body: str):
+        self._body = body.encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class ClientTests(unittest.TestCase):
+    def test_health_returns_status_payload(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            return_value=_FakeUrlOpenResponse('{"status": "ok"}'),
+        ) as mock_urlopen:
+            client = PyAgentClient("http://127.0.0.1:8000/")
+
+            response = client.health()
+
+        self.assertEqual(response, {"status": "ok"})
+        req = mock_urlopen.call_args.args[0]
+        self.assertEqual(req.full_url, "http://127.0.0.1:8000/health")
+        self.assertEqual(req.get_method(), "GET")
+
+    def test_is_healthy_returns_false_when_server_fails(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            side_effect=error.URLError("connection refused"),
+        ):
+            client = PyAgentClient()
+            self.assertFalse(client.is_healthy())
+
+    def test_run_returns_typed_response(self) -> None:
+        from pyagent.client import PyAgentClient, RunResponse
+
+        payload = json.dumps(
+            {
+                "response": "Hello World!",
+                "profile": "p1",
+                "provider": "ollama",
+                "model": "m1",
+                "messages": [],
+                "context_files": ["AGENTS.md"],
+            }
+        )
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            return_value=_FakeUrlOpenResponse(payload),
+        ) as mock_urlopen:
+            client = PyAgentClient(
+                "http://127.0.0.1:8000", headers={"X-Test": "yes"})
+
+            response = client.run(
+                "Hi",
+                profile="p1",
+                model="m1",
+                cwd="/tmp",
+                skills=["foo.md"],
+            )
+
+        self.assertEqual(
+            response,
+            RunResponse(
+                response="Hello World!",
+                profile="p1",
+                provider="ollama",
+                model="m1",
+                messages=[],
+                context_files=["AGENTS.md"],
+            ),
+        )
+        req = mock_urlopen.call_args.args[0]
+        self.assertEqual(req.full_url, "http://127.0.0.1:8000/run")
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.headers["Content-type"], "application/json")
+        self.assertEqual(req.headers["X-test"], "yes")
+        self.assertEqual(
+            json.loads(req.data.decode("utf-8")),
+            {
+                "message": "Hi",
+                "profile": "p1",
+                "model": "m1",
+                "cwd": "/tmp",
+                "skills": ["foo.md"],
+            },
+        )
+
+    def test_run_raises_clear_error_for_http_error_detail(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        http_error = error.HTTPError(
+            url="http://127.0.0.1:8000/run",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=None,
+        )
+        http_error.read = lambda: b'{"detail": "Unknown skill: nope.md"}'
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            side_effect=http_error,
+        ):
+            client = PyAgentClient()
+            with self.assertRaises(PyAgentClientError) as cm:
+                client.run("Hi")
+
+        self.assertIn("HTTP 400", str(cm.exception))
+        self.assertIn("Unknown skill: nope.md", str(cm.exception))
+
+    def test_run_raises_clear_error_for_non_json_http_error(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        http_error = error.HTTPError(
+            url="http://127.0.0.1:8000/run",
+            code=500,
+            msg="Server Error",
+            hdrs=None,
+            fp=None,
+        )
+        http_error.read = lambda: b"kaboom"
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            side_effect=http_error,
+        ):
+            client = PyAgentClient()
+            with self.assertRaises(PyAgentClientError) as cm:
+                client.run("Hi")
+
+        self.assertIn("HTTP 500", str(cm.exception))
+        self.assertIn("kaboom", str(cm.exception))
+
+    def test_run_raises_clear_error_for_connection_failure(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            side_effect=error.URLError("connection refused"),
+        ):
+            client = PyAgentClient()
+            with self.assertRaises(PyAgentClientError) as cm:
+                client.run("Hi")
+
+        self.assertIn("Could not connect to PyAgent server", str(cm.exception))
+
+    def test_run_raises_clear_error_for_timeout(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            side_effect=error.URLError(socket.timeout("timed out")),
+        ):
+            client = PyAgentClient()
+            with self.assertRaises(PyAgentClientError) as cm:
+                client.run("Hi")
+
+        self.assertIn("Timed out", str(cm.exception))
+
+    def test_run_raises_clear_error_for_invalid_json_response(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            return_value=_FakeUrlOpenResponse("not-json"),
+        ):
+            client = PyAgentClient()
+            with self.assertRaises(PyAgentClientError) as cm:
+                client.run("Hi")
+
+        self.assertIn("invalid JSON", str(cm.exception))
+
+    def test_run_raises_clear_error_when_required_field_missing(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        with mock.patch(
+            "pyagent.client.request.urlopen",
+            return_value=_FakeUrlOpenResponse('{"profile": "p1"}'),
+        ):
+            client = PyAgentClient()
+            with self.assertRaises(PyAgentClientError) as cm:
+                client.run("Hi")
+
+        self.assertIn("missing required field", str(cm.exception))

@@ -191,6 +191,38 @@ Example response:
 }
 ```
 
+### Python client
+
+PyAgent also ships with a small synchronous HTTP client for the API. It uses the Python standard library, so it does not require the server-side `api` extras just to make requests.
+
+```python
+from pyagent.client import PyAgentClient
+
+client = PyAgentClient("http://127.0.0.1:8000")
+
+print(client.health())
+
+result = client.run(
+    "Summarize README.md",
+    profile="local-qwen",
+    model="qwen2.5-coder:7b",
+    cwd=".",
+    skills=["code-review.md"],
+)
+
+print(result.response)
+print(result.profile, result.provider, result.model)
+print(result.context_files)
+```
+
+Client details:
+
+- `PyAgentClient.health()` returns the decoded `/health` JSON payload.
+- `PyAgentClient.is_healthy()` returns `True`/`False` without raising on connection failures.
+- `PyAgentClient.run(...)` returns a typed `RunResponse` object.
+- `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, and timeouts.
+- The default base URL is `http://127.0.0.1:8000`.
+
 The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error instead of exploding theatrically.
 
 ## Model profiles

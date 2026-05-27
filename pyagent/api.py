@@ -26,6 +26,7 @@ class ChatResponse(BaseModel):
     profile: str
     provider: str
     model: str
+    messages: list[dict]
     context_files: list[str] = Field(default_factory=list)
 
 
@@ -63,6 +64,7 @@ def run(request: ChatRequest) -> ChatResponse:
         profile=profile.name,
         provider=profile.provider,
         model=profile.model,
+        messages=agent.messages,
         context_files=list(agent.project_context_files),
     )
 
