@@ -60,7 +60,7 @@ from pyagent.main import main as main_entry  # Add this import
 class MainCliTests(unittest.TestCase):
     def test_single_shot_mode_prints_response_and_exits(self) -> None:
         # Mock the Agent to avoid real LLM calls
-        with mock.patch("pyagent.main.Agent") as MockAgent:
+        with mock.patch("pyagent.main.Agent") as MockAgent, mock.patch("pyagent.main.load_full_context", return_value=("ctx", [])):
             mock_agent_instance = MockAgent.return_value
             # Simulate the generator returned by agent.run()
             mock_agent_instance.run.return_value = [
@@ -81,8 +81,12 @@ class MainCliTests(unittest.TestCase):
                     # from the assistant_done event.
                     mock_stdout.write.assert_called_with("Hello World!")
 
-    def test_single_shot_mode_passes_profile_and_model(self) -> None:
-        with mock.patch("pyagent.main.Agent") as MockAgent:
+    def test_single_shot_mode_passes_profile_model_and_loaded_context(self) -> None:
+        context_sources = [SimpleNamespace(label="~/.pyagent/AGENTS.md")]
+        with mock.patch("pyagent.main.Agent") as MockAgent, mock.patch(
+            "pyagent.main.load_full_context",
+            return_value=("ctx", context_sources),
+        ) as mock_load_context:
             mock_agent_instance = MockAgent.return_value
             mock_agent_instance.run.return_value = [
                 {"type": "assistant_done", "content": "Done"}
@@ -94,9 +98,66 @@ class MainCliTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         main_entry()
 
+                    mock_load_context.assert_called_once()
                     # Verify Agent was instantiated with the correct overrides
                     MockAgent.assert_called_once_with(
-                        profile="my-profile", model="my-model")
+                        profile="my-profile",
+                        model="my-model",
+                        project_context="ctx",
+                        project_context_files=["~/.pyagent/AGENTS.md"],
+                    )
+
+    def test_single_shot_mode_loads_requested_skills(self) -> None:
+        context_sources = [SimpleNamespace(label="~/.pyagent/skills/foo.md")]
+        with mock.patch("pyagent.main.Agent") as MockAgent, mock.patch(
+            "pyagent.main.resolve_user_skill",
+            side_effect=[SimpleNamespace(label="foo.md"), SimpleNamespace(
+                label="folder/bar.skill")],
+        ) as mock_resolve_skill, mock.patch(
+            "pyagent.main.load_full_context",
+            return_value=("ctx", context_sources),
+        ) as mock_load_context:
+            mock_agent_instance = MockAgent.return_value
+            mock_agent_instance.run.return_value = [
+                {"type": "assistant_done", "content": "Done"}
+            ]
+
+            with mock.patch(
+                "sys.argv",
+                ["pyagent", "--skills", "foo.md,folder/bar.skill", "--prompt", "Hi"],
+            ):
+                with mock.patch("sys.stdout"):
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry()
+
+            self.assertEqual(cm.exception.code, 0)
+            self.assertEqual(mock_resolve_skill.call_count, 2)
+            mock_load_context.assert_called_once_with(
+                mock.ANY,
+                loaded_user_skills=["foo.md", "folder/bar.skill"],
+            )
+
+    def test_single_shot_mode_rejects_unknown_skills(self) -> None:
+        with mock.patch("pyagent.main.resolve_user_skill", return_value=None), mock.patch("sys.argv", ["pyagent", "--skills", "missing.md", "--prompt", "Hi"]):
+            with mock.patch("sys.stderr") as mock_stderr:
+                with self.assertRaises(SystemExit) as cm:
+                    main_entry()
+
+        self.assertEqual(cm.exception.code, 2)
+        mock_stderr.write.assert_any_call(
+            "Unknown skill(s): missing.md\nSkills must be specified as paths relative to ~/.pyagent/skills/\n"
+        )
+
+    def test_skills_flag_without_prompt_exits_with_error(self) -> None:
+        with mock.patch("sys.argv", ["pyagent", "--skills", "foo.md"]):
+            with mock.patch("sys.stderr") as mock_stderr:
+                with self.assertRaises(SystemExit) as cm:
+                    main_entry()
+
+        self.assertEqual(cm.exception.code, 2)
+        mock_stderr.write.assert_called_with(
+            "--skills is currently supported only with --prompt\n"
+        )
 
     def test_interactive_mode_launches_app(self) -> None:
         with mock.patch("pyagent.main.PyAgentApp") as MockApp:

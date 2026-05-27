@@ -76,6 +76,22 @@ You can run a single prompt and exit directly from the command line:
 pyagent --prompt "What files are in the current directory?"
 ```
 
+Single-shot mode automatically loads layered instruction context just like startup in the TUI:
+
+- `~/.pyagent/AGENTS.md`
+- project-local `AGENTS.md`
+- project-local `*.skill`
+- project-local `skills/**/*.md`
+- project-local `skills/**/*.skill`
+
+You can also load specific user skills from `~/.pyagent/skills/` with `--skills` by passing comma-separated paths relative to that directory:
+
+```bash
+pyagent --skills code-review.md,python/testing.skill --prompt "Review this repository's testing strategy"
+```
+
+If any listed skill does not exist under `~/.pyagent/skills/`, PyAgent exits with an error. The `--skills` flag is currently supported only together with `--prompt`.
+
 ### Options
 To choose a saved profile and optionally override its model for the current session:
 
@@ -84,10 +100,11 @@ pyagent --profile local-qwen
 pyagent --profile openai-gpt4 --model gpt-4.1-mini
 ```
 
-You can combine these with the `--prompt` flag:
+You can combine these with `--prompt`, and optionally `--skills`, for one-shot runs:
 
 ```bash
 pyagent --profile openai-gpt4 --prompt "Summarize the contents of README.md"
+pyagent --profile openai-gpt4 --model gpt-4.1-mini --skills repo/review.md --prompt "Review the current project instructions"
 ```
 
 If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can inspect the currently loaded sources with `/context` and refresh them while the app is running with `/reload_context`.
