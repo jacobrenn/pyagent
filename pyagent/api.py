@@ -15,6 +15,7 @@ except ImportError as exc:  # pragma: no cover - exercised via CLI guard
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     profile: str | None = None
     model: str | None = None
     cwd: str | None = None
@@ -49,6 +50,7 @@ def run(request: ChatRequest) -> ChatResponse:
             cwd=request.cwd,
             skills=request.skills,
         )
+        agent.load_messages(request.messages)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -49,6 +49,7 @@ class PyAgentClient:
         self,
         message: str,
         *,
+        messages: list[dict] | None = None,
         profile: str | None = None,
         model: str | None = None,
         cwd: str | None = None,
@@ -56,6 +57,7 @@ class PyAgentClient:
     ) -> RunResponse:
         payload = {
             "message": message,
+            "messages": list(messages or []),
             "profile": profile,
             "model": model,
             "cwd": cwd,

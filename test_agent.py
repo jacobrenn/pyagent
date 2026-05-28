@@ -85,9 +85,11 @@ class ApiTests(unittest.TestCase):
         )
         mock_agent.project_context_files = ["AGENTS.md", "skills/testing.md"]
         mock_agent.messages = [
+            {"role": "system", "content": "ctx"},
             {"role": "user", "content": "Hi"},
             {"role": "assistant", "content": "Hello World!"},
         ]
+        prior_messages = [{"role": "user", "content": "Earlier"}]
 
         client = TestClient(create_app())
         with mock.patch("pyagent.main.build_agent_for_request", return_value=mock_agent) as mock_build:
@@ -95,6 +97,7 @@ class ApiTests(unittest.TestCase):
                 "/run",
                 json={
                     "message": "Hi",
+                    "messages": prior_messages,
                     "profile": "p1",
                     "model": "m1",
                     "cwd": "/tmp",
@@ -117,6 +120,7 @@ class ApiTests(unittest.TestCase):
         mock_build.assert_called_once_with(
             profile="p1", model="m1", cwd="/tmp", skills=["foo.md"]
         )
+        mock_agent.load_messages.assert_called_once_with(prior_messages)
         mock_agent.run.assert_called_once_with("Hi")
 
     def test_run_endpoint_rejects_invalid_request_body(self) -> None:
@@ -143,6 +147,119 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"detail": "Unknown skill: nope.md"})
+
+    def test_run_endpoint_returns_400_for_invalid_messages(self) -> None:
+        from pyagent.api import create_app
+
+        mock_agent = mock.Mock()
+        mock_agent.load_messages.side_effect = ValueError(
+            "each message must include a non-empty string role"
+        )
+
+        client = TestClient(create_app())
+        with mock.patch("pyagent.main.build_agent_for_request", return_value=mock_agent):
+            response = client.post(
+                "/run",
+                json={"message": "Hi", "messages": [{"content": "oops"}]},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"detail": "each message must include a non-empty string role"},
+        )
+
+
+class PyAgentClientTests(unittest.TestCase):
+    def test_run_includes_messages_payload(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        client = PyAgentClient()
+        response_payload = {
+            "response": "Hello World!",
+            "profile": "p1",
+            "provider": "ollama",
+            "model": "m1",
+            "messages": [{"role": "assistant", "content": "Hello World!"}],
+            "context_files": ["AGENTS.md"],
+        }
+
+        with mock.patch.object(client, "_request_json", return_value=response_payload) as mock_request:
+            result = client.run(
+                "Hi",
+                messages=[{"role": "user", "content": "Earlier"}],
+                profile="p1",
+                model="m1",
+                cwd="/tmp",
+                skills=["foo.md"],
+            )
+
+        self.assertEqual(result.response, "Hello World!")
+        mock_request.assert_called_once_with(
+            "POST",
+            "/run",
+            {
+                "message": "Hi",
+                "messages": [{"role": "user", "content": "Earlier"}],
+                "profile": "p1",
+                "model": "m1",
+                "cwd": "/tmp",
+                "skills": ["foo.md"],
+            },
+        )
+
+
+class AgentMessageLoadingTests(unittest.TestCase):
+    def test_load_messages_ignores_system_messages_and_preserves_current_system(self) -> None:
+        agent = Agent()
+        original_system = agent.messages[0]["content"]
+
+        agent.load_messages(
+            [
+                {"role": "system", "content": "ignore me"},
+                {"role": "user", "content": "Earlier"},
+                {"role": "assistant", "content": "Sure"},
+            ]
+        )
+
+        self.assertEqual(agent.messages[0]["role"], "system")
+        self.assertEqual(agent.messages[0]["content"], original_system)
+        self.assertEqual(
+            agent.messages[1:],
+            [
+                {"role": "user", "content": "Earlier"},
+                {"role": "assistant", "content": "Sure"},
+            ],
+        )
+
+    def test_load_messages_preserves_tool_metadata(self) -> None:
+        agent = Agent()
+
+        agent.load_messages(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Running tool",
+                    "tool_calls": [{"id": "call-1", "type": "function"}],
+                },
+                {
+                    "role": "tool",
+                    "content": "done",
+                    "tool_call_id": "call-1",
+                    "name": "list_files",
+                },
+            ]
+        )
+
+        self.assertEqual(agent.messages[1]["tool_calls"], [{"id": "call-1", "type": "function"}])
+        self.assertEqual(agent.messages[2]["tool_call_id"], "call-1")
+        self.assertEqual(agent.messages[2]["name"], "list_files")
+
+    def test_load_messages_rejects_invalid_role(self) -> None:
+        agent = Agent()
+
+        with self.assertRaisesRegex(ValueError, "non-empty string role"):
+            agent.load_messages([{"content": "oops"}])
 
 
 class MainCliTests(unittest.TestCase):
@@ -1908,6 +2025,7 @@ class ClientTests(unittest.TestCase):
             json.loads(req.data.decode("utf-8")),
             {
                 "message": "Hi",
+                "messages": [],
                 "profile": "p1",
                 "model": "m1",
                 "cwd": "/tmp",

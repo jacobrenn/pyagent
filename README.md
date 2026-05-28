@@ -172,6 +172,9 @@ curl -X POST http://127.0.0.1:8000/run \
   -H 'Content-Type: application/json' \
   -d '{
     "message": "Summarize README.md",
+    "messages": [
+      {"role": "user", "content": "We already discussed installation."}
+    ],
     "profile": "local-qwen",
     "model": "qwen2.5-coder:7b",
     "cwd": ".",
@@ -204,6 +207,7 @@ print(client.health())
 
 result = client.run(
     "Summarize README.md",
+    messages=[{"role": "user", "content": "We already discussed installation."}],
     profile="local-qwen",
     model="qwen2.5-coder:7b",
     cwd=".",
@@ -223,7 +227,7 @@ Client details:
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 
-The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error instead of exploding theatrically.
+The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. You may also pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores any incoming `system` messages because letting callers overwrite runtime instructions would be a bit too generous. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error instead of exploding theatrically.
 
 ## Model profiles
 

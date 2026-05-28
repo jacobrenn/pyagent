@@ -205,6 +205,52 @@ class Agent:
             {"role": "system", "content": self._system_prompt()}
         ]
 
+    def load_messages(self, messages: list[dict[str, Any]] | None) -> None:
+        self.reset()
+        if not messages:
+            return
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError("messages must contain only objects")
+            normalized = self._normalize_message(message)
+            if normalized is None:
+                continue
+            self.messages.append(normalized)
+        self._trim_history()
+
+    def _normalize_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        role = message.get("role")
+        if not isinstance(role, str) or not role:
+            raise ValueError("each message must include a non-empty string role")
+        if role == "system":
+            return None
+        if role not in {"user", "assistant", "tool"}:
+            raise ValueError(f"unsupported message role: {role}")
+
+        normalized: dict[str, Any] = {
+            "role": role,
+            "content": str(message.get("content", "")),
+        }
+
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if tool_calls is not None:
+                if not isinstance(tool_calls, list):
+                    raise ValueError("assistant tool_calls must be a list")
+                normalized["tool_calls"] = tool_calls
+        elif role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if tool_call_id is not None:
+                normalized["tool_call_id"] = str(tool_call_id)
+            name = message.get("name")
+            if name is not None:
+                normalized["name"] = str(name)
+            tool_name = message.get("tool_name")
+            if tool_name is not None:
+                normalized["tool_name"] = str(tool_name)
+
+        return normalized
+
     def add_message(self, role: str, content: str, **extra: Any) -> None:
         message = {"role": role, "content": content}
         message.update(extra)
