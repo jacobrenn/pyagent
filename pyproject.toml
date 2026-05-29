@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyagent-harness"
-version = "0.6.0"
+version = "0.7.0"
 description = "A lightweight coding agent built with Textual and a configurable multi-provider backend"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "textual",
+  "textual-serve",
   "requests",
   "pydantic",
   "pydantic-core>=2.46.4",

@@ -433,6 +433,53 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
         mock_stderr.write.assert_called()
 
+    def test_web_subcommand_runs_textual_serve_server(self) -> None:
+        fake_server_instance = mock.Mock()
+        fake_server_class = mock.Mock(return_value=fake_server_instance)
+        fake_textual_serve_module = SimpleNamespace(Server=fake_server_class)
+
+        with mock.patch.dict(
+            sys.modules,
+            {"textual_serve.server": fake_textual_serve_module},
+            clear=False,
+        ):
+            main_entry(
+                [
+                    "web",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "9001",
+                    "--profile",
+                    "local-qwen",
+                    "--model",
+                    "qwen2.5-coder:7b",
+                ]
+            )
+
+        fake_server_class.assert_called_once_with(
+            command="python -m pyagent --profile local-qwen --model qwen2.5-coder:7b",
+            host="0.0.0.0",
+            port=9001,
+            title="PyAgent",
+        )
+        fake_server_instance.serve.assert_called_once_with()
+
+    def test_web_subcommand_exits_when_dependencies_missing(self) -> None:
+        real_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "textual_serve.server":
+                raise ImportError("No module named 'textual_serve'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import), mock.patch("sys.stderr") as mock_stderr:
+            with self.assertRaises(SystemExit) as cm:
+                main_entry(["web"])
+
+        self.assertEqual(cm.exception.code, 2)
+        mock_stderr.write.assert_called()
+
 # ... (remaining file) ...
 
 

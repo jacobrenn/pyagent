@@ -160,6 +160,23 @@ Optional bind overrides:
 pyagent serve --host 0.0.0.0 --port 8000
 ```
 
+### Browser UI
+
+If you want to access the Textual app from a web browser instead of a local terminal, PyAgent also exposes a `web` subcommand powered by `textual-serve`:
+
+```bash
+pyagent web
+```
+
+Optional bind and model/profile overrides:
+
+```bash
+pyagent web --host 0.0.0.0 --port 8000
+pyagent web --profile local-qwen --model qwen2.5-coder:7b
+```
+
+This launches a small server that serves the Textual interface in the browser while still running the normal `python -m pyagent` app underneath.
+
 Endpoints:
 
 - `GET /health` — basic health check
@@ -227,7 +244,7 @@ Client details:
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 
-The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. You may also pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores any incoming `system` messages because letting callers overwrite runtime instructions would be a bit too generous. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error instead of exploding theatrically.
+The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. You may also pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores any incoming `system` messages so runtime instructions cannot be overridden by API callers. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error.
 
 ## Model profiles
 

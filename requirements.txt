@@ -1,4 +1,5 @@
 textual
+textual-serve
 requests
 pydantic
 pydantic-core>=2.46.4

@@ -109,6 +109,28 @@ def main(argv: list[str] | None = None) -> None:
         "--host", default="127.0.0.1", help="Host to bind")
     serve_parser.add_argument(
         "--port", type=int, default=8000, help="Port to bind")
+    web_parser = subparsers.add_parser(
+        "web", help="Run a textual server to access PyAgent via a web browser"
+    )
+    web_parser.add_argument(
+        "--profile",
+        help="Saved model provile to use (overrides PYAGENT_PROFILE)"
+    )
+    web_parser.add_argument(
+        "--model",
+        help="Model name override for the active profile"
+    )
+    web_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind"
+    )
+    web_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind"
+    )
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -121,6 +143,29 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(2)
 
         uvicorn.run(create_app(), host=args.host, port=args.port)
+        return
+    
+    if args.command == "web":
+        try:
+            from textual_serve.server import Server
+        except (ImportError, RuntimeError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            sys.stderr.flush()
+            sys.exit(2)
+
+        command = 'python -m pyagent'
+        if args.profile:
+            command += f" --profile {args.profile}"
+        if args.model:
+            command += f" --model {args.model}"
+        
+        server = Server(
+            command=command,
+            host=args.host,
+            port=args.port,
+            title='PyAgent'
+        )
+        server.serve()
         return
 
     parsed_skills = _parse_skills_arg(args.skills)
