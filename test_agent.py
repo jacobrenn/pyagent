@@ -251,7 +251,8 @@ class AgentMessageLoadingTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(agent.messages[1]["tool_calls"], [{"id": "call-1", "type": "function"}])
+        self.assertEqual(agent.messages[1]["tool_calls"], [
+                         {"id": "call-1", "type": "function"}])
         self.assertEqual(agent.messages[2]["tool_call_id"], "call-1")
         self.assertEqual(agent.messages[2]["name"], "list_files")
 

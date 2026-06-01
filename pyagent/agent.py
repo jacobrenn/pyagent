@@ -221,7 +221,8 @@ class Agent:
     def _normalize_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         role = message.get("role")
         if not isinstance(role, str) or not role:
-            raise ValueError("each message must include a non-empty string role")
+            raise ValueError(
+                "each message must include a non-empty string role")
         if role == "system":
             return None
         if role not in {"user", "assistant", "tool"}:

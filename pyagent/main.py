@@ -7,6 +7,7 @@ from typing import Any
 
 from .agent import Agent
 from .project_context import load_full_context, resolve_user_skill
+from .resources import install_resource, kind_for_name, list_resources, remove_resource, resource_dir
 
 
 def get_version():
@@ -85,6 +86,54 @@ def run_single_shot(
     return response
 
 
+def _print_resource_list(kind_name: str) -> None:
+    kind = kind_for_name(kind_name)
+    root = resource_dir(kind)
+    resources = list_resources(kind)
+    if not resources:
+        sys.stdout.write(f"No {kind.name}s installed in {root}\n")
+        sys.stdout.flush()
+        return
+    sys.stdout.write(f"{kind.name.title()}s in {root}:\n")
+    for resource in resources:
+        sys.stdout.write(f"- {resource.label}\n")
+    sys.stdout.flush()
+
+
+def _handle_resource_command(args: argparse.Namespace) -> None:
+    kind = kind_for_name(args.command)
+    action = args.resource_action
+
+    try:
+        if action == "list":
+            _print_resource_list(args.command)
+            return
+        if action == "install":
+            result = install_resource(
+                kind,
+                args.source,
+                name=args.name,
+                force=args.force,
+            )
+            sys.stdout.write(
+                f"Installed {kind.name} `{result.destination.name}` to {result.destination} "
+                f"({result.bytes_written} bytes)\n"
+            )
+            sys.stdout.flush()
+            return
+        if action == "remove":
+            removed = remove_resource(kind, args.name)
+            sys.stdout.write(f"Removed {kind.name} {removed}\n")
+            sys.stdout.flush()
+            return
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        sys.stderr.flush()
+        sys.exit(2)
+
+    raise SystemExit(f"Unknown {kind.name} action: {action}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run PyAgent")
     parser.add_argument(
@@ -131,7 +180,54 @@ def main(argv: list[str] | None = None) -> None:
         default=8000,
         help="Port to bind"
     )
+
+    def add_resource_parser(name: str, singular: str) -> None:
+        resource_parser = subparsers.add_parser(
+            name,
+            help=f"Manage installed {name}",
+        )
+        resource_subparsers = resource_parser.add_subparsers(
+            dest="resource_action",
+            required=True,
+        )
+        resource_subparsers.add_parser(
+            "list",
+            help=f"List installed {name}",
+        )
+        install_parser = resource_subparsers.add_parser(
+            "install",
+            help=f"Install a {singular} from a local file or URL",
+        )
+        install_parser.add_argument(
+            "source",
+            help="Local file path or URL to install",
+        )
+        install_parser.add_argument(
+            "--name",
+            help=f"Destination filename to use under ~/.pyagent/{name}/",
+        )
+        install_parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Overwrite an existing file with the same name",
+        )
+        remove_parser = resource_subparsers.add_parser(
+            "remove",
+            help=f"Remove an installed {singular}",
+        )
+        remove_parser.add_argument(
+            "name",
+            help=f"Installed {singular} filename or relative path",
+        )
+
+    add_resource_parser("skills", "skill")
+    add_resource_parser("tools", "tool")
+
     args = parser.parse_args(argv)
+
+    if args.command in {"skills", "tools"}:
+        _handle_resource_command(args)
+        return
 
     if args.command == "serve":
         try:
@@ -144,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
 
         uvicorn.run(create_app(), host=args.host, port=args.port)
         return
-    
+
     if args.command == "web":
         try:
             from textual_serve.server import Server
@@ -158,7 +254,7 @@ def main(argv: list[str] | None = None) -> None:
             command += f" --profile {args.profile}"
         if args.model:
             command += f" --model {args.model}"
-        
+
         server = Server(
             command=command,
             host=args.host,

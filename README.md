@@ -116,6 +116,29 @@ pyagent --skills code-review.md,python/testing.skill --prompt "Review this repos
 
 If any listed skill does not exist under `~/.pyagent/skills/`, PyAgent exits with an error. The `--skills` flag is currently supported only together with `--prompt`.
 
+### Managing user skills and tools
+
+PyAgent can install, list, and remove user-managed skills and external tools under `~/.pyagent/` from the command line.
+
+```bash
+pyagent skills list
+pyagent skills install ./review.md
+pyagent skills install https://example.com/review.md --name review.md
+pyagent skills remove review.md
+
+pyagent tools list
+pyagent tools install ./my_tool.py
+pyagent tools install https://example.com/my_tool.py --name my_tool.py
+pyagent tools remove my_tool.py
+```
+
+Notes:
+
+- Skills are installed under `~/.pyagent/skills/` and must use `.md` or `.skill`.
+- Tools are installed under `~/.pyagent/tools/` and must use `.py`.
+- Use `--force` with `install` to overwrite an existing file.
+- Installed tools are marked executable automatically, because apparently software enjoys tiny rituals.
+
 ### Options
 To choose a saved profile and optionally override its model for the current session:
 
@@ -566,8 +589,7 @@ if __name__ == "__main__":
 `examples/tools/search_hf_datasets.py` is a fully fleshed-out reference tool (Hugging Face dataset search) using the same contract. To install it for yourself:
 
 ```bash
-mkdir -p ~/.pyagent/tools
-cp examples/tools/search_hf_datasets.py ~/.pyagent/tools/
+pyagent tools install examples/tools/search_hf_datasets.py
 ```
 
 Then inside PyAgent run `/tools reload`. UV will install `huggingface_hub` and `datasets` on first invocation, into the script's own venv — your PyAgent install stays lean.
