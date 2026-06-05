@@ -391,6 +391,7 @@ class PyAgentApp(App):
             "model": profile.model,
             "base_url": profile.base_url,
             "tools_enabled": self.agent.config.tools_enabled,
+            "builtin_tools_enabled": self.agent.config.builtin_tools_enabled,
             "user_tools_enabled": self.agent.config.user_tools_enabled,
             "bash_enabled": self.agent.config.bash_enabled,
             "bash_readonly_mode": self.agent.config.bash_readonly_mode,
@@ -744,6 +745,7 @@ class PyAgentApp(App):
         lines = [
             "Tools:",
             f"- Status: `{'on' if self.agent.config.tools_enabled else 'off'}`",
+            f"- Built-in tools enabled: `{self.agent.config.builtin_tools_enabled}`",
             f"- User-tools enabled: `{self.agent.config.user_tools_enabled}`",
             f"- User dir: `{self.agent.config.user_dir}`",
             f"- Tool runner: `{self.agent.config.tool_runner}`",
@@ -1164,6 +1166,8 @@ class PyAgentApp(App):
                 f"- Base URL: `{profile.base_url}`\n"
                 f"- Profile file: `{self.agent.profile_store.path}`\n"
                 f"- Agent tool-loop max iterations: {self._max_iterations_text()}\n"
+                f"- Built-in tools enabled: `{self.agent.config.builtin_tools_enabled}`\n"
+                f"- User-tools enabled: `{self.agent.config.user_tools_enabled}`\n"
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
                 f"- Project instruction files loaded: `{context_count}`\n"

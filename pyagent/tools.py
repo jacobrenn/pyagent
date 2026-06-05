@@ -593,8 +593,13 @@ def create_default_tool_registry(
     external_specs: list[ToolSpec] | None = None,
 ) -> ToolRegistry:
     runtime_config = config or AppConfig.from_env()
+    builtin_specs = (
+        _default_builtin_specs(runtime_config)
+        if runtime_config.builtin_tools_enabled
+        else []
+    )
     return ToolRegistry(
-        builtin_specs=_default_builtin_specs(runtime_config),
+        builtin_specs=builtin_specs,
         external_specs=external_specs,
     )
 

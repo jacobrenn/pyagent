@@ -126,6 +126,12 @@ class Agent:
                 "\n\nTool calling is disabled for this session. Do not call tools. "
                 "Answer using only the conversation and your built-in knowledge."
             )
+        elif not self.config.builtin_tools_enabled:
+            prompt += (
+                "\n\nBuilt-in tools are disabled for this session. "
+                "Use only the external tools that are explicitly advertised. "
+                "If no tools are available, answer without tools."
+            )
         if not self.project_context:
             return prompt
         return f"{prompt}\n\n{self.project_context}"

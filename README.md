@@ -461,13 +461,26 @@ Tool calling is enabled by default. Disable all model tool calling for a session
 export PYAGENT_TOOLS_ENABLED=false
 ```
 
+Disable the built-in tool set while still allowing externally installed tools with:
+
+```bash
+export PYAGENT_BUILTIN_TOOLS_ENABLED=false
+export PYAGENT_USER_TOOLS_ENABLED=true
+```
+
+Disable external user-tool discovery while keeping built-ins available with:
+
+```bash
+export PYAGENT_USER_TOOLS_ENABLED=false
+```
+
 Disable only the bash tool with:
 
 ```bash
 export PYAGENT_BASH_ENABLED=false
 ```
 
-When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools.
+When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools. When `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, built-ins are omitted from the registry; external tools remain available if `PYAGENT_USER_TOOLS_ENABLED=true`.
 
 ### External user tools
 
@@ -564,9 +577,9 @@ Then run `/tools reload` in PyAgent. UV installs `huggingface_hub` and `datasets
 - Disable a tool: `/tools disable <name>` moves it to `~/.pyagent/tools/disabled/`.
 - Re-enable a tool: `/tools enable <name>`.
 - Locate a script: `/tools open <name>` prints its absolute path.
-- Name collisions: built-ins always win. `/tools` reports colliding external scripts so you can rename them.
+- Name collisions: built-ins win when built-in tools are enabled. `/tools` reports colliding external scripts so you can rename them. If `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, those built-in names are no longer reserved and an external tool may register the same name.
 - Broken scripts: timeout, non-zero `describe`, and malformed JSON are listed under "Broken external tools" and skipped.
-- Missing `uv`: external tools are disabled at startup with a clear banner; built-ins still work.
+- Missing `uv`: external tools are disabled at startup with a clear banner; built-ins still work unless `PYAGENT_BUILTIN_TOOLS_ENABLED=false`.
 
 ### Trust boundary
 
@@ -686,7 +699,8 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 ### Tool environment variables
 
 - `PYAGENT_TOOLS_ENABLED` — enable or disable all model tool calling for the session; default `true`
-- `PYAGENT_BASH_ENABLED` — enable or disable the bash tool; default `true`
+- `PYAGENT_BUILTIN_TOOLS_ENABLED` — register built-in tools (`bash`, file tools, search/edit tools); default `true`
+- `PYAGENT_BASH_ENABLED` — enable or disable bash execution; default `true` (when `false`, the bash tool remains registered but returns a disabled-by-configuration error)
 - `PYAGENT_BASH_READONLY_MODE` — restrict bash to read-only command prefixes
 - `PYAGENT_BASH_TIMEOUT_DEFAULT` — default bash timeout in seconds
 - `PYAGENT_BASH_BLOCKED_SUBSTRINGS` — comma-separated dangerous bash fragments to block
@@ -695,6 +709,8 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 - `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation; default `60`
 - `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch; default `10`
 - `PYAGENT_TOOL_RUNNER` — executable used to run external tools; default `uv`
+
+These tool environment variables apply to the TUI, single-shot CLI mode, and agents created by the HTTP API server process.
 
 ### Fallback profile environment variables
 

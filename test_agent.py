@@ -601,6 +601,36 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(
             events[-1], {"type": "assistant_done", "content": "Plain answer"})
 
+    def test_builtin_tools_disabled_omits_builtins_but_keeps_tool_calling_enabled(self) -> None:
+        config = AppConfig(max_iterations=1, builtin_tools_enabled=False)
+        external = ToolSpec(
+            name="echo_tool",
+            description="Echo tool",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda **_: "external",
+        )
+        agent = Agent(
+            config=config,
+            tool_registry=create_default_tool_registry(
+                config, external_specs=[external]),
+        )
+        agent.client = DummyClient([[{"content": "Plain answer"}]])
+
+        events = list(agent.run("Answer with external tools only"))
+
+        self.assertEqual(
+            agent.tool_registry.names_by_origin(BUILTIN_ORIGIN), [])
+        self.assertEqual(
+            agent.tool_registry.names_by_origin(EXTERNAL_ORIGIN), ["echo_tool"])
+        advertised_names = [
+            tool["function"]["name"] for tool in agent.client.seen_tools[0]
+        ]
+        self.assertEqual(advertised_names, ["echo_tool"])
+        self.assertIn("Built-in tools are disabled", agent.messages[0]["content"])
+        self.assertNotIn("Tool calling is disabled", agent.messages[0]["content"])
+        self.assertEqual(
+            events[-1], {"type": "assistant_done", "content": "Plain answer"})
+
     def test_appends_tool_result_when_model_stops_after_intro(self) -> None:
         config = AppConfig(max_iterations=3)
         agent = Agent(
@@ -970,6 +1000,26 @@ class ConfigTests(unittest.TestCase):
                 os.environ["PYAGENT_TOOLS_ENABLED"] = previous
 
         self.assertFalse(config.tools_enabled)
+
+    def test_from_env_reads_builtin_and_user_tools_enabled_flags(self) -> None:
+        previous_builtin = os.environ.get("PYAGENT_BUILTIN_TOOLS_ENABLED")
+        previous_user = os.environ.get("PYAGENT_USER_TOOLS_ENABLED")
+        try:
+            os.environ["PYAGENT_BUILTIN_TOOLS_ENABLED"] = "false"
+            os.environ["PYAGENT_USER_TOOLS_ENABLED"] = "false"
+            config = AppConfig.from_env()
+        finally:
+            if previous_builtin is None:
+                os.environ.pop("PYAGENT_BUILTIN_TOOLS_ENABLED", None)
+            else:
+                os.environ["PYAGENT_BUILTIN_TOOLS_ENABLED"] = previous_builtin
+            if previous_user is None:
+                os.environ.pop("PYAGENT_USER_TOOLS_ENABLED", None)
+            else:
+                os.environ["PYAGENT_USER_TOOLS_ENABLED"] = previous_user
+
+        self.assertFalse(config.builtin_tools_enabled)
+        self.assertFalse(config.user_tools_enabled)
 
 
 class ClientTests(unittest.TestCase):
@@ -1617,6 +1667,37 @@ class ToolRegistryCompositionTests(unittest.TestCase):
         self.assertEqual(len(registry.collisions()), 1)
         self.assertEqual(registry.collisions()[0].name, "list_files")
 
+    def test_builtin_tools_can_be_disabled_while_external_tools_register(self) -> None:
+        config = AppConfig(builtin_tools_enabled=False)
+        external = ToolSpec(
+            name="echo_tool",
+            description="Echo tool",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda **_: "external",
+        )
+        registry = create_default_tool_registry(
+            config, external_specs=[external])
+
+        self.assertEqual(registry.names_by_origin(BUILTIN_ORIGIN), [])
+        self.assertEqual(registry.names_by_origin(
+            EXTERNAL_ORIGIN), ["echo_tool"])
+        self.assertEqual(registry.execute("echo_tool", {}), "external")
+
+    def test_disabled_builtin_name_can_be_used_by_external_tool(self) -> None:
+        config = AppConfig(builtin_tools_enabled=False)
+        external = ToolSpec(
+            name="list_files",
+            description="External replacement",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda **_: "external",
+        )
+        registry = create_default_tool_registry(
+            config, external_specs=[external])
+
+        self.assertEqual(registry.origin("list_files"), EXTERNAL_ORIGIN)
+        self.assertEqual(registry.execute("list_files", {}), "external")
+        self.assertEqual(registry.collisions(), [])
+
     def test_external_specs_register_and_track_origin_and_source(self) -> None:
         config = AppConfig()
         handler = lambda **kwargs: f"echo:{kwargs.get('text', '')}"
@@ -1756,8 +1837,30 @@ class UiToolsCommandTests(unittest.TestCase):
             handled = app._handle_slash_command("/tools")
 
             self.assertTrue(handled)
+            self.assertIn("Built-in tools enabled: `True`", notes[-1])
+            self.assertIn("User-tools enabled: `True`", notes[-1])
             self.assertIn("Built-in tools:", notes[-1])
             self.assertIn("External tools", notes[-1])
+
+    def test_tools_command_shows_no_builtins_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AppConfig(
+                user_dir=temp_dir,
+                user_tools_enabled=True,
+                builtin_tools_enabled=False,
+            )
+            app = PyAgentApp.__new__(PyAgentApp)
+            from pyagent.agent import Agent
+
+            app.agent = Agent(config=config)
+            notes: list[str] = []
+            app._add_system_note = notes.append
+
+            handled = app._handle_slash_command("/tools")
+
+            self.assertTrue(handled)
+            self.assertIn("Built-in tools enabled: `False`", notes[-1])
+            self.assertIn("Built-in tools:\n- _none_", notes[-1])
 
     def test_tools_new_creates_script_and_warns_on_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

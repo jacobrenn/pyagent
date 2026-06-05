@@ -47,6 +47,7 @@ class AppConfig:
     model_profiles_path: str = _default_profiles_path()
     system_prompt_path: str = _default_system_prompt_path()
     tools_enabled: bool = True
+    builtin_tools_enabled: bool = True
     bash_enabled: bool = True
     bash_readonly_mode: bool = False
     bash_timeout_default: int = 60
@@ -114,6 +115,11 @@ class AppConfig:
             ),
             tools_enabled=os.getenv("PYAGENT_TOOLS_ENABLED", str(
                 defaults.tools_enabled)).lower()
+            in {"1", "true", "yes", "on"},
+            builtin_tools_enabled=os.getenv(
+                "PYAGENT_BUILTIN_TOOLS_ENABLED",
+                str(defaults.builtin_tools_enabled),
+            ).lower()
             in {"1", "true", "yes", "on"},
             bash_enabled=os.getenv("PYAGENT_BASH_ENABLED", str(
                 defaults.bash_enabled)).lower()

@@ -293,7 +293,8 @@ def handle_status(app: PyAgentApp, args: list[str]) -> bool:
     profile = app.agent.current_profile()
     app._add_system_note(
         f"Current status:\n- {app._status_summary()}\n- Base URL: `{profile.base_url}`\n- Profile file: `{app.agent.profile_store.path}`\n"
-        f"- Agent tool-loop max iterations: {app._max_iterations_text()}\n- Bash enabled: `{app.agent.config.bash_enabled}`\n"
+        f"- Agent tool-loop max iterations: {app._max_iterations_text()}\n- Built-in tools enabled: `{app.agent.config.builtin_tools_enabled}`\n"
+        f"- User-tools enabled: `{app.agent.config.user_tools_enabled}`\n- Bash enabled: `{app.agent.config.bash_enabled}`\n"
         f"- Bash read-only: `{app.agent.config.bash_readonly_mode}`\n- Project instruction files loaded: `{len(app.agent.project_context_files)}`\n"
         f"- Working directory: `{os.getcwd()}`"
     )
