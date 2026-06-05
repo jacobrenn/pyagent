@@ -1,191 +1,285 @@
 # PyAgent
 
-A lightweight coding agent built with Textual and a configurable multi-provider chat backend.
+PyAgent is a lightweight coding agent with a terminal UI, streaming model responses, tool use, layered project instructions, and switchable model profiles.
 
-## Features
+It is built with [Textual](https://textual.textualize.io/) and supports both native Ollama chat endpoints and OpenAI-compatible `/v1/chat/completions` servers such as OpenAI and vLLM.
 
-- **Streaming chat UI** built with Textual
-- **Markdown rendering** for final assistant and tool messages, with a plain-text fallback for fenced code blocks that contain very long lines so transcript content does not get clipped
-- **Tool use** for shell commands, file search/text search, file reads/writes/appends/edits, and listing files
-- **Optional text-only mode** by disabling all model tool calling for a session
-- **Provider support** for:
-  - native **Ollama** chat endpoints
-  - **OpenAI-compatible** chat endpoints such as OpenAI, vLLM, and other `/v1/chat/completions` servers
-- **OpenAI Python SDK integration** for OpenAI-compatible chat completions and model listing
-- **Named model profiles** stored in JSON for easy switching between endpoints and models
-- **API key support** through inline values or environment-variable references
-- **Conversation reset** with `Ctrl+L` or `/clear`
-- **Scrollable transcript** with mouse wheel, `↑` / `↓`, or `PgUp` / `PgDn`
-- **Multi-line prompt input** with `Shift+Enter`; press `Enter` to send, the input box auto-grows as you type, and the prompt area shows a helper hint
-- **Prompt history** with `Ctrl+P` / `Ctrl+N`, plus `/history search <text>` from the TUI
-- **Keyboard shortcuts** including `Ctrl+L` to clear the conversation, `Ctrl+D` to toggle the debug pane, and transcript scrolling with `↑` / `↓` / `PgUp` / `PgDn` / `Home` / `End`
-- **Slash commands** such as `/help`, `/tools`, `/profiles`, `/profile`, `/model`, `/status`, `/cwd`, `/history`, `/context`, `/prompt`, `/reload_context`, `/logging`, and `/debug on|off`, with `/help` also summarizing prompt and transcript keybindings
-- **Automatic layered instructions** loaded from user-global `~/.pyagent/AGENTS.md` and `~/.pyagent/skills/**`, plus project-local `AGENTS.md` and skill files on startup, with `/context` and `/reload_context` for inspection and refresh
-- **Persistent custom tools and skills** under `~/.pyagent/` that survive `pip install --upgrade`. Each user-managed tool is a standalone UV script (PEP 723) with click subcommands, so adding a new tool with new dependencies never touches the core install
+## Quickstart
 
-## Requirements
-
-- Python 3.10+
-- A supported endpoint such as:
-  - [Ollama](https://ollama.com)
-  - OpenAI
-  - vLLM or another OpenAI-compatible server
-- A model with tool-calling support
-
-## Installation
-
-Install PyAgent via pip:
+### 1. Install
 
 ```bash
 pip install pyagent-harness
 ```
 
-Install PyAgent with API support:
+For the optional HTTP API server, install the API extra:
 
 ```bash
 pip install pyagent-harness[api]
 ```
 
-If you are developing and want to install locally from the repo root:
+### 2. Configure a model
 
-```bash
-python -m pip install -e .
+PyAgent looks for model profiles at:
+
+```text
+~/.pyagent/profiles.json
 ```
 
-If you want the local editable install with API support:
+Create a minimal Ollama profile:
 
-```bash
-python -m pip install -e '.[api]'
+```json
+{
+  "default_profile": "local-qwen",
+  "profiles": {
+    "local-qwen": {
+      "provider": "ollama",
+      "base_url": "http://localhost:11434",
+      "model": "qwen2.5-coder:7b"
+    }
+  }
+}
 ```
 
-If you want a non-editable local install from the current directory:
+Or a minimal OpenAI profile:
 
-```bash
-python -m pip install .
+```json
+{
+  "default_profile": "openai-mini",
+  "profiles": {
+    "openai-mini": {
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4.1-mini",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
 ```
 
-And with API support from the current directory:
-
-```bash
-python -m pip install '.[api]'
-```
-
-If you only want the dependencies without installing the package entry point, this still works:
-
-```bash
-pip install -r requirements.txt
-```
-
-PyAgent uses the `openai` Python SDK for OpenAI-compatible profiles and keeps the native Ollama HTTP path for Ollama profiles.
-
-## Running PyAgent
-
-### Interactive Mode (TUI)
-After installation, run PyAgent from any directory with:
+Then run:
 
 ```bash
 pyagent
 ```
 
-You can also launch it as a module:
+You can also run one prompt and exit:
+
+```bash
+pyagent --prompt "Summarize this repository"
+```
+
+## What PyAgent does
+
+- Provides a **streaming Textual TUI** for chat-based coding work.
+- Supports **tool calling** for shell commands, file listing/search, text search, file reads/writes/appends/edits, and arithmetic.
+- Supports **text-only mode** by disabling model tool calling for a session.
+- Uses **Markdown rendering** for assistant and tool messages, with a plain-text fallback for fenced code blocks containing very long lines so transcript content does not get clipped.
+- Loads **named model profiles** from JSON for easy switching between local and remote endpoints.
+- Supports **Ollama** natively and **OpenAI-compatible** providers through the OpenAI Python SDK.
+- Loads layered instructions from user-global and project-local `AGENTS.md` / `skills` files.
+- Supports persistent **custom tools and skills** under `~/.pyagent/`, safe from package upgrades.
+- Includes optional **single-shot CLI**, **HTTP API**, **Python client**, and **browser-hosted TUI** modes.
+
+## Installation
+
+### Standard install
+
+```bash
+pip install pyagent-harness
+```
+
+### Install with HTTP API support
+
+```bash
+pip install pyagent-harness[api]
+```
+
+The API extra installs FastAPI and Uvicorn for `pyagent serve`.
+
+### Developer install from a checkout
+
+```bash
+python -m pip install -e .
+```
+
+With API support:
+
+```bash
+python -m pip install -e '.[api]'
+```
+
+Non-editable local install:
+
+```bash
+python -m pip install .
+```
+
+With API support:
+
+```bash
+python -m pip install '.[api]'
+```
+
+If you only want dependencies without installing the package entry point:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Model profiles
+
+PyAgent loads named model profiles from JSON. By default it reads:
+
+```text
+~/.pyagent/profiles.json
+```
+
+Override that path with:
+
+```bash
+export PYAGENT_MODEL_PROFILES_PATH=/path/to/profiles.json
+```
+
+A sample profile file is included as [`models.example.json`](models.example.json).
+
+### Profile file example
+
+```json
+{
+  "default_profile": "local-qwen",
+  "profiles": {
+    "local-qwen": {
+      "provider": "ollama",
+      "base_url": "http://localhost:11434",
+      "model": "qwen2.5-coder:7b"
+    },
+    "openai-gpt4": {
+      "provider": "openai_compatible",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4.1",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "vllm-local": {
+      "provider": "vllm",
+      "base_url": "http://localhost:8000/v1",
+      "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "api_key_env": "VLLM_API_KEY"
+    }
+  }
+}
+```
+
+Supported provider values:
+
+- `ollama`
+- `openai_compatible`
+- `openai`
+- `vllm`
+
+`openai` and `vllm` are treated as OpenAI-compatible providers.
+
+OpenAI-compatible profiles use the OpenAI Python SDK with the Chat Completions API. PyAgent intentionally stays on `/v1/chat/completions`, not the newer Responses API, so it remains compatible with OpenAI-style servers such as OpenAI and vLLM.
+
+### API keys
+
+Profiles can specify either:
+
+- `api_key` — inline secret value
+- `api_key_env` — environment variable name to read at runtime
+
+Using `api_key_env` is recommended. Inline secrets in config files age about as well as milk.
+
+For local OpenAI-compatible servers that do not require authentication, omit both fields.
+
+### Extra headers and HTTP transport options
+
+Profiles may include:
+
+- `headers` — extra HTTP headers to send with requests
+- `httpx_kwargs` — keyword arguments passed to `httpx.Client` for OpenAI-compatible providers only
+- `http_kwargs` — legacy alias for `httpx_kwargs`; still accepted, but not recommended
+
+If both `httpx_kwargs` and `http_kwargs` are present, `httpx_kwargs` wins.
+
+Example:
+
+```json
+{
+  "default_profile": "local-vllm",
+  "profiles": {
+    "local-vllm": {
+      "provider": "vllm",
+      "base_url": "https://localhost:8000/v1",
+      "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "httpx_kwargs": {
+        "verify": false
+      }
+    }
+  }
+}
+```
+
+### Fallback profile from environment
+
+If the profile file does not exist, PyAgent creates an implicit `default` profile from environment variables:
+
+- `PYAGENT_PROFILE`
+- `PYAGENT_PROVIDER`
+- `PYAGENT_MODEL`
+- `PYAGENT_BASE_URL`
+- `PYAGENT_API_KEY`
+- `PYAGENT_API_KEY_ENV`
+
+## Running PyAgent
+
+### Interactive TUI
+
+```bash
+pyagent
+```
+
+Or as a module:
 
 ```bash
 python -m pyagent
 ```
 
-### Single-Shot Mode (CLI)
-You can run a single prompt and exit directly from the command line:
-
-```bash
-pyagent --prompt "What files are in the current directory?"
-```
-
-Single-shot mode automatically loads layered instruction context just like startup in the TUI:
-
-- `~/.pyagent/AGENTS.md`
-- project-local `AGENTS.md`
-- project-local `*.skill`
-- project-local `skills/**/*.md`
-- project-local `skills/**/*.skill`
-
-You can also load specific user skills from `~/.pyagent/skills/` with `--skills` by passing comma-separated paths relative to that directory:
-
-```bash
-pyagent --skills code-review.md,python/testing.skill --prompt "Review this repository's testing strategy"
-```
-
-If any listed skill does not exist under `~/.pyagent/skills/`, PyAgent exits with an error. The `--skills` flag is currently supported only together with `--prompt`.
-
-### Managing user skills and tools
-
-PyAgent can install, list, and remove user-managed skills and external tools under `~/.pyagent/` from the command line.
-
-```bash
-pyagent skills list
-pyagent skills install ./review.md
-pyagent skills install https://example.com/review.md --name review.md
-pyagent skills remove review.md
-
-pyagent tools list
-pyagent tools install ./my_tool.py
-pyagent tools install https://example.com/my_tool.py --name my_tool.py
-pyagent tools remove my_tool.py
-```
-
-Notes:
-
-- Skills are installed under `~/.pyagent/skills/` and must use `.md` or `.skill`.
-- Tools are installed under `~/.pyagent/tools/` and must use `.py`.
-- Use `--force` with `install` to overwrite an existing file.
-- Installed tools are marked executable automatically, because apparently software enjoys tiny rituals.
-
-### Options
-To choose a saved profile and optionally override its model for the current session:
+Select a saved profile and optionally override its model for the current session:
 
 ```bash
 pyagent --profile local-qwen
 pyagent --profile openai-gpt4 --model gpt-4.1-mini
 ```
 
-You can combine these with `--prompt`, and optionally `--skills`, for one-shot runs:
+### Single-shot CLI
+
+Run one prompt and exit:
 
 ```bash
-pyagent --profile openai-gpt4 --prompt "Summarize the contents of README.md"
-pyagent --profile openai-gpt4 --model gpt-4.1-mini --skills repo/review.md --prompt "Review the current project instructions"
+pyagent --prompt "What files are in the current directory?"
 ```
 
-If the current working directory contains `AGENTS.md`, `*.skill`, or files under `skills/**/*.md` / `skills/**/*.skill`, PyAgent will load them into the system prompt automatically at startup. You can inspect the currently loaded sources with `/context` and refresh them while the app is running with `/reload_context`.
-
-### HTTP API
-PyAgent also includes an optional FastAPI server so you can use the same agent loop over HTTP instead of the TUI.
-
-Install the extra runtime pieces first:
+Use a profile/model override:
 
 ```bash
-pip install pyagent-harness[api]
+pyagent --profile openai-gpt4 --prompt "Summarize README.md"
+pyagent --profile openai-gpt4 --model gpt-4.1-mini --prompt "Review the current project"
 ```
 
-If you are running from a local checkout instead of installing from an index:
+Single-shot mode loads layered instruction context just like the TUI.
+
+You can also load specific user skills from `~/.pyagent/skills/` with `--skills`. Pass comma-separated paths relative to that directory:
 
 ```bash
-python -m pip install '.[api]'
+pyagent --skills code-review.md,python/testing.skill --prompt "Review this repository's testing strategy"
 ```
 
-Then start the API server:
+If any listed skill does not exist under `~/.pyagent/skills/`, PyAgent exits with an error. The `--skills` flag is currently supported only with `--prompt`.
 
-```bash
-pyagent serve
-```
+### Browser-hosted TUI
 
-Optional bind overrides:
-
-```bash
-pyagent serve --host 0.0.0.0 --port 8000
-```
-
-### Browser UI
-
-If you want to access the Textual app from a web browser instead of a local terminal, PyAgent also exposes a `web` subcommand powered by `textual-serve`:
+PyAgent can expose the Textual app in a browser through `textual-serve`:
 
 ```bash
 pyagent web
@@ -198,7 +292,27 @@ pyagent web --host 0.0.0.0 --port 8000
 pyagent web --profile local-qwen --model qwen2.5-coder:7b
 ```
 
-This launches a small server that serves the Textual interface in the browser while still running the normal `python -m pyagent` app underneath.
+This serves the normal `python -m pyagent` app through a small web server.
+
+### HTTP API server
+
+Install the API extra first:
+
+```bash
+pip install pyagent-harness[api]
+```
+
+Then start the server:
+
+```bash
+pyagent serve
+```
+
+Optional bind overrides:
+
+```bash
+pyagent serve --host 0.0.0.0 --port 8000
+```
 
 Endpoints:
 
@@ -234,9 +348,13 @@ Example response:
 }
 ```
 
-### Python client
+The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. You may pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores incoming `system` messages so runtime instructions cannot be overridden by API callers.
 
-PyAgent also ships with a small synchronous HTTP client for the API. It uses the Python standard library, so it does not require the server-side `api` extras just to make requests.
+If FastAPI or Uvicorn are missing, `pyagent serve` exits with a clear error.
+
+### Python API client
+
+PyAgent ships with a small synchronous HTTP client for the API. It uses the Python standard library, so the client does not require the server-side `api` extra just to make requests.
 
 ```python
 from pyagent.client import PyAgentClient
@@ -262,295 +380,142 @@ print(result.context_files)
 Client details:
 
 - `PyAgentClient.health()` returns the decoded `/health` JSON payload.
-- `PyAgentClient.is_healthy()` returns `True`/`False` without raising on connection failures.
+- `PyAgentClient.is_healthy()` returns `True` or `False` without raising on connection failures.
 - `PyAgentClient.run(...)` returns a typed `RunResponse` object.
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 
-The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. You may also pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores any incoming `system` messages so runtime instructions cannot be overridden by API callers. If FastAPI or Uvicorn are not installed, `pyagent api` exits with a clear error.
+## Instructions, skills, and project context
 
-## Model profiles
+PyAgent layers instruction files into the active system prompt.
 
-PyAgent loads named profiles from JSON. By default it looks for:
+Loaded first, as user-global context:
 
-~/.pyagent/profiles.json
+- `~/.pyagent/AGENTS.md`
+- `~/.pyagent/skills/**/*.md`
+- `~/.pyagent/skills/**/*.skill`
 
-You can override the location with:
+Loaded next, from the current project:
 
-- `PYAGENT_MODEL_PROFILES_PATH`
+- `AGENTS.md`
+- `*.skill`
+- `skills/**/*.md`
+- `skills/**/*.skill`
 
-A sample file is included in the repo as `models.example.json`.
+Use `/context` in the TUI to inspect loaded sources and context size. Use `/reload_context` to rescan both user-global and project-local instruction files.
 
-### Example profile file
-
-```json
-{
-  "default_profile": "local-qwen",
-  "profiles": {
-    "local-qwen": {
-      "provider": "ollama",
-      "base_url": "http://localhost:11434",
-      "model": "qwen2.5-coder:7b"
-    },
-    "openai-gpt4": {
-      "provider": "openai_compatible",
-      "base_url": "https://api.openai.com/v1",
-      "model": "gpt-4.1",
-      "api_key_env": "OPENAI_API_KEY"
-    },
-    "vllm-local": {
-      "provider": "vllm",
-      "base_url": "http://localhost:8000/v1",
-      "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
-      "api_key_env": "VLLM_API_KEY"
-    }
-  }
-}
-```
-
-Provider values:
-
-- `ollama`
-- `openai_compatible`
-- `openai`
-- `vllm`
-
-`openai` and `vllm` are treated as OpenAI-compatible providers.
-
-OpenAI-compatible profiles use the `openai` Python SDK with the Chat Completions API. This keeps PyAgent on `/v1/chat/completions` rather than the newer Responses API so it remains compatible with OpenAI-style servers such as OpenAI and vLLM.
-
-### OpenAI-compatible transport overrides
-
-OpenAI-compatible profiles may optionally include `httpx_kwargs` to customize the underlying `httpx.Client` used by the OpenAI SDK.
-This is mainly useful for local or self-hosted endpoints that need non-default transport settings.
-
-Example:
-
-```json
-{
-  "default_profile": "local-vllm",
-  "profiles": {
-    "local-vllm": {
-      "provider": "vllm",
-      "base_url": "https://localhost:8000/v1",
-      "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
-      "httpx_kwargs": {
-        "verify": false
-      }
-    }
-  }
-}
-```
-
-Notes:
-
-- `httpx_kwargs` is only used for OpenAI-compatible providers.
-- If `httpx_kwargs` is omitted, PyAgent uses the SDK's default HTTP client configuration.
-- For backwards compatibility, the older field name `http_kwargs` is still accepted when loading profiles, but `httpx_kwargs` is preferred.
-- If both `httpx_kwargs` and `http_kwargs` are present, `httpx_kwargs` wins.
-
-### API keys
-
-Profiles can specify either:
-
-- `api_key` — inline secret value
-- `api_key_env` — environment variable name to read at runtime
-
-Using `api_key_env` is recommended.
-
-For local OpenAI-compatible servers that do not require authentication, you can omit both `api_key` and `api_key_env`.
-
-### Fallback behavior
-
-If the profile file does not exist, PyAgent creates an implicit `default` profile from environment variables.
-
-Useful env vars for that fallback:
-
-- `PYAGENT_PROFILE`
-- `PYAGENT_PROVIDER`
-- `PYAGENT_MODEL`
-- `PYAGENT_BASE_URL`
-- `PYAGENT_API_KEY`
-- `PYAGENT_API_KEY_ENV`
-
-## Tool configuration
-
-- `PYAGENT_TOOLS_ENABLED` — enable or disable all model tool calling for the session (`true` by default)
-- `PYAGENT_BASH_ENABLED` — enable or disable the `bash` tool specifically (`true` by default)
-
-When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools.
-
-## Runtime slash commands
-
-- `/tools` — show current tool status, built-in tools, external user tools, and any broken/disabled scripts
-- `/tools on` — enable model tool calling for the current session
-- `/tools off` — disable model tool calling for the current session
-- `/tools reload` — re-scan `~/.pyagent/tools/` and rebuild the tool registry (also available as `/reload_tools`)
-- `/tools new <name>` — scaffold a starter UV-script tool at `~/.pyagent/tools/<name>.py`
-- `/tools enable <name>` — move a script out of `~/.pyagent/tools/disabled/`
-- `/tools disable <name>` — move a script into `~/.pyagent/tools/disabled/`
-- `/tools open <name>` — print the absolute path to a tool script
-
-Changing tool mode at runtime resets the current conversation so the updated system prompt is applied cleanly.
-
-- `/clear` — clear the conversation
-- `/help` — show command help
-- `/tools` — list tools
-- `/profiles` — list saved profiles, including current/default markers and auth hints
-- `/profiles reload` — reload profiles from disk
-- `/reload_profiles` — reload profiles from disk
-- `/profile` — show the active profile
-- `/profile <name>` — switch to a saved profile
-- `/profile add <name> provider=<provider> model=<model> [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]` — create or update a profile from the TUI
-- `/model` — show the active model
-- `/model list` — ask the current endpoint for available models, if supported
-- `/model <name>` — override the current profile's model for this session
-- `/status` — show current configuration, including the agent tool-loop max-iteration setting
-- `/max_iterations <n|-1>` — set the maximum tool-loop iterations for the current session (`-1` means infinite)
-- `/cwd` — show current working directory
-- `/history` — show recent prompt history
-- `/history search <text>` — search saved prompt history for matching prompts
-- `/context` — show loaded instruction sources and context size, including user-global defaults, auto-loaded global skills, session-loaded user skills, and project-local files
-- `/prompt` — show the active system prompt
-- `/reload_context` — reload `~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`, and local instruction files and report added/removed files
-- `/logging on|off` — enable or disable session logging (saved to `~/.pyagent/logs/`)
-- `/debug` — show whether the debug pane is currently on or off
-- `/debug on|off` — show or hide the debug pane
-
-Unknown slash commands may suggest a close match, for example `/stats` may suggest `/status`.
-
-## Keyboard shortcuts
-
-- `Enter` — send the current prompt
-- `Shift+Enter` — insert a newline in the prompt box
-- `Ctrl+P` / `Ctrl+N` — move through prompt history
-- `↑` / `↓` — scroll the chat transcript
-- `PgUp` / `PgDn` — page through the chat transcript
-- `Home` / `End` — jump to the top or bottom of the chat transcript
-- `Ctrl+L` — clear the conversation
-- `Ctrl+D` — toggle the debug pane
-- `Ctrl+C` — quit the app
-
-### Profile creation from the TUI
-
-Profile creation and updates are available through `/profile add`.
-Values containing spaces should be quoted.
-
-Examples:
-
-```text
-/profile add local-14b provider=ollama model=qwen2.5-coder:14b switch=true
-/profile add openai-mini provider=openai model=gpt-4.1-mini api_key_env=OPENAI_API_KEY default=true
-/profile add vllm-qwen provider=vllm model="Qwen/Qwen2.5-Coder-32B-Instruct" base_url=http://localhost:8000/v1 api_key_env=VLLM_API_KEY header.X-Project=PyAgent
-```
-
-## Configuration
-
-Environment variables:
-
-- `PYAGENT_PROFILE` — default profile name to select
-- `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding the default `~/.pyagent/profiles.json` location
-- `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding the default `~/.pyagent/system_prompt.txt` location
-- `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
-- `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn (`-1` means infinite)
-- `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
-- `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
-- `PYAGENT_BASH_ENABLED` — enable or disable the bash tool
-- `PYAGENT_BASH_READONLY_MODE` — restrict bash to read-only command prefixes
-- `PYAGENT_BASH_TIMEOUT_DEFAULT` — default bash timeout in seconds
-- `PYAGENT_BASH_BLOCKED_SUBSTRINGS` — comma-separated dangerous bash fragments to block
-- `PYAGENT_BASH_READONLY_PREFIXES` — comma-separated allowed prefixes in read-only mode
-- `PYAGENT_USER_DIR` — root for user-managed tools, skills, and `profiles.json` (default `~/.pyagent`)
-- `PYAGENT_USER_TOOLS_ENABLED` — discover and register external tools under `~/.pyagent/tools/` (`true` by default)
-- `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation (default `60`)
-- `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch (default `10`)
-- `PYAGENT_TOOL_RUNNER` — executable used to run external tools (defaults to `uv`; advanced override)
-
-Profile JSON fields:
-
-- `headers` — optional object of extra HTTP headers to send with a profile
-- `httpx_kwargs` — optional object of keyword arguments passed to `httpx.Client` for OpenAI-compatible profiles only
-- `http_kwargs` — legacy alias for `httpx_kwargs`, still accepted for compatibility but not recommended for new configs
-
-Fallback profile env vars when no profile file exists:
-
-- `PYAGENT_PROVIDER`
-- `PYAGENT_MODEL`
-- `PYAGENT_BASE_URL`
-- `PYAGENT_API_KEY`
-- `PYAGENT_API_KEY_ENV`
+For one-shot CLI runs, `--skills` can load selected user skills from `~/.pyagent/skills/` in addition to automatically loaded context.
 
 ## Custom system prompt
 
-PyAgent stores the active system prompt in a text file. By default that file is:
+PyAgent stores the base system prompt in a text file. By default:
 
 ```text
 ~/.pyagent/system_prompt.txt
 ```
 
-On first run, PyAgent creates that file automatically if it does not already exist.
+On first run, PyAgent creates the file automatically if it does not already exist.
 
-You can override the location with:
-
-- `PYAGENT_SYSTEM_PROMPT_PATH`
-
-Examples:
+Override the location with:
 
 ```bash
 export PYAGENT_SYSTEM_PROMPT_PATH="$HOME/.config/pyagent/my_prompt.txt"
 pyagent
 ```
 
-Or edit the default prompt file directly:
+Or edit the default file directly:
 
 ```bash
 mkdir -p ~/.pyagent
 $EDITOR ~/.pyagent/system_prompt.txt
 ```
 
-A few useful notes:
+Notes:
 
-- `/prompt` shows the currently active system prompt inside the TUI.
-- The system prompt is loaded when the conversation is initialized or reset, so after editing the file you should use `/clear` to start a fresh conversation with the updated prompt.
-- Project and user instruction files (`AGENTS.md`, `skills/**`, `*.skill`) are layered onto the base system prompt automatically.
+- `/prompt` shows the currently active system prompt in the TUI.
+- The system prompt is loaded when the conversation is initialized or reset. After editing it, use `/clear` to start a fresh conversation with the updated prompt.
+- User and project instruction files are layered onto the base system prompt automatically.
 
-## Custom tools and skills
+## Tools
 
-Anything you add for yourself — custom tools, custom skills, custom `AGENTS.md` instructions — should live under `~/.pyagent/` so a `pip install --upgrade` of PyAgent does not wipe it out. Built-in tools (`bash`, `list_files`, `find_files`, `search_text`, `read_file`, `write_file`, `append_file`, `edit_file`) stay inside the package; user tools layer on top.
+PyAgent has two tool layers:
 
-### Layout
+1. **Built-in tools** shipped with the package.
+2. **External user tools** under `~/.pyagent/tools/`.
 
-```text
-~/.pyagent/
-├── profiles.json                      # named model profiles (existing)
-├── AGENTS.md                        # optional user-global agent instructions
-├── skills/                          # user-global skills (*.md, *.skill)
-└── tools/                           # user tools (one UV script per tool)
-    ├── <my_tool>.py
-    ├── disabled/                    # listed in /tools but not registered
-    └── .cache/manifests.json        # auto schema cache (path+mtime+size keyed)
+Built-in tools include:
+
+- `bash`
+- `list_files`
+- `find_files`
+- `search_text`
+- `read_file`
+- `write_file`
+- `append_file`
+- `edit_file`
+- `calculator`
+
+Tool calling is enabled by default. Disable all model tool calling for a session with:
+
+```bash
+export PYAGENT_TOOLS_ENABLED=false
 ```
 
-### Custom tools (UV scripts with click subcommands)
+Disable only the bash tool with:
 
-Each user tool is a single self-contained Python file. PyAgent runs it through [`uv`](https://docs.astral.sh/uv/) so its dependencies are declared inline (PEP 723) and installed into an isolated venv on first invocation. The core PyAgent install never grows when you add a new tool.
+```bash
+export PYAGENT_BASH_ENABLED=false
+```
 
-Every tool must implement two CLI subcommands:
+When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools.
 
-- `<runner> run <script> describe` — print a JSON manifest with `name`, `description`, `parameters` (a JSON-Schema-shaped object), and an optional `version`. By default `<runner>` is `uv`. The output is cached by path + mtime + size, so subsequent startups skip the subprocess.
-- `<runner> run <script> invoke --args-file <path>` — read the tool arguments as a JSON object from `<path>`, print the result to stdout, and exit non-zero with an error on stderr if anything goes wrong. By default `<runner>` is `uv`.
+### External user tools
 
-Use `/tools new <name>` from inside PyAgent to scaffold a starter file, or write one by hand. The built-in scaffold and examples use `uv`, which is the recommended runner. Skeleton:
+User tools live under:
+
+```text
+~/.pyagent/tools/
+```
+
+Each user tool is a standalone Python file run through [`uv`](https://docs.astral.sh/uv/). Dependencies are declared inline using PEP 723 and installed into an isolated environment on first invocation, so adding a tool does not bloat the core PyAgent install. Miraculous, really.
+
+Every user tool must implement two CLI subcommands:
+
+- `<runner> run <script> describe` — print a JSON manifest with `name`, `description`, `parameters`, and optional `version`.
+- `<runner> run <script> invoke --args-file <path>` — read JSON arguments from `<path>`, print the result to stdout, and exit non-zero with stderr on failure.
+
+By default, `<runner>` is `uv`. Override it with `PYAGENT_TOOL_RUNNER` if needed.
+
+Scaffold a new tool from inside the TUI:
+
+```text
+/tools new <name>
+```
+
+Or install an existing tool from the CLI:
+
+```bash
+pyagent tools install ./my_tool.py
+pyagent tools install https://example.com/my_tool.py --name my_tool.py
+```
+
+Then reload tools in the TUI:
+
+```text
+/tools reload
+```
+
+### User tool skeleton
 
 ```python
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["click", "huggingface_hub", "datasets"]
+# dependencies = ["click"]
 # ///
 import json
-import sys
 from pathlib import Path
+
 import click
 
 
@@ -584,41 +549,181 @@ if __name__ == "__main__":
     cli()
 ```
 
-### Reference example: `search_hf_datasets`
-
-`examples/tools/search_hf_datasets.py` is a fully fleshed-out reference tool (Hugging Face dataset search) using the same contract. To install it for yourself:
+A complete reference tool lives at [`examples/tools/search_hf_datasets.py`](examples/tools/search_hf_datasets.py). Install it with:
 
 ```bash
 pyagent tools install examples/tools/search_hf_datasets.py
 ```
 
-Then inside PyAgent run `/tools reload`. UV will install `huggingface_hub` and `datasets` on first invocation, into the script's own venv — your PyAgent install stays lean.
+Then run `/tools reload` in PyAgent. UV installs `huggingface_hub` and `datasets` for that script on first invocation.
 
-### Lifecycle
+### External tool lifecycle
 
-- New / changed scripts: `/tools reload` re-scans the directory and rebuilds the registry. The schema cache invalidates automatically when the file's path, mtime, or size changes.
-- Temporarily turn a tool off: `/tools disable <name>` moves it to `~/.pyagent/tools/disabled/` (still listed in `/tools`, not registered).
-- Re-enable: `/tools enable <name>`.
-- Locate a script: `/tools open <name>` prints the absolute path.
-- Name collisions: built-ins always win. If your script's `name` collides with a built-in, `/tools` shows a warning row with the colliding script path so you can rename it.
-- Bad scripts (timeout, non-zero `describe`, malformed JSON) are listed under "Broken external tools" and skipped; healthy tools keep loading.
-- Missing `uv`: external tools are disabled at startup with a clear banner; built-ins continue to work.
-
-### Custom skills and `AGENTS.md`
-
-`~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**/*.md`, and `~/.pyagent/skills/**/*.skill` are loaded into the system prompt at startup as **user-global** instructions, layered before any project-specific `AGENTS.md` or `skills/` files in the current working directory. `/context` lists these sources separately so you can distinguish user-global defaults, auto-loaded global skills, session-loaded user skills, and project-local files. `/reload_context` re-scans both layers.
+- New or changed scripts: `/tools reload` rescans the directory and rebuilds the registry.
+- Schema cache: stored at `~/.pyagent/tools/.cache/manifests.json`, keyed by path, mtime, and size.
+- Disable a tool: `/tools disable <name>` moves it to `~/.pyagent/tools/disabled/`.
+- Re-enable a tool: `/tools enable <name>`.
+- Locate a script: `/tools open <name>` prints its absolute path.
+- Name collisions: built-ins always win. `/tools` reports colliding external scripts so you can rename them.
+- Broken scripts: timeout, non-zero `describe`, and malformed JSON are listed under "Broken external tools" and skipped.
+- Missing `uv`: external tools are disabled at startup with a clear banner; built-ins still work.
 
 ### Trust boundary
 
-`~/.pyagent/tools/` is user-owned. PyAgent enforces wall-clock timeouts (`PYAGENT_USER_TOOL_TIMEOUT`, `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT`) but does not otherwise sandbox these scripts. Treat any tool you drop into `~/.pyagent/tools/` the same as you would any code you choose to run.
+`~/.pyagent/tools/` is user-owned. PyAgent enforces wall-clock timeouts but does not otherwise sandbox these scripts. Treat any tool you install there as code you have chosen to run.
 
-## Quick CLI smoke test
+## Managing user skills and tools from the CLI
+
+PyAgent can install, list, and remove user-managed skills and tools under `~/.pyagent/`.
+
+```bash
+pyagent skills list
+pyagent skills install ./review.md
+pyagent skills install https://example.com/review.md --name review.md
+pyagent skills remove review.md
+
+pyagent tools list
+pyagent tools install ./my_tool.py
+pyagent tools install https://example.com/my_tool.py --name my_tool.py
+pyagent tools remove my_tool.py
+```
+
+Notes:
+
+- Skills are installed under `~/.pyagent/skills/` and must use `.md` or `.skill`.
+- Tools are installed under `~/.pyagent/tools/` and must use `.py`.
+- Use `--force` with `install` to overwrite an existing file.
+- Installed tools are marked executable automatically.
+
+Recommended user directory layout:
+
+```text
+~/.pyagent/
+├── profiles.json                    # named model profiles
+├── system_prompt.txt                # base system prompt
+├── AGENTS.md                        # optional user-global agent instructions
+├── skills/                          # user-global skills (*.md, *.skill)
+└── tools/                           # user tools, one UV script per tool
+    ├── <my_tool>.py
+    ├── disabled/                    # listed in /tools but not registered
+    └── .cache/manifests.json        # automatic schema cache
+```
+
+## TUI reference
+
+### Runtime slash commands
+
+- `/clear` — clear the conversation
+- `/help` — show command help
+- `/tools` — show tool status, built-ins, external tools, and broken/disabled scripts
+- `/tools on` — enable model tool calling for the current session
+- `/tools off` — disable model tool calling for the current session
+- `/tools reload` — rescan `~/.pyagent/tools/` and rebuild the tool registry; also available as `/reload_tools`
+- `/tools new <name>` — scaffold a starter UV-script tool at `~/.pyagent/tools/<name>.py`
+- `/tools enable <name>` — move a script out of `~/.pyagent/tools/disabled/`
+- `/tools disable <name>` — move a script into `~/.pyagent/tools/disabled/`
+- `/tools open <name>` — print the absolute path to a tool script
+- `/profiles` — list saved profiles, including current/default markers and auth hints
+- `/profiles reload` — reload profiles from disk
+- `/reload_profiles` — reload profiles from disk
+- `/profile` — show the active profile
+- `/profile <name>` — switch to a saved profile
+- `/profile add <name> provider=<provider> model=<model> [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]` — create or update a profile from the TUI
+- `/model` — show the active model
+- `/model list` — ask the current endpoint for available models, if supported
+- `/model <name>` — override the current profile's model for this session
+- `/status` — show current configuration, including the agent tool-loop max-iteration setting
+- `/max_iterations <n|-1>` — set the maximum tool-loop iterations for the current session; `-1` means infinite
+- `/cwd` — show current working directory
+- `/history` — show recent prompt history
+- `/history search <text>` — search saved prompt history for matching prompts
+- `/context` — show loaded instruction sources and context size
+- `/prompt` — show the active system prompt
+- `/reload_context` — reload user-global and project-local instruction files and report added/removed files
+- `/logging on|off` — enable or disable session logging under `~/.pyagent/logs/`
+- `/debug` — show whether the debug pane is currently on or off
+- `/debug on|off` — show or hide the debug pane
+
+Changing tool mode at runtime resets the current conversation so the updated system prompt is applied cleanly.
+
+Unknown slash commands may suggest a close match. For example, `/stats` may suggest `/status`.
+
+### Profile creation from the TUI
+
+Create or update profiles with `/profile add`. Quote values containing spaces.
+
+```text
+/profile add local-14b provider=ollama model=qwen2.5-coder:14b switch=true
+/profile add openai-mini provider=openai model=gpt-4.1-mini api_key_env=OPENAI_API_KEY default=true
+/profile add vllm-qwen provider=vllm model="Qwen/Qwen2.5-Coder-32B-Instruct" base_url=http://localhost:8000/v1 api_key_env=VLLM_API_KEY header.X-Project=PyAgent
+```
+
+### Keyboard shortcuts
+
+- `Enter` — send the current prompt
+- `Shift+Enter` — insert a newline in the prompt box
+- `Ctrl+P` / `Ctrl+N` — move through prompt history
+- `↑` / `↓` — scroll the chat transcript
+- `PgUp` / `PgDn` — page through the chat transcript
+- `Home` / `End` — jump to the top or bottom of the chat transcript
+- `Ctrl+L` — clear the conversation
+- `Ctrl+D` — toggle the debug pane
+- `Ctrl+C` — quit the app
+
+## Configuration reference
+
+### Core environment variables
+
+- `PYAGENT_PROFILE` — default profile name to select
+- `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding `~/.pyagent/profiles.json`
+- `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding `~/.pyagent/system_prompt.txt`
+- `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
+- `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn; `-1` means infinite
+- `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
+- `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
+- `PYAGENT_USER_DIR` — root for user-managed tools, skills, logs, and user-global `AGENTS.md`; default `~/.pyagent`. Model profiles use `PYAGENT_MODEL_PROFILES_PATH`.
+
+### Tool environment variables
+
+- `PYAGENT_TOOLS_ENABLED` — enable or disable all model tool calling for the session; default `true`
+- `PYAGENT_BASH_ENABLED` — enable or disable the bash tool; default `true`
+- `PYAGENT_BASH_READONLY_MODE` — restrict bash to read-only command prefixes
+- `PYAGENT_BASH_TIMEOUT_DEFAULT` — default bash timeout in seconds
+- `PYAGENT_BASH_BLOCKED_SUBSTRINGS` — comma-separated dangerous bash fragments to block
+- `PYAGENT_BASH_READONLY_PREFIXES` — comma-separated allowed prefixes in read-only mode
+- `PYAGENT_USER_TOOLS_ENABLED` — discover and register external tools under `~/.pyagent/tools/`; default `true`
+- `PYAGENT_USER_TOOL_TIMEOUT` — wall-clock timeout in seconds for each external tool invocation; default `60`
+- `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT` — wall-clock timeout for the `describe` schema fetch; default `10`
+- `PYAGENT_TOOL_RUNNER` — executable used to run external tools; default `uv`
+
+### Fallback profile environment variables
+
+Used when no profile file exists:
+
+- `PYAGENT_PROVIDER`
+- `PYAGENT_MODEL`
+- `PYAGENT_BASE_URL`
+- `PYAGENT_API_KEY`
+- `PYAGENT_API_KEY_ENV`
+
+### Profile JSON fields
+
+- `provider` — provider type: `ollama`, `openai_compatible`, `openai`, or `vllm`
+- `base_url` — endpoint base URL
+- `model` — model name
+- `api_key` — inline API key, if needed
+- `api_key_env` — environment variable containing the API key
+- `headers` — optional object of extra HTTP headers
+- `httpx_kwargs` — optional object of keyword arguments passed to `httpx.Client` for OpenAI-compatible profiles only
+- `http_kwargs` — legacy alias for `httpx_kwargs`
+
+## Development
+
+Quick smoke test:
 
 ```bash
 python test_agent.py
 ```
-
-## Development test commands
 
 For non-trivial changes, run:
 
