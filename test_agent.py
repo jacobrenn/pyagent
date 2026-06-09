@@ -626,8 +626,10 @@ class AgentTests(unittest.TestCase):
             tool["function"]["name"] for tool in agent.client.seen_tools[0]
         ]
         self.assertEqual(advertised_names, ["echo_tool"])
-        self.assertIn("Built-in tools are disabled", agent.messages[0]["content"])
-        self.assertNotIn("Tool calling is disabled", agent.messages[0]["content"])
+        self.assertIn("Built-in tools are disabled",
+                      agent.messages[0]["content"])
+        self.assertNotIn("Tool calling is disabled",
+                         agent.messages[0]["content"])
         self.assertEqual(
             events[-1], {"type": "assistant_done", "content": "Plain answer"})
 

@@ -2,6 +2,7 @@ textual
 textual-serve
 requests
 pydantic
+tabulate
 pydantic-core>=2.46.4
 openai>=2.14.0
 uv

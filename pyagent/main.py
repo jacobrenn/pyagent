@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 from importlib.metadata import version
+from tabulate import tabulate
 import argparse
 import os
 import sys
 from typing import Any
 
 from .agent import Agent
+from .config import AppConfig
+from .model_profiles import load_profile_store
 from .project_context import load_full_context, resolve_user_skill
 from .resources import install_resource, kind_for_name, list_resources, remove_resource, resource_dir
 
@@ -180,6 +183,9 @@ def main(argv: list[str] | None = None) -> None:
         default=8000,
         help="Port to bind"
     )
+    profiles_parser = subparsers.add_parser(
+        "profiles", help="Show available profiles"
+    )
 
     def add_resource_parser(name: str, singular: str) -> None:
         resource_parser = subparsers.add_parser(
@@ -228,6 +234,35 @@ def main(argv: list[str] | None = None) -> None:
     if args.command in {"skills", "tools"}:
         _handle_resource_command(args)
         return
+
+    if args.command == "profiles":
+        try:
+            config = AppConfig.from_env()
+            profile_store = load_profile_store(config.model_profiles_path)
+
+            default_profile_name = profile_store.default_profile
+            rows = []
+            for profile_name in profile_store.names():
+                profile = profile_store.get(profile_name)
+                name = profile.name
+                if name == default_profile_name:
+                    name = f"* {name}"
+                row = [name, profile.model, profile.base_url]
+                rows.append(row)
+            table = tabulate(
+                rows,
+                headers=["Name", "Model", "Base URL"]
+            )
+            response = f"Default Profile: {default_profile_name}\n\nAll Profiles:\n{table}\n"
+
+        except Exception as exc:
+            sys.stderr.write(f"{exc}\n")
+            sys.stderr.flush()
+            sys.exit(2)
+
+        sys.stdout.write(response)
+        sys.stdout.flush()
+        sys.exit(0)
 
     if args.command == "serve":
         try:
