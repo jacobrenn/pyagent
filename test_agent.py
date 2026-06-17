@@ -1504,10 +1504,8 @@ def _write_external_tool_script(
                 return
 
             if command == "invoke":
-                idx = sys.argv.index("--args-file")
-                path = sys.argv[idx + 1]
-                with open(path, "r", encoding="utf-8") as f:
-                    args = json.load(f)
+                idx = sys.argv.index("--args")
+                args = json.loads(sys.argv[idx + 1])
                 print({body!r}.format(**args) if {body!r} else "echo:" + args.get("text", ""))
                 return
 

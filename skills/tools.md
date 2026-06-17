@@ -14,12 +14,12 @@ Use this skill when changing `pyagent/tools.py`, tool registration, or tool beha
 There are two distinct surfaces:
 
 1. **Built-in tools** — implemented in `pyagent/tools.py` and registered through `create_default_tool_registry`. These are stable, fast, in-process, and ship with the core install.
-2. **External user tools** — UV scripts under `~/.pyagent/tools/`. Discovered by `pyagent/external_tools.py` at startup, registered alongside built-ins, and invoked via `uv run <script> invoke --args-file <tmp>` with a wall-clock timeout. Each script declares its own dependencies via PEP 723, so adding a new external tool never grows the core install.
+2. **External user tools** — UV scripts under `~/.pyagent/tools/`. Discovered by `pyagent/external_tools.py` at startup, registered alongside built-ins, and invoked via `uv run <script> invoke --args <json>` with a wall-clock timeout. Each script declares its own dependencies via PEP 723, so adding a new external tool never grows the core install.
 
 User-supplied tools should live under `~/.pyagent/tools/`. **Do not** add new tools to `pyagent/tools.py` unless they are core capabilities that everyone running PyAgent should have. The persistent layout is documented in `README.md` under "Custom tools and skills" and the contract is:
 
 - `uv run <script> describe` prints the JSON manifest (`name`, `description`, `parameters`, optional `version`).
-- `uv run <script> invoke --args-file <path>` reads JSON arguments from `<path>`, prints the result to stdout, and exits non-zero with stderr on failure.
+- `uv run <script> invoke --args <json>` reads JSON arguments passed inline as `<json>`, prints the result to stdout, and exits non-zero with stderr on failure.
 
 Use `pyagent/templates/tool_template.py` (rendered by `/tools new <name>` or `pyagent.scaffold.create_user_tool`) as the canonical starter; `examples/tools/search_hf_datasets.py` is a fully fleshed-out reference example.
 

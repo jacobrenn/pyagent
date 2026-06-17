@@ -55,7 +55,7 @@ If implementing agent-facing capabilities, prefer:
 
 Built-in tools live in `pyagent/tools.py`. They are stable, in-process, and ship with the core install.
 
-User-supplied tools belong under `~/.pyagent/tools/` as standalone UV scripts (PEP 723 + click) and should **not** be added to `pyagent/tools.py`. Discovery and execution live in `pyagent/external_tools.py`. The contract is `uv run <script> describe` and `uv run <script> invoke --args-file <path>`. See `README.md` ("Custom tools and skills") and `skills/tools.md` for the full layout and contract. Built-ins always win on name collisions; `/tools` reports the conflict.
+User-supplied tools belong under `~/.pyagent/tools/` as standalone UV scripts (PEP 723 + click) and should **not** be added to `pyagent/tools.py`. Discovery and execution live in `pyagent/external_tools.py`. The contract is `uv run <script> describe` and `uv run <script> invoke --args <json>`. See `README.md` ("Custom tools and skills") and `skills/tools.md` for the full layout and contract. Built-ins always win on name collisions; `/tools` reports the conflict.
 
 ### Shell safety
 
