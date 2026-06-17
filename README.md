@@ -495,7 +495,7 @@ Each user tool is a standalone Python file run through [`uv`](https://docs.astra
 Every user tool must implement two CLI subcommands:
 
 - `<runner> run <script> describe` — print a JSON manifest with `name`, `description`, `parameters`, and optional `version`.
-- `<runner> run <script> invoke --args-file <path>` — read JSON arguments from `<path>`, print the result to stdout, and exit non-zero with stderr on failure.
+- `<runner> run <script> invoke --args <json>` — read JSON arguments passed inline as `<json>`, print the result to stdout, and exit non-zero with stderr on failure.
 
 By default, `<runner>` is `uv`. Override it with `PYAGENT_TOOL_RUNNER` if needed.
 
@@ -527,7 +527,6 @@ Then reload tools in the TUI:
 # dependencies = ["click"]
 # ///
 import json
-from pathlib import Path
 
 import click
 
@@ -552,9 +551,9 @@ def describe():
 
 
 @cli.command()
-@click.option("--args-file", required=True, type=click.Path(exists=True, path_type=Path))
-def invoke(args_file):
-    args = json.loads(args_file.read_text())
+@click.option("--args", "args_json", required=True, help="Stringified JSON object containing the tool arguments.")
+def invoke(args_json):
+    args = json.loads(args_json)
     click.echo(my_logic(**args))
 
 

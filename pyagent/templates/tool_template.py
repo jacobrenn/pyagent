@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 
 import click
 
@@ -79,22 +78,25 @@ def describe() -> None:
 
 @cli.command()
 @click.option(
-    "--args-file",
-    "args_file",
+    "--args",
+    "args_json",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Path to a JSON file containing the tool arguments.",
+    help="Stringified JSON object with the tool arguments (not a file path).",
 )
-def invoke(args_file: Path) -> None:
-    """Run the tool with arguments read from ``--args-file``."""
+def invoke(args_json: str) -> None:
+    """Run the tool with arguments from a JSON string passed via ``--args``.
+
+    ``--args`` takes a single stringified JSON object (not a file path),
+    for example ``--args '{{"input": "value"}}'``.
+    """
     try:
-        arguments = json.loads(args_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        click.echo(f"Failed to read --args-file: {{exc}}", err=True)
+        arguments = json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        click.echo(f"Failed to parse --args: {{exc}}", err=True)
         sys.exit(2)
 
     if not isinstance(arguments, dict):
-        click.echo("--args-file must contain a JSON object.", err=True)
+        click.echo("--args must contain a JSON object.", err=True)
         sys.exit(2)
 
     try:

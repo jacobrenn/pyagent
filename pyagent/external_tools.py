@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -369,8 +368,13 @@ class ExternalToolHandler:
     """Callable wrapper that invokes an external tool script.
 
     Bound into a :class:`pyagent.tools.ToolSpec` and called with the
-    tool arguments the model produced. The arguments are written to a
-    tempfile to avoid quoting issues and command-line length limits.
+    tool arguments the model produced. The arguments are serialized to a
+    JSON string and passed inline via ``--args <json>``. Because the
+    subprocess is launched with an argv list (no shell), the JSON blob
+    is a single token and needs no shell quoting. Note that argv has a
+    platform-dependent size limit (on the order of ~256KB shared with
+    the environment on macOS), so extremely large argument payloads are
+    not supported.
     """
 
     def __init__(
@@ -392,30 +396,15 @@ class ExternalToolHandler:
         except (TypeError, ValueError) as exc:
             return f"Error: could not serialize tool arguments to JSON: {exc}"
 
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w", suffix=".json", prefix="pyagent-tool-args-", delete=False, encoding="utf-8"
-            ) as tmp:
-                tmp.write(payload)
-                args_path = tmp.name
-        except OSError as exc:
-            return f"Error: could not write tool arguments tempfile: {exc}"
-
-        try:
-            command = _build_command(
-                self.runner_command,
-                self.script_path,
-                "invoke",
-                ["--args-file", args_path],
-            )
-            returncode, stdout, stderr, timed_out = _run_subprocess(
-                command, timeout=self.invoke_timeout
-            )
-        finally:
-            try:
-                os.unlink(args_path)
-            except OSError:
-                pass
+        command = _build_command(
+            self.runner_command,
+            self.script_path,
+            "invoke",
+            ["--args", payload],
+        )
+        returncode, stdout, stderr, timed_out = _run_subprocess(
+            command, timeout=self.invoke_timeout
+        )
 
         if timed_out:
             return (
