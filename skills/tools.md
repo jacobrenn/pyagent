@@ -30,7 +30,7 @@ Built-in tools include:
 - shell execution (`bash`)
 - file listing/search (`list_files`, `find_files`, `search_text`)
 - file reading/writing/appending/editing
-- arithmetic
+- skill discovery/loading (`list_skills`, `load_skills`) — these return plain-text skill context as tool output and do not mutate the system prompt
 
 ## Tool design guidance
 

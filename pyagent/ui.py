@@ -23,9 +23,9 @@ from .model_profiles import ModelProfile, default_base_url_for_provider
 from .project_context import (
     GLOBAL_SCOPE,
     PROJECT_SCOPE,
-    list_user_skills,
+    list_available_skills,
     load_full_context,
-    resolve_user_skill,
+    resolve_available_skill,
 )
 from .scaffold import ScaffoldError, create_user_tool
 from .session_logger import SessionLogger
@@ -447,12 +447,12 @@ class PyAgentApp(App):
             "\n"
             "Context and prompts\n"
             "- `/context` — show loaded user-global and project instruction sources\n"
-            "- `/skills list` — show available `~/.pyagent/skills/` entries and session load state\n"
-            "- `/skills load <path>` / `/skills unload <path>` — opt a user skill in or out for this session\n"
+            "- `/skills list` — show available user and project skills and session load state\n"
+            "- `/skills load <id-or-path>` / `/skills unload <id-or-path>` — opt a skill into or out of the system prompt for this session\n"
             "- `/prompt` — show the active system prompt\n"
             "- `/history` — show recent prompt history\n"
             "- `/history search <text>` — search saved prompt history\n"
-            "- `/reload_context` — reload `~/.pyagent/AGENTS.md`, currently loaded user skills, and local instruction files\n"
+            "- `/reload_context` — reload `~/.pyagent/AGENTS.md`, project `AGENTS.md`, and currently loaded skills\n"
             "\n"
             "Tools and debugging\n"
             "- `/tools` — show tool status, built-in and external tools\n"
@@ -470,8 +470,8 @@ class PyAgentApp(App):
         total_chars = len(self.agent.project_context)
         if not files:
             return (
-                "Project context:\n"
-                "- No `AGENTS.md`, loaded user skills, or project skill files loaded."
+                "Loaded instruction context:\n"
+                "- No `AGENTS.md` or explicitly loaded skills are currently loaded."
             )
         global_paths = [
             source.label
@@ -483,11 +483,6 @@ class PyAgentApp(App):
             for source in self.context_sources
             if source.scope == PROJECT_SCOPE
         ]
-        lines = [
-            "Project context:",
-            f"- Files loaded: `{len(files)}`",
-            f"- Context size: `{total_chars}` characters",
-        ]
         loaded_skills = set(self.loaded_user_skills)
         global_default_paths = [
             path for path in global_paths if not path.startswith("~/.pyagent/skills/")
@@ -495,29 +490,29 @@ class PyAgentApp(App):
         global_skill_paths = [
             path for path in global_paths if path.startswith("~/.pyagent/skills/")
         ]
-        loaded_skill_paths = [
-            path for path in global_skill_paths
-            if any(skill == path.replace("~/.pyagent/skills/", "") for skill in loaded_skills)
-        ]
-        auto_loaded_skill_paths = [
-            path for path in global_skill_paths
-            if not any(skill == path.replace("~/.pyagent/skills/", "") for skill in loaded_skills)
+        project_default_paths = [path for path in project_paths if path == "AGENTS.md"]
+        project_skill_paths = [path for path in project_paths if path != "AGENTS.md"]
+
+        lines = [
+            "Loaded instruction context:",
+            f"- Files loaded: `{len(files)}`",
+            f"- Context size: `{total_chars}` characters",
         ]
         if global_default_paths:
             lines.append("- User-global default sources:")
             lines.extend(f"  - `{path}`" for path in global_default_paths)
-        if auto_loaded_skill_paths:
-            lines.append("- User-global auto-loaded skills:")
-            lines.extend(f"  - `{path}`" for path in auto_loaded_skill_paths)
-        lines.append(
-            f"- User skills loaded this session: `{len(loaded_skills)}`")
-        if loaded_skill_paths:
-            lines.extend(f"  - `{path}`" for path in loaded_skill_paths)
-        elif loaded_skills:
+        if project_default_paths:
+            lines.append("- Project default sources:")
+            lines.extend(f"  - `{path}`" for path in project_default_paths)
+        lines.append(f"- Skills loaded into system prompt this session: `{len(loaded_skills)}`")
+        if loaded_skills:
             lines.extend(f"  - `{name}`" for name in sorted(loaded_skills))
-        if project_paths:
-            lines.append("- Project sources:")
-            lines.extend(f"  - `{path}`" for path in project_paths)
+        if global_skill_paths:
+            lines.append("- Loaded user skill sources:")
+            lines.extend(f"  - `{path}`" for path in global_skill_paths)
+        if project_skill_paths:
+            lines.append("- Loaded project skill sources:")
+            lines.extend(f"  - `{path}`" for path in project_skill_paths)
         if not global_paths and not project_paths:
             lines.append("- Sources:")
             lines.extend(f"  - `{path}`" for path in files)
@@ -650,15 +645,16 @@ class PyAgentApp(App):
     def _skills_usage_text(self) -> str:
         return (
             "Usage:\n"
-            "- `/skills list` — show available user skills under `~/.pyagent/skills/`\n"
-            "- `/skills load <path>` — load a user skill for this session\n"
-            "- `/skills unload <path>` — unload a previously loaded user skill for this session"
+            "- `/skills list` — show available user and project skills\n"
+            "- `/skills load <id-or-path>` — load a skill into the system prompt for this session\n"
+            "- `/skills unload <id-or-path>` — unload a previously loaded skill from the system prompt"
         )
 
     def _reload_context_details(self) -> str:
         previous_files = set(self.agent.project_context_files)
         self.project_context, self.context_sources = load_full_context(
             os.getcwd(),
+            user_dir=self.agent.config.user_dir,
             loaded_user_skills=self.loaded_user_skills,
         )
         self.project_context_files = [
@@ -677,24 +673,32 @@ class PyAgentApp(App):
                 "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
         if not self.project_context_files:
             details = [
-                "Reloaded project instructions. No user-global defaults, loaded user skills, or project instruction files were found."
+                "Reloaded instruction context. No user-global defaults, project AGENTS.md, or explicitly loaded skills were found."
             ]
         return "\n\n".join(details)
 
     def _handle_skills_command(self, args: list[str]) -> bool:
         if not args or args[0].lower() == "list":
-            available = list_user_skills(self.agent.config.user_dir)
+            available = list_available_skills(
+                os.getcwd(), user_dir=self.agent.config.user_dir
+            )
             loaded = set(self.loaded_user_skills)
             lines = [
                 f"User skills directory: `{self.agent.config.user_dir}/skills/`",
-                f"Loaded this session: `{len(loaded)}`",
+                "Project skills: `*.skill`, `skills/**/*.md`, `skills/**/*.skill`",
+                f"Loaded into system prompt this session: `{len(loaded)}`",
                 "",
-                "Available user skills:",
+                "Available skills:",
             ]
             if available:
                 for skill in available:
-                    marker = " (loaded)" if skill.label in loaded else ""
-                    lines.append(f"- `{skill}`{marker}")
+                    marker = " (loaded)" if skill.id in loaded else ""
+                    title = skill.title or skill.label
+                    lines.append(f"- `{skill.id}` — {title}{marker}")
+                    if skill.preview:
+                        lines.append(f"  preview: {skill.preview}")
+                    if skill.error:
+                        lines.append(f"  error: {skill.error}")
             else:
                 lines.append("- _none_")
             self._add_system_note("\n".join(lines))
@@ -706,34 +710,36 @@ class PyAgentApp(App):
             return True
 
         requested = args[1]
-        resolved = resolve_user_skill(requested, self.agent.config.user_dir)
+        resolved = resolve_available_skill(
+            requested,
+            os.getcwd(),
+            user_dir=self.agent.config.user_dir,
+        )
         if resolved is None:
             self._add_system_note(
-                f"No user skill named `{requested}` was found under `{self.agent.config.user_dir}/skills/`."
+                f"No skill named `{requested}` was found. Use `/skills list` to see available scoped skill IDs."
             )
             return True
 
-        skill_label = resolved.label
+        skill_id = resolved.id
         if action == "load":
-            if skill_label in self.loaded_user_skills:
-                self._add_system_note(
-                    f"User skill `{skill_label}` is already loaded.")
+            if skill_id in self.loaded_user_skills:
+                self._add_system_note(f"Skill `{skill_id}` is already loaded.")
                 return True
-            self.loaded_user_skills.append(skill_label)
+            self.loaded_user_skills.append(skill_id)
             self._add_system_note(
-                f"Loaded user skill `{skill_label}` for this session.\n\n{self._reload_context_details()}"
+                f"Loaded skill `{skill_id}` into the system prompt for this session.\n\n{self._reload_context_details()}"
             )
             self._set_status(self._ready_status())
             return True
 
-        if skill_label not in self.loaded_user_skills:
-            self._add_system_note(
-                f"User skill `{skill_label}` is not currently loaded.")
+        if skill_id not in self.loaded_user_skills:
+            self._add_system_note(f"Skill `{skill_id}` is not currently loaded.")
             return True
         self.loaded_user_skills = [
-            name for name in self.loaded_user_skills if name != skill_label]
+            name for name in self.loaded_user_skills if name != skill_id]
         self._add_system_note(
-            f"Unloaded user skill `{skill_label}` for this session.\n\n{self._reload_context_details()}"
+            f"Unloaded skill `{skill_id}` from the system prompt for this session.\n\n{self._reload_context_details()}"
         )
         self._set_status(self._ready_status())
         return True
@@ -1170,7 +1176,7 @@ class PyAgentApp(App):
                 f"- User-tools enabled: `{self.agent.config.user_tools_enabled}`\n"
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
-                f"- Project instruction files loaded: `{context_count}`\n"
+                f"- Instruction context files loaded: `{context_count}`\n"
                 f"- Working directory: `{os.getcwd()}`"
             )
             return True

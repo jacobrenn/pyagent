@@ -9,7 +9,7 @@ from typing import Any
 from .agent import Agent
 from .config import AppConfig
 from .model_profiles import load_profile_store
-from .project_context import load_full_context, resolve_user_skill
+from .project_context import load_full_context, resolve_available_skill
 from .resources import install_resource, kind_for_name, list_resources, remove_resource, resource_dir
 
 
@@ -26,24 +26,31 @@ def _parse_skills_arg(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _validate_skills(skills: list[str], *, user_dir: str | None = None) -> list[str]:
+def _validate_skills(
+    skills: list[str],
+    *,
+    cwd: str | None = None,
+    user_dir: str | None = None,
+) -> list[str]:
     missing: list[str] = []
     validated: list[str] = []
     seen: set[str] = set()
+    base_cwd = cwd or os.getcwd()
     for skill_name in skills:
-        skill = resolve_user_skill(skill_name, user_dir)
+        skill = resolve_available_skill(skill_name, base_cwd, user_dir=user_dir)
         if skill is None:
             missing.append(skill_name)
             continue
-        if skill.label in seen:
+        if skill.id in seen:
             continue
-        seen.add(skill.label)
-        validated.append(skill.label)
+        seen.add(skill.id)
+        validated.append(skill.id)
     if missing:
         missing_list = ", ".join(missing)
         raise ValueError(
             f"Unknown skill(s): {missing_list}\n"
-            "Skills must be specified as paths relative to ~/.pyagent/skills/"
+            "Skills must be specified as scoped IDs (user:<path> or project:<path>) "
+            "or as existing user-skill paths relative to ~/.pyagent/skills/."
         )
     return validated
 
@@ -55,9 +62,10 @@ def build_agent_for_request(
     cwd: str | None = None,
     skills: list[str] | None = None,
 ) -> Agent:
-    validated_skills = _validate_skills(skills or [])
+    base_cwd = cwd or os.getcwd()
+    validated_skills = _validate_skills(skills or [], cwd=base_cwd)
     project_context, context_sources = load_full_context(
-        cwd or os.getcwd(),
+        base_cwd,
         loaded_user_skills=validated_skills,
     )
     project_context_files = [source.label for source in context_sources]
@@ -150,7 +158,7 @@ def main(argv: list[str] | None = None) -> None:
         "--model", help="Model name override for the active profile")
     parser.add_argument(
         "--skills",
-        help="Comma-separated skill paths relative to ~/.pyagent/skills/ (supported only with --prompt)",
+        help="Comma-separated skill IDs (user:<path> or project:<path>) or user skill paths (supported only with --prompt)",
     )
     parser.add_argument("--prompt", type=str,
                         help="Single prompt to run and exit")

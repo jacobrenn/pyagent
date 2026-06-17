@@ -34,6 +34,7 @@ from pyagent.project_context import (
     GLOBAL_SCOPE,
     PROJECT_SCOPE,
     discover_project_instruction_files,
+    discover_project_skill_files,
     discover_user_global_instruction_files,
     load_full_context,
     load_project_context,
@@ -50,6 +51,8 @@ from pyagent.tools import (
     edit_file,
     find_files,
     list_files,
+    list_skills,
+    load_skills,
     search_text,
 )
 # ... existing imports ...
@@ -316,9 +319,9 @@ class MainCliTests(unittest.TestCase):
     def test_single_shot_mode_loads_requested_skills(self) -> None:
         context_sources = [SimpleNamespace(label="~/.pyagent/skills/foo.md")]
         with mock.patch("pyagent.main.Agent") as MockAgent, mock.patch(
-            "pyagent.main.resolve_user_skill",
-            side_effect=[SimpleNamespace(label="foo.md"), SimpleNamespace(
-                label="folder/bar.skill")],
+            "pyagent.main.resolve_available_skill",
+            side_effect=[SimpleNamespace(id="user:foo.md"), SimpleNamespace(
+                id="user:folder/bar.skill")],
         ) as mock_resolve_skill, mock.patch(
             "pyagent.main.load_full_context",
             return_value=("ctx", context_sources),
@@ -340,18 +343,18 @@ class MainCliTests(unittest.TestCase):
             self.assertEqual(mock_resolve_skill.call_count, 2)
             mock_load_context.assert_called_once_with(
                 mock.ANY,
-                loaded_user_skills=["foo.md", "folder/bar.skill"],
+                loaded_user_skills=["user:foo.md", "user:folder/bar.skill"],
             )
 
     def test_single_shot_mode_rejects_unknown_skills(self) -> None:
-        with mock.patch("pyagent.main.resolve_user_skill", return_value=None), mock.patch("sys.argv", ["pyagent", "--skills", "missing.md", "--prompt", "Hi"]):
+        with mock.patch("pyagent.main.resolve_available_skill", return_value=None), mock.patch("sys.argv", ["pyagent", "--skills", "missing.md", "--prompt", "Hi"]):
             with mock.patch("sys.stderr") as mock_stderr:
                 with self.assertRaises(SystemExit) as cm:
                     main_entry()
 
         self.assertEqual(cm.exception.code, 2)
         mock_stderr.write.assert_any_call(
-            "Unknown skill(s): missing.md\nSkills must be specified as paths relative to ~/.pyagent/skills/\n"
+            "Unknown skill(s): missing.md\nSkills must be specified as scoped IDs (user:<path> or project:<path>) or as existing user-skill paths relative to ~/.pyagent/skills/.\n"
         )
 
     def test_skills_flag_without_prompt_exits_with_error(self) -> None:
@@ -392,7 +395,7 @@ class MainCliTests(unittest.TestCase):
 
     def test_build_agent_for_request_loads_context_and_passes_labels(self) -> None:
         context_sources = [SimpleNamespace(label="~/.pyagent/AGENTS.md")]
-        with mock.patch("pyagent.main.resolve_user_skill", return_value=SimpleNamespace(label="foo.md")), mock.patch(
+        with mock.patch("pyagent.main.resolve_available_skill", return_value=SimpleNamespace(id="user:foo.md")), mock.patch(
             "pyagent.main.load_full_context",
             return_value=("ctx", context_sources),
         ) as mock_load_context, mock.patch("pyagent.main.Agent") as MockAgent:
@@ -400,7 +403,7 @@ class MainCliTests(unittest.TestCase):
                 profile="prof", model="mod", cwd="/tmp", skills=["foo.md"])
 
         mock_load_context.assert_called_once_with(
-            "/tmp", loaded_user_skills=["foo.md"])
+            "/tmp", loaded_user_skills=["user:foo.md"])
         MockAgent.assert_called_once_with(
             profile="prof",
             model="mod",
@@ -558,32 +561,36 @@ def make_tool_call_delta(index: int, id: str | None = None, name: str | None = N
 
 
 class PyAgentUiContextTests(unittest.TestCase):
-    def test_context_status_separates_auto_loaded_and_session_loaded_skills(self) -> None:
+    def test_context_status_reports_default_sources_and_loaded_skills(self) -> None:
         app = PyAgentApp()
         app.project_context = "global and project context"
         app.context_sources = [
             SimpleNamespace(scope=GLOBAL_SCOPE, label="~/.pyagent/AGENTS.md"),
             SimpleNamespace(scope=GLOBAL_SCOPE,
-                            label="~/.pyagent/skills/auto.md"),
-            SimpleNamespace(scope=GLOBAL_SCOPE,
                             label="~/.pyagent/skills/manual.md"),
             SimpleNamespace(scope=PROJECT_SCOPE, label="AGENTS.md"),
+            SimpleNamespace(scope=PROJECT_SCOPE, label="skills/project.md"),
         ]
         app.project_context_files = [
             source.label for source in app.context_sources]
         app.agent.project_context = app.project_context
         app.agent.project_context_files = app.project_context_files
-        app.loaded_user_skills = ["~/.pyagent/skills/manual.md"]
+        app.loaded_user_skills = ["user:manual.md", "project:skills/project.md"]
 
         status = app._context_status_text()
 
+        self.assertIn("Loaded instruction context:", status)
         self.assertIn("- User-global default sources:", status)
         self.assertIn("  - `~/.pyagent/AGENTS.md`", status)
-        self.assertIn("- User-global auto-loaded skills:", status)
-        self.assertIn("  - `~/.pyagent/skills/auto.md`", status)
-        self.assertIn("- User skills loaded this session: `1`", status)
+        self.assertIn("- Project default sources:", status)
+        self.assertIn("  - `AGENTS.md`", status)
+        self.assertIn("- Skills loaded into system prompt this session: `2`", status)
+        self.assertIn("  - `user:manual.md`", status)
+        self.assertIn("  - `project:skills/project.md`", status)
+        self.assertIn("- Loaded user skill sources:", status)
         self.assertIn("  - `~/.pyagent/skills/manual.md`", status)
-        self.assertNotIn("User-global skills loaded this session", status)
+        self.assertIn("- Loaded project skill sources:", status)
+        self.assertIn("  - `skills/project.md`", status)
 
 
 class AgentTests(unittest.TestCase):
@@ -859,7 +866,12 @@ class UiCommandTests(unittest.TestCase):
     def test_context_status_text_reports_loaded_files(self) -> None:
         app = PyAgentApp()
         app.agent.project_context = "alpha\nbeta"
-        app.agent.project_context_files = ["AGENTS.md", "skills/testing.md"]
+        app.context_sources = [
+            SimpleNamespace(scope=PROJECT_SCOPE, label="AGENTS.md"),
+            SimpleNamespace(scope=PROJECT_SCOPE, label="skills/testing.md"),
+        ]
+        app.project_context_files = [source.label for source in app.context_sources]
+        app.agent.project_context_files = app.project_context_files
 
         text = app._context_status_text()
 
@@ -977,16 +989,16 @@ class UiCommandTests(unittest.TestCase):
             handled = app._handle_slash_command("/skills load python/lint.md")
 
             self.assertTrue(handled)
-            self.assertIn("python/lint.md", app.loaded_user_skills)
-            self.assertIn("Loaded user skill `python/lint.md`", notes[-1])
+            self.assertIn("user:python/lint.md", app.loaded_user_skills)
+            self.assertIn("Loaded skill `user:python/lint.md`", notes[-1])
             self.assertTrue(statuses)
 
             handled = app._handle_slash_command(
                 "/skills unload python/lint.md")
 
             self.assertTrue(handled)
-            self.assertNotIn("python/lint.md", app.loaded_user_skills)
-            self.assertIn("Unloaded user skill `python/lint.md`", notes[-1])
+            self.assertNotIn("user:python/lint.md", app.loaded_user_skills)
+            self.assertIn("Unloaded skill `user:python/lint.md`", notes[-1])
 
 
 class ConfigTests(unittest.TestCase):
@@ -1289,6 +1301,39 @@ class ToolTests(unittest.TestCase):
 
         self.assertIn("notes.py:2: PyAgentApp lives here", result)
 
+    def test_list_and_load_skills_tools_use_scoped_ids_without_mutating_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            user_dir = root / "user"
+            project_dir = root / "project"
+            (user_dir / "skills" / ".private").mkdir(parents=True)
+            project_dir.mkdir()
+            (project_dir / "skills").mkdir()
+            (user_dir / "skills" / "python.md").write_text(
+                "# Python\nUse Python guidance.", encoding="utf-8"
+            )
+            (user_dir / "skills" / ".private" / "hidden.skill").write_text(
+                "# Hidden\nHidden user skill.", encoding="utf-8"
+            )
+            (project_dir / "skills" / "review.md").write_text(
+                "# Review\nProject review checklist.", encoding="utf-8"
+            )
+            config = AppConfig(user_dir=str(user_dir))
+
+            listed = list_skills(config=config, cwd=str(project_dir))
+            loaded = load_skills(
+                skills=["user:python.md", "project:skills/review.md"],
+                config=config,
+                cwd=str(project_dir),
+            )
+
+        self.assertIn("user:python.md", listed)
+        self.assertIn("user:.private/hidden.skill", listed)
+        self.assertIn("project:skills/review.md", listed)
+        self.assertIn("Use Python guidance.", loaded)
+        self.assertIn("Project review checklist.", loaded)
+        self.assertIn("system prompt", loaded)
+
     def test_edit_file_supports_multiple_replacements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "sample.txt")
@@ -1341,7 +1386,7 @@ class ToolTests(unittest.TestCase):
 
 
 class ProjectContextTests(unittest.TestCase):
-    def test_discovers_agents_and_skill_files(self) -> None:
+    def test_discovers_agents_separately_from_project_skill_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_path = os.path.realpath(temp_dir)
             os.makedirs(os.path.join(
@@ -1353,11 +1398,13 @@ class ProjectContextTests(unittest.TestCase):
             with open(os.path.join(base_path, "local.skill"), "w", encoding="utf-8") as file:
                 file.write("local skill")
 
-            files = [path.relative_to(base_path).as_posix(
-            ) for path in discover_project_instruction_files(base_path)]
+            instruction_files = [path.relative_to(base_path).as_posix()
+                                 for path in discover_project_instruction_files(base_path)]
+            skill_files = [path.relative_to(base_path).as_posix()
+                           for path in discover_project_skill_files(base_path)]
 
-        self.assertEqual(
-            files, ["AGENTS.md", "local.skill", "skills/python/testing.md"])
+        self.assertEqual(instruction_files, ["AGENTS.md"])
+        self.assertEqual(skill_files, ["local.skill", "skills/python/testing.md"])
 
     def test_load_project_context_and_agent_reset_include_project_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1376,6 +1423,30 @@ class ProjectContextTests(unittest.TestCase):
         self.assertIn("Always run tests after edits.", context)
         self.assertIn("Always run tests after edits.",
                       agent.messages[0]["content"])
+
+    def test_project_skills_are_not_loaded_by_default_but_can_be_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir)
+            (project_dir / "AGENTS.md").write_text("project rules", encoding="utf-8")
+            (project_dir / "skills").mkdir()
+            (project_dir / "skills" / "review.md").write_text(
+                "# Review\nProject review checklist", encoding="utf-8"
+            )
+
+            default_context, default_sources = load_full_context(project_dir)
+            explicit_context, explicit_sources = load_full_context(
+                project_dir,
+                loaded_user_skills=["project:skills/review.md"],
+            )
+
+        self.assertIn("project rules", default_context)
+        self.assertNotIn("Project review checklist", default_context)
+        self.assertEqual([source.label for source in default_sources], ["AGENTS.md"])
+        self.assertIn("Project review checklist", explicit_context)
+        self.assertEqual(
+            [source.label for source in explicit_sources],
+            ["AGENTS.md", "skills/review.md"],
+        )
 
 
 def _write_external_tool_script(

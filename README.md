@@ -77,7 +77,7 @@ pyagent --prompt "Summarize this repository"
 - Uses **Markdown rendering** for assistant and tool messages, with a plain-text fallback for fenced code blocks containing very long lines so transcript content does not get clipped.
 - Loads **named model profiles** from JSON for easy switching between local and remote endpoints.
 - Supports **Ollama** natively and **OpenAI-compatible** providers through the OpenAI Python SDK.
-- Loads layered instructions from user-global and project-local `AGENTS.md` / `skills` files.
+- Loads layered always-on instructions from user-global and project-local `AGENTS.md` files, with `.md` / `.skill` skills available for explicit or tool-driven loading.
 - Supports persistent **custom tools and skills** under `~/.pyagent/`, safe from package upgrades.
 - Includes optional **single-shot CLI**, **HTTP API**, **Python client**, and **browser-hosted TUI** modes.
 
@@ -269,13 +269,14 @@ pyagent --profile openai-gpt4 --model gpt-4.1-mini --prompt "Review the current 
 
 Single-shot mode loads layered instruction context just like the TUI.
 
-You can also load specific user skills from `~/.pyagent/skills/` with `--skills`. Pass comma-separated paths relative to that directory:
+You can also load specific skills into the startup system prompt with `--skills`. Pass comma-separated scoped skill IDs (`user:<path>` or `project:<path>`). For backward compatibility, unscoped names resolve to user skills under `~/.pyagent/skills/` first:
 
 ```bash
-pyagent --skills code-review.md,python/testing.skill --prompt "Review this repository's testing strategy"
+pyagent --skills user:code-review.md,project:skills/testing.skill --prompt "Review this repository's testing strategy"
+pyagent --skills code-review.md --prompt "Use my user code-review skill"
 ```
 
-If any listed skill does not exist under `~/.pyagent/skills/`, PyAgent exits with an error. The `--skills` flag is currently supported only with `--prompt`.
+If any listed skill does not exist, PyAgent exits with an error. The `--skills` flag is currently supported only with `--prompt`.
 
 ### Browser-hosted TUI
 
@@ -348,7 +349,7 @@ Example response:
 }
 ```
 
-The API uses the same profile selection, model override, context loading, and optional user skill validation as single-shot CLI mode. You may pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores incoming `system` messages so runtime instructions cannot be overridden by API callers.
+The API uses the same profile selection, model override, context loading, and optional skill validation as single-shot CLI mode. Skills may be scoped IDs such as `user:code-review.md` or `project:skills/review.md`; unscoped names resolve to user skills first. You may pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores incoming `system` messages so runtime instructions cannot be overridden by API callers.
 
 If FastAPI or Uvicorn are missing, `pyagent serve` exits with a clear error.
 
@@ -387,24 +388,27 @@ Client details:
 
 ## Instructions, skills, and project context
 
-PyAgent layers instruction files into the active system prompt.
+PyAgent layers always-on instruction files into the active system prompt and keeps skills discoverable for explicit or model-driven loading.
 
 Loaded first, as user-global context:
 
 - `~/.pyagent/AGENTS.md`
-- `~/.pyagent/skills/**/*.md`
-- `~/.pyagent/skills/**/*.skill`
 
 Loaded next, from the current project:
 
 - `AGENTS.md`
+
+Available as skills, but **not loaded into the system prompt by default**:
+
+- `~/.pyagent/skills/**/*.md`
+- `~/.pyagent/skills/**/*.skill`
 - `*.skill`
 - `skills/**/*.md`
 - `skills/**/*.skill`
 
-Use `/context` in the TUI to inspect loaded sources and context size. Use `/reload_context` to rescan both user-global and project-local instruction files.
+Skills are plain text guidance files. The model can discover them with the built-in `list_skills` tool and load their contents as tool output with `load_skills`; this does not mutate the system prompt. Users can explicitly load skills into the system prompt with `/skills load <id-or-path>` in the TUI, `--skills` in single-shot CLI mode, or the API `skills` field.
 
-For one-shot CLI runs, `--skills` can load selected user skills from `~/.pyagent/skills/` in addition to automatically loaded context.
+Use `/context` in the TUI to inspect loaded instruction sources and context size. Use `/skills list` to inspect available skills. Use `/reload_context` to rescan `AGENTS.md` files and any skills explicitly loaded into the system prompt.
 
 ## Custom system prompt
 
@@ -453,7 +457,8 @@ Built-in tools include:
 - `write_file`
 - `append_file`
 - `edit_file`
-- `calculator`
+- `list_skills`
+- `load_skills`
 
 Tool calling is enabled by default. Disable all model tool calling for a session with:
 
@@ -481,6 +486,8 @@ export PYAGENT_BASH_ENABLED=false
 ```
 
 When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools. When `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, built-ins are omitted from the registry; external tools remain available if `PYAGENT_USER_TOOLS_ENABLED=true`.
+
+`list_skills` and `load_skills` are read-only built-ins for model-driven skill use. `list_skills` returns scoped IDs like `user:python/testing.md` and `project:skills/review.md`. `load_skills` returns the requested skill file contents as a tool response only; it does not add those skills to the system prompt or persist session state.
 
 ### External user tools
 
@@ -651,8 +658,11 @@ Recommended user directory layout:
 - `/history` — show recent prompt history
 - `/history search <text>` — search saved prompt history for matching prompts
 - `/context` — show loaded instruction sources and context size
+- `/skills list` — show available user and project skills plus session load state
+- `/skills load <id-or-path>` — load a user or project skill into the system prompt for this session
+- `/skills unload <id-or-path>` — unload a previously loaded skill from the system prompt
 - `/prompt` — show the active system prompt
-- `/reload_context` — reload user-global and project-local instruction files and report added/removed files
+- `/reload_context` — reload user-global/project `AGENTS.md` files and explicitly loaded skills, reporting added/removed files
 - `/logging on|off` — enable or disable session logging under `~/.pyagent/logs/`
 - `/debug` — show whether the debug pane is currently on or off
 - `/debug on|off` — show or hide the debug pane

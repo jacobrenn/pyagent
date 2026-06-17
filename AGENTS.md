@@ -27,7 +27,7 @@ Core files:
 - `pyagent/config.py` — environment-driven runtime config and system prompt
 - `pyagent/model_profiles.py` — loads saved model profiles from JSON and env fallback
 - `pyagent/llm_client.py` — provider-specific clients and streaming normalization
-- `pyagent/project_context.py` — loads user-global (`~/.pyagent/AGENTS.md`, `~/.pyagent/skills/**`) and project-local (`AGENTS.md`, `skills/**`, `*.skill`) instructions into the system prompt
+- `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
 - `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`
 - `test_agent.py` — unit tests
 
@@ -99,23 +99,31 @@ In `pyagent/agent.py`:
 
 ## Project-context loading
 
-This repo auto-loads agent instructions from two layered sources:
+This repo auto-loads always-on instructions from two layered sources:
 
 - **User-global** (loaded first):
   - `~/.pyagent/AGENTS.md`
-  - `~/.pyagent/skills/**/*.md`
-  - `~/.pyagent/skills/**/*.skill`
 - **Project-local** (loaded next, layered on top):
   - `AGENTS.md`
+
+Skills are plain-text guidance files and are **not** loaded into the system prompt by default:
+
+- **User skills**:
+  - `~/.pyagent/skills/**/*.md`
+  - `~/.pyagent/skills/**/*.skill`
+- **Project skills**:
   - `*.skill`
   - `skills/**/*.md`
   - `skills/**/*.skill`
+
+Skills can be discovered by the built-in `list_skills` tool and returned as tool context with `load_skills` without mutating the system prompt. Users may explicitly load skills into the prompt with `/skills load`, CLI `--skills`, or the API `skills` field.
 
 If you change that behavior:
 
 - keep limits on prompt/context size (per-section budgets must stay)
 - keep startup loading transparent in the UI
 - preserve `/reload_context` and `/context`, including the global-vs-project labelling
+- preserve `list_skills` / `load_skills` as read-only skill discovery/loading tools unless intentionally changing the model-facing contract
 - update tests and docs
 
 ## Testing requirements

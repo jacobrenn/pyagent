@@ -9,9 +9,9 @@ from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
 from .project_context import (
     GLOBAL_SCOPE,
     PROJECT_SCOPE,
-    list_user_skills,
+    list_available_skills,
     load_full_context,
-    resolve_user_skill,
+    resolve_available_skill,
 )
 
 if TYPE_CHECKING:
@@ -295,7 +295,7 @@ def handle_status(app: PyAgentApp, args: list[str]) -> bool:
         f"Current status:\n- {app._status_summary()}\n- Base URL: `{profile.base_url}`\n- Profile file: `{app.agent.profile_store.path}`\n"
         f"- Agent tool-loop max iterations: {app._max_iterations_text()}\n- Built-in tools enabled: `{app.agent.config.builtin_tools_enabled}`\n"
         f"- User-tools enabled: `{app.agent.config.user_tools_enabled}`\n- Bash enabled: `{app.agent.config.bash_enabled}`\n"
-        f"- Bash read-only: `{app.agent.config.bash_readonly_mode}`\n- Project instruction files loaded: `{len(app.agent.project_context_files)}`\n"
+        f"- Bash read-only: `{app.agent.config.bash_readonly_mode}`\n- Instruction context files loaded: `{len(app.agent.project_context_files)}`\n"
         f"- Working directory: `{os.getcwd()}`"
     )
     return True
@@ -371,52 +371,62 @@ def _reload_context_state(app: PyAgentApp) -> None:
 
 def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
     if not args or args[0].lower() == "list":
-        skills = list_user_skills(app.agent.config.user_dir)
+        skills = list_available_skills(os.getcwd(), user_dir=app.agent.config.user_dir)
         loaded = set(app.loaded_user_skills)
-        lines = ["User skills (`~/.pyagent/skills/`):"]
+        lines = [
+            f"User skills directory: `{app.agent.config.user_dir}/skills/`",
+            "Project skills: `*.skill`, `skills/**/*.md`, `skills/**/*.skill`",
+            f"Loaded into system prompt this session: `{len(loaded)}`",
+            "",
+            "Available skills:",
+        ]
         if not skills:
             lines.append("- _none found_")
         else:
             for skill in skills:
-                marker = "loaded" if skill.label in loaded else "not loaded"
-                lines.append(f"- `{skill.label}` ({marker})")
-        if loaded and not skills:
-            lines.append("")
-            lines.append("Loaded this session:")
-            lines.extend(f"- `{name}`" for name in sorted(loaded))
+                marker = " (loaded)" if skill.id in loaded else ""
+                lines.append(f"- `{skill.id}` — {skill.title or skill.label}{marker}")
+                if skill.preview:
+                    lines.append(f"  preview: {skill.preview}")
+                if skill.error:
+                    lines.append(f"  error: {skill.error}")
         app._add_system_note("\n".join(lines))
         return True
 
     action = args[0].lower()
     if action not in {"load", "unload"}:
         app._add_system_note(
-            "Usage: `/skills list`, `/skills load <path>`, or `/skills unload <path>`")
+            "Usage: `/skills list`, `/skills load <id-or-path>`, or `/skills unload <id-or-path>`")
         return True
     if len(args) != 2:
-        app._add_system_note(f"Usage: `/skills {action} <path>`")
+        app._add_system_note(f"Usage: `/skills {action} <id-or-path>`")
         return True
 
     skill_name = args[1]
-    skill = resolve_user_skill(skill_name, app.agent.config.user_dir)
+    skill = resolve_available_skill(
+        skill_name,
+        os.getcwd(),
+        user_dir=app.agent.config.user_dir,
+    )
     if skill is None:
         app._add_system_note(
-            f"No user skill named `{skill_name}` was found under `{app.agent.config.user_dir}/skills/`."
+            f"No skill named `{skill_name}` was found. Use `/skills list` to see available scoped skill IDs."
         )
         return True
 
     loaded = set(app.loaded_user_skills)
     if action == "load":
-        if skill.label in loaded:
+        if skill.id in loaded:
             app._add_system_note(
-                f"Skill `{skill.label}` is already loaded for this session.")
+                f"Skill `{skill.id}` is already loaded for this session.")
             return True
-        app.loaded_user_skills.append(skill.label)
+        app.loaded_user_skills.append(skill.id)
         previous_files = set(app.agent.project_context_files)
         _reload_context_state(app)
         current_files = set(app.project_context_files)
         added = sorted(current_files - previous_files)
         details = [
-            f"Loaded skill `{skill.label}` for this session.", app._context_status_text()]
+            f"Loaded skill `{skill.id}` for this session.", app._context_status_text()]
         if added:
             details.append(
                 "Added:\n" + "\n".join(f"- `{path}`" for path in added))
@@ -424,17 +434,17 @@ def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
         app._set_status(app._ready_status())
         return True
 
-    if skill.label not in loaded:
-        app._add_system_note(f"Skill `{skill.label}` is not currently loaded.")
+    if skill.id not in loaded:
+        app._add_system_note(f"Skill `{skill.id}` is not currently loaded.")
         return True
     app.loaded_user_skills = [
-        name for name in app.loaded_user_skills if name != skill.label]
+        name for name in app.loaded_user_skills if name != skill.id]
     previous_files = set(app.agent.project_context_files)
     _reload_context_state(app)
     current_files = set(app.project_context_files)
     removed = sorted(previous_files - current_files)
     details = [
-        f"Unloaded skill `{skill.label}` for this session.", app._context_status_text()]
+        f"Unloaded skill `{skill.id}` for this session.", app._context_status_text()]
     if removed:
         details.append(
             "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
@@ -457,7 +467,7 @@ def handle_reload_context(app: PyAgentApp, args: list[str]) -> bool:
             "Removed:\n" + "\n".join(f"- `{path}`" for path in removed))
     if not app.project_context_files:
         details = [
-            "Reloaded project instructions. No user-global or project instruction files were found."]
+            "Reloaded instruction context. No user-global defaults, project AGENTS.md, or explicitly loaded skills were found."]
     app._add_system_note("\n\n".join(details))
     app._set_status(app._ready_status())
     return True
