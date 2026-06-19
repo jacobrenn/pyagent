@@ -119,8 +119,15 @@ def discover_user_skill_files(user_dir: str | Path | None = None) -> list[Path]:
     candidates: list[Path] = []
     for pattern in ("*.md", "*.skill", "**/*.md", "**/*.skill"):
         for path in sorted(skills_root.glob(pattern)):
-            if path.is_file():
-                candidates.append(path)
+            if not path.is_file():
+                continue
+            try:
+                rel_parts = path.relative_to(skills_root).parts
+            except ValueError:
+                rel_parts = ()
+            if rel_parts[:1] == ("extensions",):
+                continue
+            candidates.append(path)
 
     return _unique_paths(candidates)
 

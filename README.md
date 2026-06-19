@@ -742,6 +742,118 @@ Used when no profile file exists:
 - `httpx_kwargs` — optional object of keyword arguments passed to `httpx.Client` for OpenAI-compatible profiles only
 - `http_kwargs` — legacy alias for `httpx_kwargs`
 
+## Extensions
+
+Extensions are Python files that observe and modify the agent loop through a **synchronous event bus**: they subscribe to lifecycle events, run deterministic logic (e.g. safeguards), and **inject skills into the system prompt for one turn only**. Extensions live under `~/.pyagent/extensions/` and are managed with the `/extension` command.
+
+Extensions are intentionally minimal and one-directional: PyAgent emits events and honors skill text; extensions subscribe and decide what to do. Extensions **do not** register tools or slash commands — tools live as UV scripts under `~/.pyagent/tools/` (see [Custom tools and skills](#custom-tools-and-skills)), and an extension assumes any tool it needs is already discoverable there.
+
+### What an extension can do
+
+- **Handle lifecycle events** — observe or intercept `input`, `before_agent_start`, `turn_start`, `context`, `message_start`, `message_end`, `tool_call` (block or rewrite), `tool_result` (filter or redact), `turn_end`, `agent_end`, `model_select`, `session_start`, `session_shutdown`.
+- **Inject a skill for one turn** via `ctx.add_skill(key)` — the skill's Markdown (under `~/.pyagent/skills/extensions/<key>.md`) is appended to the system prompt **for the turn in which it is declared** (when declared at `turn_start`/`before_agent_start`/`input`) or **next turn** (when declared at `turn_end`), and auto-expunged after. Lean by default, ephemeral by design.
+- **Run deterministic logic** — safeguards, argument rewrites, result redaction. All logic lives in the extension file itself; no network, no state external to the turn.
+
+### The event catalog
+
+Events are emitted synchronously from the agent loop; handlers are called in load order. A handler returns a dict to mutate behavior. For veto fields (`blocked`, `cancel`), the first handler to set a truthy value short-circuits; for other fields the last writer wins. A handler that raises is isolated — the bus logs the fault and continues, so one broken extension never halts the loop. Handlers are **synchronous only**; an accidental `async def` return is closed and ignored.
+
+| Event | Payload | Notable return fields |
+|-------|---------|----------------------|
+| `input` | `{text, source}` | `action: "continue"\|"transform"\|"handled"`, `text` |
+| `before_agent_start` | `{prompt, system_prompt}` | `system_prompt` (replace; append to `event["system_prompt"]` to keep the base prompt) |
+| `agent_start` | `{}` | — |
+| `turn_start` | `{turn_index, timestamp}` | — |
+| `context` | `{messages}` (deepcopy) | `messages` (prune/redact the request only; stored history untouched) |
+| `message_start` | `{message: {role: "assistant"}}` | — |
+| `message_end` | `{message}` | `message` (replace the finalized assistant message) |
+| `tool_call` | `{tool_call_id, name, input}` | `blocked: bool`, `reason`, `input` (mutate arguments) |
+| `tool_result` | `{tool_call_id, name, input, content, details, is_error}` | `content`, `is_error` (filter/redact) |
+| `turn_end` | `{turn_index, message, message_count, tool_results}` | — |
+| `agent_end` | `{messages}` | — |
+| `model_select` | `{model, previous_model, source}` | — |
+| `session_start` | `{reason}` | — |
+| `session_shutdown` | `{reason}` | — |
+
+The `context` event's `messages` is a deep copy (only allocated when a handler exists); mutating it affects only the LLM request, never the stored conversation.
+
+### Writing an extension
+
+An extension is a single `.py` file (`~/.pyagent/extensions/<name>.py`) or a package (`<name>/__init__.py`) exposing a module-level `register(bus, name)`. Subscribe with `@bus.on(...)` — the scoped `bus` auto-tags your handlers so `/extension unload <name>` can remove them. Return a dict to mutate the payload, or `None` to pass through.
+
+```python
+# ~/.pyagent/extensions/safeguard.py
+def register(bus, name):
+    @bus.on("tool_call")
+    def on_tool_call(payload, ctx):
+        # Veto key: first truthy value short-circuits.
+        if payload["name"] == "bash" and "rm -rf" in payload["input"].get("command", ""):
+            return {"blocked": True, "reason": f"{name} blocks destructive commands"}
+        return None
+
+    @bus.on("turn_end")
+    def on_turn_end(payload, ctx):
+        # Inject a skill next turn once the conversation grows. The skill text
+        # is read from ~/.pyagent/skills/extensions/<key>.md; it is injected
+        # for one turn only and auto-expunged. Re-declare each turn to persist.
+        if payload.get("message_count", 0) > 20:
+            ctx.add_skill("guide")
+```
+
+**Context (`ctx`) surface:** `ctx.extension` (this extension's name), `ctx.add_skill(key)` (declare a skill — this turn if called from `input`/`before_agent_start`/`turn_start`, otherwise next turn), `ctx.log` (the active `SessionLogger`, or a no-op when logging is off). That is the entire surface — there is no `ctx.agent`, `ctx.config`, `ctx.ui`, or `ctx.bus`.
+
+### How skills are injected (and removed)
+
+Extension skills live under `~/.pyagent/skills/extensions/<key>.md` and are **hidden** from normal skill discovery (`list_skills` never lists them). The flow:
+
+1. During an event, a handler calls `ctx.add_skill(key)`.
+2. The intent is routed based on *when* it is declared:
+   - Declared at `input`, `before_agent_start`, or `turn_start` → injected into the system prompt **this turn** (the prompt is recompiled after `turn_start` fires, so the skill reaches the LLM in the same turn — this is the natural place to declare an always-on skill like a coder assistant).
+   - Declared at `turn_end` (or any later event) → applied **next turn** (one-turn lag, rotated in at the top of the next turn).
+3. The agent appends each declared skill's Markdown to the system prompt (total budget `MAX_EXTENSION_SKILLS_CHARS = 15_000`, truncated if exceeded; missing/unreadable files are skipped).
+4. At the end of the turn the injection is **wiped** — to keep the skill every turn, the extension re-declares it each turn (e.g. at every `turn_start`).
+
+The system prompt is split into a stable **base** (file content + tool notes + project context, plus any `before_agent_start` rewrite) and an **extension-skill suffix** recomputed from the active skill set. The suffix is re-injected after every `turn_start` without clobbering the base.
+
+A `before_agent_start` handler that returns `system_prompt` **replaces** the base prompt (extension skills are still appended after); to *augment*, read `payload["system_prompt"]` and append.
+
+### Managing extensions
+
+```
+/extension list                       # show extensions in ~/.pyagent/extensions/
+/extension reload                     # re-scan and reload all extensions
+/extension new <name>                 # scaffold a starter extension
+/extension load <name>                # load one extension this session
+/extension unload <name>              # unload one extension this session
+```
+
+`load`/`unload` operate on the in-memory bus (no manifests). `reload` clears all handlers and re-scans the directory (idempotent: no double-subscribe). A failing extension is logged and skipped at load — it never blocks startup.
+
+The `~/.pyagent/` layout:
+
+```
+~/.pyagent/
+├── extensions/             # extension .py files / packages
+│   └── safeguard.py
+├── skills/
+│   └── extensions/         # extension-only skills (hidden from list_skills)
+│       └── guide.md
+└── tools/                  # UV-script tools extensions may rely on
+```
+
+### Reference examples
+
+Two examples ship under [`examples/extensions/`](examples/extensions/):
+
+- **[`examples/extensions/template/`](examples/extensions/template/)** — a copy-paste starter showing an event handler (safeguard) and a one-turn skill injection.
+- **[`examples/extensions/compaction/`](examples/extensions/compaction/)** — a deterministic reference: a `turn_end` handler injects the `compaction` skill once the conversation grows past a soft threshold. The skill tells the LLM to use the `compact_context` tool ([`examples/tools/compact_context.py`](examples/tools/compact_context.py), a deterministic condenser) to compact older context. Copy the extension to `~/.pyagent/extensions/`, the tool to `~/.pyagent/tools/`, and `compaction.md` to `~/.pyagent/skills/extensions/`, then `/extension reload`.
+
+Each example has a `__main__` self-check (`PYTHONPATH=. python examples/extensions/template/__init__.py`).
+
+### Logging and fault isolation
+
+Extensions log through `ctx.log` (the active `SessionLogger`, or a no-op when logging is off); do **not** call `logging.getLogger(...)`. Bus events and handler faults are logged automatically. A handler that raises is caught per-emit, logged with the event/handler/extension/traceback, and skipped — the payload is unaffected and the loop continues.
+
 ## Development
 
 Quick smoke test:
