@@ -371,7 +371,8 @@ def _reload_context_state(app: PyAgentApp) -> None:
 
 def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
     if not args or args[0].lower() == "list":
-        skills = list_available_skills(os.getcwd(), user_dir=app.agent.config.user_dir)
+        skills = list_available_skills(
+            os.getcwd(), user_dir=app.agent.config.user_dir)
         loaded = set(app.loaded_user_skills)
         lines = [
             f"User skills directory: `{app.agent.config.user_dir}/skills/`",
@@ -385,7 +386,8 @@ def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
         else:
             for skill in skills:
                 marker = " (loaded)" if skill.id in loaded else ""
-                lines.append(f"- `{skill.id}` — {skill.title or skill.label}{marker}")
+                lines.append(
+                    f"- `{skill.id}` — {skill.title or skill.label}{marker}")
                 if skill.preview:
                     lines.append(f"  preview: {skill.preview}")
                 if skill.error:

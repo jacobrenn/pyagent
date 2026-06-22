@@ -51,8 +51,6 @@ from pyagent.tools import (
     edit_file,
     find_files,
     list_files,
-    list_skills,
-    load_skills,
     search_text,
 )
 # ... existing imports ...
@@ -575,7 +573,8 @@ class PyAgentUiContextTests(unittest.TestCase):
             source.label for source in app.context_sources]
         app.agent.project_context = app.project_context
         app.agent.project_context_files = app.project_context_files
-        app.loaded_user_skills = ["user:manual.md", "project:skills/project.md"]
+        app.loaded_user_skills = [
+            "user:manual.md", "project:skills/project.md"]
 
         status = app._context_status_text()
 
@@ -584,7 +583,8 @@ class PyAgentUiContextTests(unittest.TestCase):
         self.assertIn("  - `~/.pyagent/AGENTS.md`", status)
         self.assertIn("- Project default sources:", status)
         self.assertIn("  - `AGENTS.md`", status)
-        self.assertIn("- Skills loaded into system prompt this session: `2`", status)
+        self.assertIn(
+            "- Skills loaded into system prompt this session: `2`", status)
         self.assertIn("  - `user:manual.md`", status)
         self.assertIn("  - `project:skills/project.md`", status)
         self.assertIn("- Loaded user skill sources:", status)
@@ -870,7 +870,8 @@ class UiCommandTests(unittest.TestCase):
             SimpleNamespace(scope=PROJECT_SCOPE, label="AGENTS.md"),
             SimpleNamespace(scope=PROJECT_SCOPE, label="skills/testing.md"),
         ]
-        app.project_context_files = [source.label for source in app.context_sources]
+        app.project_context_files = [
+            source.label for source in app.context_sources]
         app.agent.project_context_files = app.project_context_files
 
         text = app._context_status_text()
@@ -1301,39 +1302,6 @@ class ToolTests(unittest.TestCase):
 
         self.assertIn("notes.py:2: PyAgentApp lives here", result)
 
-    def test_list_and_load_skills_tools_use_scoped_ids_without_mutating_context(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            user_dir = root / "user"
-            project_dir = root / "project"
-            (user_dir / "skills" / ".private").mkdir(parents=True)
-            project_dir.mkdir()
-            (project_dir / "skills").mkdir()
-            (user_dir / "skills" / "python.md").write_text(
-                "# Python\nUse Python guidance.", encoding="utf-8"
-            )
-            (user_dir / "skills" / ".private" / "hidden.skill").write_text(
-                "# Hidden\nHidden user skill.", encoding="utf-8"
-            )
-            (project_dir / "skills" / "review.md").write_text(
-                "# Review\nProject review checklist.", encoding="utf-8"
-            )
-            config = AppConfig(user_dir=str(user_dir))
-
-            listed = list_skills(config=config, cwd=str(project_dir))
-            loaded = load_skills(
-                skills=["user:python.md", "project:skills/review.md"],
-                config=config,
-                cwd=str(project_dir),
-            )
-
-        self.assertIn("user:python.md", listed)
-        self.assertIn("user:.private/hidden.skill", listed)
-        self.assertIn("project:skills/review.md", listed)
-        self.assertIn("Use Python guidance.", loaded)
-        self.assertIn("Project review checklist.", loaded)
-        self.assertIn("system prompt", loaded)
-
     def test_edit_file_supports_multiple_replacements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "sample.txt")
@@ -1404,7 +1372,8 @@ class ProjectContextTests(unittest.TestCase):
                            for path in discover_project_skill_files(base_path)]
 
         self.assertEqual(instruction_files, ["AGENTS.md"])
-        self.assertEqual(skill_files, ["local.skill", "skills/python/testing.md"])
+        self.assertEqual(
+            skill_files, ["local.skill", "skills/python/testing.md"])
 
     def test_load_project_context_and_agent_reset_include_project_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1441,7 +1410,8 @@ class ProjectContextTests(unittest.TestCase):
 
         self.assertIn("project rules", default_context)
         self.assertNotIn("Project review checklist", default_context)
-        self.assertEqual([source.label for source in default_sources], ["AGENTS.md"])
+        self.assertEqual(
+            [source.label for source in default_sources], ["AGENTS.md"])
         self.assertIn("Project review checklist", explicit_context)
         self.assertEqual(
             [source.label for source in explicit_sources],

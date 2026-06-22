@@ -490,8 +490,10 @@ class PyAgentApp(App):
         global_skill_paths = [
             path for path in global_paths if path.startswith("~/.pyagent/skills/")
         ]
-        project_default_paths = [path for path in project_paths if path == "AGENTS.md"]
-        project_skill_paths = [path for path in project_paths if path != "AGENTS.md"]
+        project_default_paths = [
+            path for path in project_paths if path == "AGENTS.md"]
+        project_skill_paths = [
+            path for path in project_paths if path != "AGENTS.md"]
 
         lines = [
             "Loaded instruction context:",
@@ -504,7 +506,8 @@ class PyAgentApp(App):
         if project_default_paths:
             lines.append("- Project default sources:")
             lines.extend(f"  - `{path}`" for path in project_default_paths)
-        lines.append(f"- Skills loaded into system prompt this session: `{len(loaded_skills)}`")
+        lines.append(
+            f"- Skills loaded into system prompt this session: `{len(loaded_skills)}`")
         if loaded_skills:
             lines.extend(f"  - `{name}`" for name in sorted(loaded_skills))
         if global_skill_paths:
@@ -734,7 +737,8 @@ class PyAgentApp(App):
             return True
 
         if skill_id not in self.loaded_user_skills:
-            self._add_system_note(f"Skill `{skill_id}` is not currently loaded.")
+            self._add_system_note(
+                f"Skill `{skill_id}` is not currently loaded.")
             return True
         self.loaded_user_skills = [
             name for name in self.loaded_user_skills if name != skill_id]

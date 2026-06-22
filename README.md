@@ -77,7 +77,7 @@ pyagent --prompt "Summarize this repository"
 - Uses **Markdown rendering** for assistant and tool messages, with a plain-text fallback for fenced code blocks containing very long lines so transcript content does not get clipped.
 - Loads **named model profiles** from JSON for easy switching between local and remote endpoints.
 - Supports **Ollama** natively and **OpenAI-compatible** providers through the OpenAI Python SDK.
-- Loads layered always-on instructions from user-global and project-local `AGENTS.md` files, with `.md` / `.skill` skills available for explicit or tool-driven loading.
+- Loads layered always-on instructions from user-global and project-local `AGENTS.md` files, with `.md` / `.skill` skills available for explicit loading.
 - Supports persistent **custom tools and skills** under `~/.pyagent/`, safe from package upgrades.
 - Includes optional **single-shot CLI**, **HTTP API**, **Python client**, and **browser-hosted TUI** modes.
 
@@ -388,7 +388,7 @@ Client details:
 
 ## Instructions, skills, and project context
 
-PyAgent layers always-on instruction files into the active system prompt and keeps skills discoverable for explicit or model-driven loading.
+PyAgent layers always-on instruction files into the active system prompt and keeps skills discoverable for explicit loading or discovery by the agent.
 
 Loaded first, as user-global context:
 
@@ -406,7 +406,7 @@ Available as skills, but **not loaded into the system prompt by default**:
 - `skills/**/*.md`
 - `skills/**/*.skill`
 
-Skills are plain text guidance files. The model can discover them with the built-in `list_skills` tool and load their contents as tool output with `load_skills`; this does not mutate the system prompt. Users can explicitly load skills into the system prompt with `/skills load <id-or-path>` in the TUI, `--skills` in single-shot CLI mode, or the API `skills` field.
+Skills are plain text guidance files. Users can explicitly load skills into the system prompt with `/skills load <id-or-path>` in the TUI, `--skills` in single-shot CLI mode, or the API `skills` field.
 
 Use `/context` in the TUI to inspect loaded instruction sources and context size. Use `/skills list` to inspect available skills. Use `/reload_context` to rescan `AGENTS.md` files and any skills explicitly loaded into the system prompt.
 
@@ -457,8 +457,6 @@ Built-in tools include:
 - `write_file`
 - `append_file`
 - `edit_file`
-- `list_skills`
-- `load_skills`
 
 Tool calling is enabled by default. Disable all model tool calling for a session with:
 
@@ -487,7 +485,6 @@ export PYAGENT_BASH_ENABLED=false
 
 When `PYAGENT_TOOLS_ENABLED=false`, PyAgent does not advertise tools to the model and adds a system instruction telling it not to call tools. When `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, built-ins are omitted from the registry; external tools remain available if `PYAGENT_USER_TOOLS_ENABLED=true`.
 
-`list_skills` and `load_skills` are read-only built-ins for model-driven skill use. `list_skills` returns scoped IDs like `user:python/testing.md` and `project:skills/review.md`. `load_skills` returns the requested skill file contents as a tool response only; it does not add those skills to the system prompt or persist session state.
 
 ### External user tools
 

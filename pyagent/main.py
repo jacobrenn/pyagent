@@ -37,7 +37,8 @@ def _validate_skills(
     seen: set[str] = set()
     base_cwd = cwd or os.getcwd()
     for skill_name in skills:
-        skill = resolve_available_skill(skill_name, base_cwd, user_dir=user_dir)
+        skill = resolve_available_skill(
+            skill_name, base_cwd, user_dir=user_dir)
         if skill is None:
             missing.append(skill_name)
             continue

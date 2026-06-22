@@ -116,14 +116,13 @@ Skills are plain-text guidance files and are **not** loaded into the system prom
   - `skills/**/*.md`
   - `skills/**/*.skill`
 
-Skills can be discovered by the built-in `list_skills` tool and returned as tool context with `load_skills` without mutating the system prompt. Users may explicitly load skills into the prompt with `/skills load`, CLI `--skills`, or the API `skills` field.
+Users may explicitly load skills into the prompt with `/skills load`, CLI `--skills`, or the API `skills` field.
 
 If you change that behavior:
 
 - keep limits on prompt/context size (per-section budgets must stay)
 - keep startup loading transparent in the UI
 - preserve `/reload_context` and `/context`, including the global-vs-project labelling
-- preserve `list_skills` / `load_skills` as read-only skill discovery/loading tools unless intentionally changing the model-facing contract
 - update tests and docs
 
 ## Testing requirements

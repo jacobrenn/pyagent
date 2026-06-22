@@ -351,7 +351,8 @@ def _render_section(
             break
 
         per_file_limit = min(MAX_PROJECT_CONTEXT_FILE_CHARS, remaining)
-        content, truncated = _truncate_content(raw_text.strip(), per_file_limit)
+        content, truncated = _truncate_content(
+            raw_text.strip(), per_file_limit)
         body.append(f"## {label}\n\n{content if content else '[empty file]'}")
         total_chars += len(content)
         sources.append(ContextSource(scope=scope, path=path, label=label))
@@ -430,7 +431,8 @@ def load_full_context(
     )
 
     global_files = _unique_paths(
-        [*discover_user_global_instruction_files(resolved_user_dir), *loaded_user_skill_paths]
+        [*discover_user_global_instruction_files(
+            resolved_user_dir), *loaded_user_skill_paths]
     )
     global_text, global_sources, _ = _render_section(
         files=global_files,
@@ -452,7 +454,8 @@ def load_full_context(
         sources.extend(global_sources)
 
     project_files = _unique_paths(
-        [*discover_project_instruction_files(project_base), *loaded_project_skill_paths]
+        [*discover_project_instruction_files(project_base),
+         *loaded_project_skill_paths]
     )
     project_text, project_sources, _ = _render_section(
         files=project_files,
@@ -462,9 +465,7 @@ def load_full_context(
         section_heading="Project-specific instructions",
         section_intro=(
             "Project-specific instructions are loaded from `AGENTS.md` and any "
-            "project skills explicitly loaded into the current session. Other "
-            "project skills are discoverable through the `list_skills` tool and "
-            "can be loaded on demand with `load_skills`."
+            "project skills explicitly loaded into the current session."
         ),
     )
     if project_text:
