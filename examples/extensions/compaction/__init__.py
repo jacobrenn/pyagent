@@ -12,11 +12,17 @@ extension never declares tools itself and never touches agent state — it only
 injects guidance, keeping the loop lean by default.
 
 Install:
-  1. Copy this file to ``~/.pyagent/extensions/compaction/__init__.py``
-     (or ``/extension new compaction`` then replace its body).
-  2. Copy ``examples/tools/compact_context.py`` to ``~/.pyagent/tools/``.
-  3. Copy ``compaction.md`` to ``~/.pyagent/skills/extensions/compaction.md``.
-  4. ``/extension reload`` (or ``/extension load compaction``).
+  1. Copy this directory to ``~/.pyagent/extensions/compaction/`` (so the
+     extension lives at ``~/.pyagent/extensions/compaction/__init__.py``).
+  2. ``/extension reload`` (or ``/extension load compaction``).
+
+The ``compact_context`` tool belongs at
+``~/.pyagent/extensions/compaction/tools/compact_context.py`` (colocated); the
+``compaction`` skill at ``~/.pyagent/extensions/compaction/skills/compaction.md``.
+Both are discoverable only while the extension is loaded. The reference tool
+script ships at ``examples/tools/compact_context.py`` — copy it into the
+extension's ``tools/`` dir (or keep it in ``~/.pyagent/tools/`` if you prefer
+it always-on).
 """
 from __future__ import annotations
 

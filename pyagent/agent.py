@@ -4,6 +4,7 @@ import copy
 import os
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, SYSTEM_PROMPT
@@ -96,6 +97,7 @@ class Agent:
                 user_dir=self.config.user_dir,
                 runner=self.config.tool_runner,
                 describe_timeout=self.config.user_tool_describe_timeout,
+                extra_tool_dirs=self._extension_tool_dirs(),
             )
         except Exception:
             return None
@@ -110,19 +112,13 @@ class Agent:
         )
 
     def reload_external_tools(self) -> DiscoveryResult | None:
-        """Re-scan ``~/.pyagent/tools/`` and rebuild the tool registry.
+        """Re-scan ``~/.pyagent/tools/`` and loaded extensions' tool dirs.
 
         Tool calling state is preserved (`tools_enabled`, system prompt
         composition); only the registry contents change. The conversation
         is reset so the model sees a clean tool surface.
         """
-        discovery = self._discover_external_tools()
-        self.external_tool_discovery = discovery
-        self.tool_registry = create_default_tool_registry(
-            self.config,
-            external_specs=self._external_specs_from_discovery(discovery),
-        )
-        self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
+        discovery = self._rebuild_external_tools()
         self.reset()
         return discovery
 
@@ -214,10 +210,12 @@ class Agent:
         the pre-request emits (``input``, ``before_agent_start``,
         ``turn_start``) so skills declared there land in the current prompt.
         """
+        ext = getattr(self._ext_ctx, "extension", "") or ""
+        entry = f"{ext}/{key}" if ext else key
         if self._skill_target == "next":
-            self._next_skills.add(key)
+            self._next_skills.add(entry)
         else:
-            self._this_skills.add(key)
+            self._this_skills.add(entry)
 
     def _rebuild_client(self) -> None:
         existing_client = getattr(self, "client", None)
@@ -358,18 +356,48 @@ class Agent:
         self.bus.set_log(log)
         self._ext_ctx.log = log
 
+    def _extension_tool_dirs(self) -> list[Path]:
+        """Tool dirs of currently *loaded* package extensions.
+
+        Only loaded extensions contribute, which is what hides an unloaded
+        extension's tools from discovery.
+        """
+        from .extensions.loader import loaded_extension_tool_dirs
+        from .user_runtime import resolve_user_dir, user_extensions_dir
+
+        ext_dir = user_extensions_dir(resolve_user_dir(self.config.user_dir))
+        return loaded_extension_tool_dirs(ext_dir, self.bus.loaded_extensions())
+
+    def _rebuild_external_tools(self) -> DiscoveryResult | None:
+        """Re-scan external tools (user tools + loaded extensions' tools).
+
+        Rebuilds the tool registry in place and refreshes ``self.tools``.
+        Does not reset the conversation. Returns the discovery result.
+        """
+        discovery = self._discover_external_tools()
+        self.external_tool_discovery = discovery
+        self.tool_registry = create_default_tool_registry(
+            self.config,
+            external_specs=self._external_specs_from_discovery(discovery),
+        )
+        self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
+        return discovery
+
     def load_extensions(self, *, start_session: bool = True) -> tuple[list[str], list[tuple[str, str]]]:
         """Load all extensions from ``~/.pyagent/extensions/``.
 
         Returns ``(loaded, failed)``. Idempotent on reload: handlers from a
-        prior load of the same name are cleared first. Entry points call this
-        after constructing the agent.
+        prior load of the same name are cleared first. After loading, the
+        external-tool registry is rebuilt so colocated ``tools/`` subdirs of
+        loaded extensions become discoverable. Entry points call this after
+        constructing the agent.
         """
         from .extensions.loader import load_all
         from .user_runtime import resolve_user_dir, user_extensions_dir
 
         ext_dir = user_extensions_dir(resolve_user_dir(self.config.user_dir))
         loaded, failed = load_all(self.bus, ext_dir, self._ext_log)
+        self._rebuild_external_tools()
         if start_session:
             self.start_session()
         return loaded, failed

@@ -57,6 +57,7 @@ def _cmd_list(agent: Any) -> str:
 def _cmd_reload(agent: Any) -> str:
     agent.bus.clear()
     loaded, failed = load_all(agent.bus, _ext_dir(agent), agent._ext_log)
+    agent._rebuild_external_tools()
     parts = [f"Reloaded: {', '.join(loaded) or '<none>'}."]
     if failed:
         parts.append("Failed: " + ", ".join(f"{n} ({e})" for n, e in failed))
@@ -68,9 +69,11 @@ def _cmd_new(agent: Any, name: str) -> str:
         path = create_user_extension(name, user_dir=agent.config.user_dir)
     except ScaffoldError as exc:
         return str(exc)
+    ext_dir = _ext_dir(agent)
     return (
         f"Created extension at `{path}`.\n"
-        f"Edit it, then `/extension load {name}`."
+        f"A starter tool was also placed at `{ext_dir / name / 'tools' / f'{name}.py'}`.\n"
+        f"Edit them, then `/extension load {name}`."
     )
 
 
@@ -79,6 +82,7 @@ def _cmd_load(agent: Any, name: str) -> str:
         load_one(agent.bus, name, _ext_dir(agent), agent._ext_log)
     except Exception as exc:
         return f"Load failed: {exc}"
+    agent._rebuild_external_tools()
     return f"Loaded `{name}`."
 
 
@@ -86,4 +90,5 @@ def _cmd_unload(agent: Any, name: str) -> str:
     if name not in agent.bus.loaded_extensions():
         return f"`{name}` is not loaded."
     unload_one(agent.bus, name)
+    agent._rebuild_external_tools()
     return f"Unloaded `{name}`."

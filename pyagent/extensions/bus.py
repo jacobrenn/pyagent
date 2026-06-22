@@ -33,9 +33,12 @@ class NoOpLog:
 class Ctx:
     """Minimal per-handler context: attribution, skill intent, log.
 
-    ``add_skill(key)`` declares a skill (by filename stem under
-    ``~/.pyagent/skills/extensions/``) to be injected into the system prompt
-    *next* turn and auto-expunged after — lean by default, ephemeral by design.
+    ``add_skill(key)`` declares a skill (by filename stem under the *declaring
+    extension's* ``~/.pyagent/extensions/<ext>/skills/<key>.md``) to be injected
+    into the system prompt *next* turn and auto-expunged after — lean by
+    default, ephemeral by design. The extension name is taken from
+    ``ctx.extension`` (set by the bus per handler) so each skill is resolved
+    against the extension that declared it.
     """
 
     __slots__ = ("extension", "add_skill", "log")

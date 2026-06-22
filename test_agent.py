@@ -2052,6 +2052,118 @@ class AgentExternalToolsTests(unittest.TestCase):
             )
 
 
+class ExternalToolExtraDirsTests(unittest.TestCase):
+    def test_discover_scans_extra_tool_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            ext_tools = user_dir / "extensions" / "myext" / "tools"
+            _write_external_tool_script(ext_tools, "ext_tool")
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+                extra_tool_dirs=[ext_tools],
+            )
+            self.assertEqual(len(result.loaded), 1)
+            self.assertEqual(result.loaded[0].manifest.name, "ext_tool")
+
+    def test_discover_ignores_extra_dir_when_not_passed(self) -> None:
+        # Same files, but no extra_tool_dirs -> not discovered (hidden).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            ext_tools = user_dir / "extensions" / "myext" / "tools"
+            _write_external_tool_script(ext_tools, "ext_tool")
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+            )
+            self.assertEqual(len(result.loaded), 0)
+
+
+class ExtensionColocationTests(unittest.TestCase):
+    """Colocated extension scripts/skills/tools + load-gated discovery."""
+
+    def _make_ext_package(self, user_dir: Path, name: str) -> Path:
+        pkg = user_dir / "extensions" / name
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "__init__.py").write_text(
+            "def register(bus, name):\n"
+            "    @bus.on('turn_start')\n"
+            "    def h(payload, ctx): pass\n",
+            encoding="utf-8",
+        )
+        _write_external_tool_script(pkg / "tools", "ext_only_tool")
+        skills = pkg / "skills"
+        skills.mkdir(parents=True, exist_ok=True)
+        (skills / "ext_skill.md").write_text("EXT SKILL TEXT")
+        return pkg
+
+    def _patch_discover(self, user_dir: Path):
+        def _disc(**kwargs):
+            return discover_external_tools(
+                user_dir=kwargs.get("user_dir", user_dir),
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=kwargs.get("describe_timeout", 5.0),
+                extra_tool_dirs=kwargs.get("extra_tool_dirs") or [],
+            )
+        return _disc
+
+    def test_tool_and_skill_hidden_until_extension_loaded(self) -> None:
+        from pyagent.extensions.manager import handle_extension_command
+        from pyagent.tools import list_skills
+
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp)
+            self._make_ext_package(user_dir, "myext")
+            config = AppConfig(user_dir=tmp, user_tools_enabled=True, tool_runner="python")
+            agent = Agent(config=config)
+
+            # Before loading: tool not registered, skill not in list_skills.
+            self.assertNotIn("ext_only_tool", agent.tool_registry.names())
+            self.assertNotIn("ext_skill", list_skills(scope="user", config=config, cwd=tmp))
+
+            with mock.patch("pyagent.agent.discover_external_tools", self._patch_discover(user_dir)), \
+                 mock.patch("pyagent.agent.default_runner_command", lambda runner=None: _python_runner_command()):
+                agent.load_extensions(start_session=False)
+                self.assertIn("myext", agent.bus.loaded_extensions())
+                self.assertIn("ext_only_tool", agent.tool_registry.names())
+
+                # Unloading hides the tool again.
+                handle_extension_command(agent, ["unload", "myext"])
+                self.assertNotIn("myext", agent.bus.loaded_extensions())
+                self.assertNotIn("ext_only_tool", agent.tool_registry.names())
+
+    def test_colocated_skill_resolves_and_is_hidden_from_list_skills(self) -> None:
+        from pyagent.tools import list_skills
+
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp)
+            self._make_ext_package(user_dir, "myext")
+            config = AppConfig(user_dir=tmp, tools_enabled=True)
+            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            # Colocated skill is never listed by list_skills.
+            self.assertNotIn("ext_skill", list_skills(scope="user", config=config, cwd=tmp))
+            # But resolves when the owning extension declares it.
+            agent._this_skills = {"myext/ext_skill"}
+            text = collect_skill_text(agent)
+            self.assertIn("EXT SKILL TEXT", text)
+
+    def test_colocated_skill_not_resolved_when_extension_name_differs(self) -> None:
+        # A skill entry for a different extension must not resolve against
+        # myext's colocated skill dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp)
+            self._make_ext_package(user_dir, "myext")
+            config = AppConfig(user_dir=tmp, tools_enabled=True)
+            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            agent._this_skills = {"other/ext_skill"}
+            self.assertEqual(collect_skill_text(agent), "")
+
+
 def demo() -> None:
     agent = Agent(model="llama3.1")
     prompt = (
@@ -2747,10 +2859,23 @@ class TestSkillInjection(unittest.TestCase):
     def test_injects_active_skill_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
+            skills_dir = Path(tmp) / "extensions" / "compaction" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "compaction.md").write_text("# Compact me\nDo the thing.")
+            agent._this_skills = {"compaction/compaction"}
+            text = collect_skill_text(agent)
+            self.assertIn("Extension skill: compaction", text)
+            self.assertIn("Do the thing.", text)
+
+    def test_injects_active_skill_text_legacy_fallback(self) -> None:
+        # The old ~/.pyagent/skills/extensions/<key>.md location still resolves
+        # as a fallback for the declaring extension.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
             skills_dir = Path(tmp) / "skills" / "extensions"
             skills_dir.mkdir(parents=True)
             (skills_dir / "compaction.md").write_text("# Compact me\nDo the thing.")
-            agent._this_skills = {"compaction"}
+            agent._this_skills = {"compaction/compaction"}
             text = collect_skill_text(agent)
             self.assertIn("Extension skill: compaction", text)
             self.assertIn("Do the thing.", text)
@@ -2758,17 +2883,17 @@ class TestSkillInjection(unittest.TestCase):
     def test_missing_skill_file_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
-            agent._this_skills = {"nonexistent"}
+            agent._this_skills = {"nonexistent/nonexistent"}
             self.assertEqual(collect_skill_text(agent), "")
 
     def test_budget_truncation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(tmp)
-            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir = Path(tmp) / "extensions" / "big" / "skills"
             skills_dir.mkdir(parents=True)
             big = "X" * (MAX_EXTENSION_SKILLS_CHARS + 500)
             (skills_dir / "big.md").write_text(big)
-            agent._this_skills = {"big"}
+            agent._this_skills = {"big/big"}
             text = collect_skill_text(agent)
             self.assertLessEqual(len(text), MAX_EXTENSION_SKILLS_CHARS + 200)
             self.assertIn("[truncated", text)
@@ -2944,7 +3069,7 @@ class TestAgentLoopWiring(unittest.TestCase):
 class TestEphemeralSkills(unittest.TestCase):
     def test_skill_declared_this_turn_appears_next_turn_only(self):
         with tempfile.TemporaryDirectory() as tmp:
-            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
             skills_dir.mkdir(parents=True)
             (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
 
@@ -2969,7 +3094,7 @@ class TestEphemeralSkills(unittest.TestCase):
 
     def test_skill_auto_expunges_when_no_longer_declared(self):
         with tempfile.TemporaryDirectory() as tmp:
-            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
             skills_dir.mkdir(parents=True)
             (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
 
@@ -2996,7 +3121,7 @@ class TestEphemeralSkills(unittest.TestCase):
         # turn_start (the ollama_coder pattern) must reach the LLM in the SAME
         # turn, not the next one.
         with tempfile.TemporaryDirectory() as tmp:
-            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
             skills_dir.mkdir(parents=True)
             (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
 
@@ -3013,7 +3138,7 @@ class TestEphemeralSkills(unittest.TestCase):
         # The injected skill must be in the messages actually sent to the LLM,
         # not just in stored history.
         with tempfile.TemporaryDirectory() as tmp:
-            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
             skills_dir.mkdir(parents=True)
             (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
 
@@ -3032,7 +3157,7 @@ class TestEphemeralSkills(unittest.TestCase):
         # A before_agent_start prompt change must not be clobbered when a
         # turn_start handler also injects a skill in the same turn.
         with tempfile.TemporaryDirectory() as tmp:
-            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
             skills_dir.mkdir(parents=True)
             (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
 
@@ -3075,7 +3200,8 @@ class TestManager(unittest.TestCase):
             # new
             out = handle_extension_command(agent, ["new", "demo"])
             self.assertIn("Created", out)
-            self.assertTrue((Path(tmp) / "extensions" / "demo.py").exists())
+            self.assertTrue((Path(tmp) / "extensions" / "demo" / "__init__.py").exists())
+            self.assertTrue((Path(tmp) / "extensions" / "demo" / "tools" / "demo.py").exists())
             # load
             out = handle_extension_command(agent, ["load", "demo"])
             self.assertIn("Loaded", out)

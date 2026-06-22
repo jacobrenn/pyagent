@@ -744,14 +744,25 @@ Used when no profile file exists:
 
 ## Extensions
 
-Extensions are Python files that observe and modify the agent loop through a **synchronous event bus**: they subscribe to lifecycle events, run deterministic logic (e.g. safeguards), and **inject skills into the system prompt for one turn only**. Extensions live under `~/.pyagent/extensions/` and are managed with the `/extension` command.
+Extensions are Python packages that observe and modify the agent loop through a **synchronous event bus**: they subscribe to lifecycle events, run deterministic logic (e.g. safeguards), and **inject skills into the system prompt for one turn only**. Extensions live under `~/.pyagent/extensions/` and are managed with the `/extension` command.
 
-Extensions are intentionally minimal and one-directional: PyAgent emits events and honors skill text; extensions subscribe and decide what to do. Extensions **do not** register tools or slash commands — tools live as UV scripts under `~/.pyagent/tools/` (see [Custom tools and skills](#custom-tools-and-skills)), and an extension assumes any tool it needs is already discoverable there.
+Each extension is a **self-contained package directory** that colocates its script, skills, and tools:
+
+```
+~/.pyagent/extensions/<name>/
+├── __init__.py        # the extension script (register(bus, name))
+├── skills/            # *.md skills injected via ctx.add_skill("<key>")
+└── tools/             # *.py UV-script tools, discovered only while loaded
+```
+
+A bare `~/.pyagent/extensions/<name>.py` file is also accepted (backward compatible), but only a package directory can carry colocated `skills/` and `tools/`.
+
+Extensions are intentionally minimal and one-directional: PyAgent emits events and honors skill text; extensions subscribe and decide what to do. An extension's skills and tools are **only discoverable while the extension is loaded** — unloading (or not loading) an extension hides its skills and tools again. `/extension new <name>` scaffolds a starter package with empty `skills/` and `tools/` dirs.
 
 ### What an extension can do
 
 - **Handle lifecycle events** — observe or intercept `input`, `before_agent_start`, `turn_start`, `context`, `message_start`, `message_end`, `tool_call` (block or rewrite), `tool_result` (filter or redact), `turn_end`, `agent_end`, `model_select`, `session_start`, `session_shutdown`.
-- **Inject a skill for one turn** via `ctx.add_skill(key)` — the skill's Markdown (under `~/.pyagent/skills/extensions/<key>.md`) is appended to the system prompt **for the turn in which it is declared** (when declared at `turn_start`/`before_agent_start`/`input`) or **next turn** (when declared at `turn_end`), and auto-expunged after. Lean by default, ephemeral by design.
+- **Inject a skill for one turn** via `ctx.add_skill(key)` — the skill's Markdown (under `~/.pyagent/extensions/<name>/skills/<key>.md`) is appended to the system prompt **for the turn in which it is declared** (when declared at `turn_start`/`before_agent_start`/`input`) or **next turn** (when declared at `turn_end`), and auto-expunged after. The skill is resolved against the *declaring* extension's `skills/` dir, so it is only reachable while that extension is loaded. Lean by default, ephemeral by design. (The legacy `~/.pyagent/skills/extensions/<key>.md` location is still read as a fallback for existing setups.)
 - **Run deterministic logic** — safeguards, argument rewrites, result redaction. All logic lives in the extension file itself; no network, no state external to the turn.
 
 ### The event catalog
@@ -779,10 +790,10 @@ The `context` event's `messages` is a deep copy (only allocated when a handler e
 
 ### Writing an extension
 
-An extension is a single `.py` file (`~/.pyagent/extensions/<name>.py`) or a package (`<name>/__init__.py`) exposing a module-level `register(bus, name)`. Subscribe with `@bus.on(...)` — the scoped `bus` auto-tags your handlers so `/extension unload <name>` can remove them. Return a dict to mutate the payload, or `None` to pass through.
+An extension is a package (`~/.pyagent/extensions/<name>/__init__.py`) exposing a module-level `register(bus, name)`. Subscribe with `@bus.on(...)` — the scoped `bus` auto-tags your handlers so `/extension unload <name>` can remove them. Return a dict to mutate the payload, or `None` to pass through. Drop skill Markdown into `<name>/skills/` and UV-script tools into `<name>/tools/`; both are discovered only while the extension is loaded.
 
 ```python
-# ~/.pyagent/extensions/safeguard.py
+# ~/.pyagent/extensions/safeguard/__init__.py
 def register(bus, name):
     @bus.on("tool_call")
     def on_tool_call(payload, ctx):
@@ -794,8 +805,9 @@ def register(bus, name):
     @bus.on("turn_end")
     def on_turn_end(payload, ctx):
         # Inject a skill next turn once the conversation grows. The skill text
-        # is read from ~/.pyagent/skills/extensions/<key>.md; it is injected
-        # for one turn only and auto-expunged. Re-declare each turn to persist.
+        # is read from ~/.pyagent/extensions/safeguard/skills/guide.md; it is
+        # injected for one turn only and auto-expunged. Re-declare each turn
+        # to persist.
         if payload.get("message_count", 0) > 20:
             ctx.add_skill("guide")
 ```
@@ -804,7 +816,7 @@ def register(bus, name):
 
 ### How skills are injected (and removed)
 
-Extension skills live under `~/.pyagent/skills/extensions/<key>.md` and are **hidden** from normal skill discovery (`list_skills` never lists them). The flow:
+Extension skills live under `~/.pyagent/extensions/<name>/skills/<key>.md` and are **hidden** from normal skill discovery (`list_skills` never lists them). The flow:
 
 1. During an event, a handler calls `ctx.add_skill(key)`.
 2. The intent is routed based on *when* it is declared:
@@ -827,18 +839,21 @@ A `before_agent_start` handler that returns `system_prompt` **replaces** the bas
 /extension unload <name>              # unload one extension this session
 ```
 
-`load`/`unload` operate on the in-memory bus (no manifests). `reload` clears all handlers and re-scans the directory (idempotent: no double-subscribe). A failing extension is logged and skipped at load — it never blocks startup.
+`load`/`unload` operate on the in-memory bus (no manifests) and also rebuild the external-tool registry so a loaded extension's colocated `tools/` becomes discoverable (and an unloaded extension's tools disappear). `reload` clears all handlers and re-scans the directory (idempotent: no double-subscribe). A failing extension is logged and skipped at load — it never blocks startup.
 
 The `~/.pyagent/` layout:
 
 ```
 ~/.pyagent/
-├── extensions/             # extension .py files / packages
-│   └── safeguard.py
-├── skills/
-│   └── extensions/         # extension-only skills (hidden from list_skills)
-│       └── guide.md
-└── tools/                  # UV-script tools extensions may rely on
+├── extensions/                 # one package directory per extension
+│   └── safeguard/
+│       ├── __init__.py         # register(bus, name)
+│       ├── skills/             # *.md (hidden from list_skills; loaded-gated)
+│       │   └── guide.md
+│       └── tools/              # *.py UV-script tools (loaded-gated)
+│           └── helper.py
+├── skills/                     # user-global skills (always discoverable)
+└── tools/                      # global UV-script tools (always discoverable)
 ```
 
 ### Reference examples
@@ -846,7 +861,7 @@ The `~/.pyagent/` layout:
 Two examples ship under [`examples/extensions/`](examples/extensions/):
 
 - **[`examples/extensions/template/`](examples/extensions/template/)** — a copy-paste starter showing an event handler (safeguard) and a one-turn skill injection.
-- **[`examples/extensions/compaction/`](examples/extensions/compaction/)** — a deterministic reference: a `turn_end` handler injects the `compaction` skill once the conversation grows past a soft threshold. The skill tells the LLM to use the `compact_context` tool ([`examples/tools/compact_context.py`](examples/tools/compact_context.py), a deterministic condenser) to compact older context. Copy the extension to `~/.pyagent/extensions/`, the tool to `~/.pyagent/tools/`, and `compaction.md` to `~/.pyagent/skills/extensions/`, then `/extension reload`.
+- **[`examples/extensions/compaction/`](examples/extensions/compaction/)** — a deterministic reference: a `turn_end` handler injects the `compaction` skill once the conversation grows past a soft threshold. The skill (`skills/compaction.md`) tells the LLM to use the `compact_context` tool (a deterministic condenser; reference script at [`examples/tools/compact_context.py`](examples/tools/compact_context.py)) to compact older context. Copy the extension package to `~/.pyagent/extensions/compaction/`, drop the tool into its `tools/` dir, then `/extension reload`.
 
 Each example has a `__main__` self-check (`PYTHONPATH=. python examples/extensions/template/__init__.py`).
 

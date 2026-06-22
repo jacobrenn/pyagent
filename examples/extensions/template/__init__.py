@@ -7,10 +7,11 @@ so ``/extension unload <name>`` can remove them). Return a dict to mutate the
 event payload (veto keys like ``blocked`` short-circuit), or ``None`` to pass
 through.
 
-Skills are plain Markdown under ``~/.pyagent/skills/extensions/<key>.md``;
-inject one for the *next* turn with ``ctx.add_skill("<key>")`` — it auto-
-expunges after. Tools live as UV scripts under ``~/.pyagent/tools/`` and are
-assumed already discoverable; an extension never declares tools itself.
+Skills are plain Markdown under
+``~/.pyagent/extensions/<name>/skills/<key>.md``; inject one for the *next*
+turn with ``ctx.add_skill("<key>")`` — it auto-expunges after. Tools live as
+UV scripts under ``~/.pyagent/extensions/<name>/tools/`` and are discovered
+only while this extension is loaded; an extension never declares tools itself.
 
 See ``extensions_prd.md`` for the full event catalog.
 """
@@ -29,8 +30,9 @@ def register(bus, name):
     @bus.on("turn_end")
     def on_turn_end(payload, ctx):
         # Inject a skill next turn once the conversation grows. The skill text
-        # is read from ~/.pyagent/skills/extensions/<key>.md. It is injected
-        # for one turn only and auto-expunged; re-declare each turn to persist.
+        # is read from ~/.pyagent/extensions/template/skills/<key>.md. It is
+        # injected for one turn only and auto-expunged; re-declare each turn
+        # to persist.
         if payload.get("message_count", 0) > 20:
             ctx.add_skill("template")
 

@@ -218,6 +218,18 @@ def _candidate_scripts(tools_dir: Path) -> list[Path]:
     return candidates
 
 
+def _candidate_scripts_in_dirs(tool_dirs: Sequence[Path]) -> list[Path]:
+    """Flat list of ``*.py`` scripts across one or more tool directories.
+
+    Order is stable (input dir order, then sorted entries) so the first
+    directory wins on name collisions among external tools.
+    """
+    scripts: list[Path] = []
+    for tool_dir in tool_dirs:
+        scripts.extend(_candidate_scripts(tool_dir))
+    return scripts
+
+
 def _disabled_scripts(tools_dir: Path) -> list[Path]:
     disabled_dir = tools_dir / "disabled"
     if not disabled_dir.is_dir():
@@ -270,16 +282,14 @@ def discover_external_tools(
     runner_status: RunnerStatus | None = None,
     describe_timeout: float = DEFAULT_DESCRIBE_TIMEOUT_SECONDS,
     cache_enabled: bool = True,
+    extra_tool_dirs: Sequence[Path] | None = None,
 ) -> DiscoveryResult:
-    """Scan ``~/.pyagent/tools/`` and return manifests for each script.
+    """Scan ``~/.pyagent/tools/`` and any extra tool dirs, return manifests.
 
-    The runner check is gentle: when the runner is missing we still walk
-    the directory so users can see their tools listed (with a clear error
-    explaining how to install the runner). We just skip ``describe``.
-
-    The describe output is cached on disk keyed by
-    ``(script path, mtime, size, runner)`` so repeated TUI startups do
-    not re-run the (potentially slow) ``uv run`` for unchanged scripts.
+    ``extra_tool_dirs`` (typically the ``tools/`` subdirs of *loaded*
+    extensions) are scanned the same way as the main tools dir. Scripts there
+    are only discovered while the owning extension is loaded, which is what
+    gates their visibility.
     """
     resolved_user_dir = (
         Path(user_dir).expanduser().resolve(
@@ -291,6 +301,7 @@ def discover_external_tools(
         runner_command) if runner_command is not None else default_runner_command(runner_name)
     status = runner_status or check_runner_available(runner_name)
     cache_path = user_tools_cache_dir(resolved_user_dir) / CACHE_FILE_NAME
+    extra_dirs = [Path(d).expanduser().resolve() for d in (extra_tool_dirs or [])]
 
     result = DiscoveryResult(
         user_dir=resolved_user_dir,
@@ -300,13 +311,14 @@ def discover_external_tools(
         runner_message=status.message,
     )
 
-    if not tools_dir.is_dir():
+    if not tools_dir.is_dir() and not extra_dirs:
         return result
 
     cache = _load_cache(cache_path) if cache_enabled else {}
     fresh_cache: dict[str, dict[str, Any]] = {}
 
-    for script_path in _candidate_scripts(tools_dir):
+    candidate_scripts = _candidate_scripts(tools_dir) + _candidate_scripts_in_dirs(extra_dirs)
+    for script_path in candidate_scripts:
         if not status.available:
             result.broken.append(
                 ExternalToolEntry(
