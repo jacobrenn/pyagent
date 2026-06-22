@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -16,6 +17,16 @@ from unittest import mock
 
 from pyagent.agent import Agent
 from pyagent.config import AppConfig
+from pyagent.extensions.bus import Ctx, EventBus, NoOpLog
+from pyagent.extensions.loader import (
+    MAX_EXTENSION_SKILLS_CHARS,
+    _discover,
+    collect_skill_text,
+    load_all,
+    load_one,
+    unload_one,
+)
+from pyagent.session_logger import SessionLogger
 from pyagent.external_tools import (
     DEFAULT_DESCRIBE_TIMEOUT_SECONDS,
     DEFAULT_INVOKE_TIMEOUT_SECONDS,
@@ -56,6 +67,7 @@ from pyagent.tools import (
 # ... existing imports ...
 from pyagent.ui import ChatMessage, PyAgentApp
 from pyagent.user_runtime import RunnerStatus
+
 from pyagent.main import build_agent_for_request, main as main_entry, run_single_shot
 from urllib import error
 
@@ -2010,6 +2022,118 @@ class AgentExternalToolsTests(unittest.TestCase):
             )
 
 
+class ExternalToolExtraDirsTests(unittest.TestCase):
+    def test_discover_scans_extra_tool_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            ext_tools = user_dir / "extensions" / "myext" / "tools"
+            _write_external_tool_script(ext_tools, "ext_tool")
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+                extra_tool_dirs=[ext_tools],
+            )
+            self.assertEqual(len(result.loaded), 1)
+            self.assertEqual(result.loaded[0].manifest.name, "ext_tool")
+
+    def test_discover_ignores_extra_dir_when_not_passed(self) -> None:
+        # Same files, but no extra_tool_dirs -> not discovered (hidden).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir)
+            ext_tools = user_dir / "extensions" / "myext" / "tools"
+            _write_external_tool_script(ext_tools, "ext_tool")
+            result = discover_external_tools(
+                user_dir=user_dir,
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=5.0,
+            )
+            self.assertEqual(len(result.loaded), 0)
+
+
+class ExtensionColocationTests(unittest.TestCase):
+    """Colocated extension scripts/skills/tools + load-gated discovery."""
+
+    def _make_ext_package(self, user_dir: Path, name: str) -> Path:
+        pkg = user_dir / "extensions" / name
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "__init__.py").write_text(
+            "def register(bus, name):\n"
+            "    @bus.on('turn_start')\n"
+            "    def h(payload, ctx): pass\n",
+            encoding="utf-8",
+        )
+        _write_external_tool_script(pkg / "tools", "ext_only_tool")
+        skills = pkg / "skills"
+        skills.mkdir(parents=True, exist_ok=True)
+        (skills / "ext_skill.md").write_text("EXT SKILL TEXT")
+        return pkg
+
+    def _patch_discover(self, user_dir: Path):
+        def _disc(**kwargs):
+            return discover_external_tools(
+                user_dir=kwargs.get("user_dir", user_dir),
+                runner_command=_python_runner_command(),
+                runner_status=_python_runner_status(),
+                describe_timeout=kwargs.get("describe_timeout", 5.0),
+                extra_tool_dirs=kwargs.get("extra_tool_dirs") or [],
+            )
+        return _disc
+
+    def test_tool_and_skill_hidden_until_extension_loaded(self) -> None:
+        from pyagent.extensions.manager import handle_extension_command
+        from pyagent.tools import list_skills
+
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp)
+            self._make_ext_package(user_dir, "myext")
+            config = AppConfig(user_dir=tmp, user_tools_enabled=True, tool_runner="python")
+            agent = Agent(config=config)
+
+            # Before loading: tool not registered, skill not in list_skills.
+            self.assertNotIn("ext_only_tool", agent.tool_registry.names())
+            self.assertNotIn("ext_skill", list_skills(scope="user", config=config, cwd=tmp))
+
+            with mock.patch("pyagent.agent.discover_external_tools", self._patch_discover(user_dir)), \
+                 mock.patch("pyagent.agent.default_runner_command", lambda runner=None: _python_runner_command()):
+                agent.load_extensions(start_session=False)
+                self.assertIn("myext", agent.bus.loaded_extensions())
+                self.assertIn("ext_only_tool", agent.tool_registry.names())
+
+                # Unloading hides the tool again.
+                handle_extension_command(agent, ["unload", "myext"])
+                self.assertNotIn("myext", agent.bus.loaded_extensions())
+                self.assertNotIn("ext_only_tool", agent.tool_registry.names())
+
+    def test_colocated_skill_resolves_and_is_hidden_from_list_skills(self) -> None:
+        from pyagent.tools import list_skills
+
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp)
+            self._make_ext_package(user_dir, "myext")
+            config = AppConfig(user_dir=tmp, tools_enabled=True)
+            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            # Colocated skill is never listed by list_skills.
+            self.assertNotIn("ext_skill", list_skills(scope="user", config=config, cwd=tmp))
+            # But resolves when the owning extension declares it.
+            agent._this_skills = {"myext/ext_skill"}
+            text = collect_skill_text(agent)
+            self.assertIn("EXT SKILL TEXT", text)
+
+    def test_colocated_skill_not_resolved_when_extension_name_differs(self) -> None:
+        # A skill entry for a different extension must not resolve against
+        # myext's colocated skill dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp)
+            self._make_ext_package(user_dir, "myext")
+            config = AppConfig(user_dir=tmp, tools_enabled=True)
+            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            agent._this_skills = {"other/ext_skill"}
+            self.assertEqual(collect_skill_text(agent), "")
+
+
 def demo() -> None:
     agent = Agent(model="llama3.1")
     prompt = (
@@ -2024,10 +2148,6 @@ def demo() -> None:
             print(event["delta"], end="", flush=True)
         elif event_type in {"tool_call", "tool_result", "error"}:
             print(f"\n[{event_type}] {event}\n")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ModelProfileCompatibilityTests(unittest.TestCase):
@@ -2320,3 +2440,768 @@ class ClientTests(unittest.TestCase):
                 client.run("Hi")
 
         self.assertIn("missing required field", str(cm.exception))
+
+
+class SessionLoggerEventTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _load_lines(self, logger: SessionLogger) -> list[dict]:
+        logger.close()
+        with open(logger.path, "r", encoding="utf-8") as f:
+            return [json.loads(line) for line in f]
+
+    def test_log_event_records_extension_event(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        logger.log_event("tool_call", "audit", {"name": "bash"}, {"blocked": True})
+        lines = self._load_lines(logger)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["severityText"], "DEBUG")
+        self.assertEqual(lines[0]["body"], "Extension event: tool_call (audit)")
+        self.assertEqual(lines[0]["attributes"]["event"], "tool_call")
+        self.assertEqual(lines[0]["attributes"]["extension"], "audit")
+        self.assertEqual(lines[0]["attributes"]["payload"], {"name": "bash"})
+        self.assertEqual(lines[0]["attributes"]["result"], {"blocked": True})
+
+    def test_log_event_without_extension(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        logger.log_event("agent_start", None, {})
+        lines = self._load_lines(logger)
+        self.assertNotIn("extension", lines[0]["attributes"])
+        self.assertEqual(lines[0]["body"], "Extension event: agent_start")
+
+    def test_log_extension_skills_records_keys(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        logger.log_extension_skills(["foo", "bar"], 1234)
+        lines = self._load_lines(logger)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["attributes"]["event_type"], "extension_skills_loaded")
+        self.assertEqual(lines[0]["attributes"]["keys"], ["foo", "bar"])
+        self.assertEqual(lines[0]["attributes"]["text_chars"], 1234)
+
+    def test_log_turn_body_includes_tool_names(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        output = [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "bash"}},
+                {"function": {"name": "search_text"}},
+            ]},
+            {"role": "tool", "name": "bash", "content": "ok"},
+        ]
+        logger.log_turn(1, [], output)
+        lines = self._load_lines(logger)
+        self.assertIn("bash", lines[0]["body"])
+        self.assertIn("search_text", lines[0]["body"])
+
+    def test_log_turn_body_without_tools(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        logger.log_turn(1, [], [{"role": "assistant", "content": "hi"}])
+        lines = self._load_lines(logger)
+        self.assertNotIn(" — ", lines[0]["body"])
+
+    def test_log_skill_load_records_event(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        logger.log_skill_load("python")
+        lines = self._load_lines(logger)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["body"], "Skill loaded: python")
+        self.assertEqual(lines[0]["attributes"]["event_type"], "skill_load")
+        self.assertEqual(lines[0]["attributes"]["skill_id"], "python")
+
+    def test_log_skill_unload_records_event(self) -> None:
+        logger = SessionLogger(log_dir=self.tmpdir)
+        logger.log_skill_unload("python")
+        lines = self._load_lines(logger)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["body"], "Skill unloaded: python")
+        self.assertEqual(lines[0]["attributes"]["event_type"], "skill_unload")
+        self.assertEqual(lines[0]["attributes"]["skill_id"], "python")
+
+
+class EventBusLoggingTests(unittest.TestCase):
+    def test_emit_logs_event_to_logger(self) -> None:
+        calls: list[tuple[str, str | None, dict, Any]] = []
+
+        class CaptureLog:
+            def log_event(self, event: str, extension: str | None, payload: dict, result: Any = None) -> None:
+                calls.append((event, extension, dict(payload), result))
+
+        bus = EventBus(CaptureLog())
+        ctx = Ctx(add_skill=lambda _k: None, log=CaptureLog())
+
+        @bus.on("tool_call", extension="sg")
+        def gate(payload: dict, ctx: Ctx) -> dict:
+            return {"blocked": True}
+
+        out = bus.emit("tool_call", {"name": "bash"}, ctx)
+        self.assertTrue(out.get("blocked"))
+        self.assertEqual(len(calls), 1)
+        event, ext, payload, result = calls[0]
+        self.assertEqual(event, "tool_call")
+        self.assertEqual(ext, "sg")
+        self.assertEqual(payload, {"name": "bash"})
+        self.assertEqual(result, {"blocked": True})
+
+    def test_emit_without_handlers_logs_event(self) -> None:
+        calls: list[tuple[str, str | None, Any, Any]] = []
+
+        class CaptureLog:
+            def log_event(self, event: str, extension: str | None, payload: dict, result: Any = None) -> None:
+                calls.append((event, extension, payload, result))
+
+        bus = EventBus(CaptureLog())
+        ctx = Ctx(add_skill=lambda _k: None, log=CaptureLog())
+        out = bus.emit("no_handlers", {"a": 1}, ctx)
+        self.assertEqual(out, {"a": 1})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "no_handlers")
+        self.assertIsNone(calls[0][1])
+
+    def test_noop_log_event_does_nothing(self) -> None:
+        log = NoOpLog()
+        log.log_event("x", "y", {})
+        log.log_extension_skills(["x"], 1)
+        # No assertion needed: reaching this line means no exception was raised.
+
+
+
+# --- extension system: event bus, loader, skill injection, loop wiring ---
+# (consolidated from test_extensions.py)
+class TestEventBus(unittest.TestCase):
+    def setUp(self) -> None:
+        self.log = NoOpLog()
+        self.bus = EventBus(self.log)
+        self.ctx = Ctx(add_skill=lambda _k: None, log=self.log)
+
+    def test_emit_no_handlers_returns_payload_unchanged(self) -> None:
+        out = self.bus.emit("nothing", {"a": 1}, self.ctx)
+        self.assertEqual(out, {"a": 1})
+
+    def test_returned_dict_merges_into_payload(self) -> None:
+        @self.bus.on("tool_call", extension="sg")
+        def h(payload, ctx):
+            return {"blocked": True, "reason": "no"}
+
+        out = self.bus.emit("tool_call", {"name": "bash", "input": {}}, self.ctx)
+        self.assertTrue(out["blocked"])
+        self.assertEqual(out["reason"], "no")
+
+    def test_in_place_mutation_visible_to_next_handler(self) -> None:
+        @self.bus.on("e", extension="a")
+        def a(payload, ctx):
+            payload["touched"] = True
+
+        @self.bus.on("e", extension="b")
+        def b(payload, ctx):
+            return {"seen_b": True}
+
+        out = self.bus.emit("e", {}, self.ctx)
+        self.assertTrue(out["touched"])
+        self.assertTrue(out["seen_b"])
+
+    def test_handlers_run_in_load_order(self) -> None:
+        order: list[str] = []
+
+        @self.bus.on("e", extension="a")
+        def a(payload, ctx):
+            order.append("a")
+            return {"val": "A"}
+
+        @self.bus.on("e", extension="b")
+        def b(payload, ctx):
+            order.append("b")
+            return {"val": payload["val"] + "+B"}
+
+        out = self.bus.emit("e", {}, self.ctx)
+        self.assertEqual(order, ["a", "b"])
+        self.assertEqual(out["val"], "A+B")
+
+    def test_veto_first_wins_short_circuits(self) -> None:
+        ran: list[str] = []
+
+        @self.bus.on("tool_call", extension="a")
+        def a(payload, ctx):
+            ran.append("a")
+            return {"blocked": True, "reason": "no"}
+
+        @self.bus.on("tool_call", extension="b")
+        def b(payload, ctx):
+            ran.append("b")
+            return {"blocked": False}
+
+        out = self.bus.emit("tool_call", {"name": "x"}, self.ctx)
+        self.assertEqual(ran, ["a"])
+        self.assertTrue(out["blocked"])
+
+    def test_non_veto_last_writer_wins(self) -> None:
+        @self.bus.on("before_agent_start", extension="a")
+        def a(payload, ctx):
+            return {"system_prompt": "A"}
+
+        @self.bus.on("before_agent_start", extension="b")
+        def b(payload, ctx):
+            return {"system_prompt": "B"}
+
+        out = self.bus.emit("before_agent_start", {}, self.ctx)
+        self.assertEqual(out["system_prompt"], "B")
+
+    def test_handler_exception_is_isolated(self) -> None:
+        @self.bus.on("e", extension="boom")
+        def boom(payload, ctx):
+            raise RuntimeError("kaboom")
+
+        @self.bus.on("e", extension="after")
+        def after(payload, ctx):
+            return {"ran_after": True}
+
+        out = self.bus.emit("e", {"keep": 1}, self.ctx)
+        self.assertTrue(out["ran_after"])
+        self.assertEqual(out["keep"], 1)
+
+    def test_scoped_view_auto_tags_and_off_extension(self) -> None:
+        sb = self.bus.scoped("ext")
+
+        @sb.on("e")
+        def h(payload, ctx):
+            return {"v": 1}
+
+        self.bus.emit("e", {}, self.ctx)
+        self.assertIn("ext", self.bus.loaded_extensions())
+        self.bus.off_extension("ext")
+        self.assertEqual(self.bus.loaded_extensions(), [])
+
+    def test_clear_removes_all(self) -> None:
+        self.bus.on("e", lambda p, c: None, extension="x")
+        self.bus.clear()
+        self.assertEqual(self.bus.loaded_extensions(), [])
+
+    def test_ctx_extension_set_per_handler(self) -> None:
+        seen: list[str] = []
+
+        @self.bus.on("e", extension="alpha")
+        def a(payload, ctx):
+            seen.append(ctx.extension)
+
+        @self.bus.on("e", extension="beta")
+        def b(payload, ctx):
+            seen.append(ctx.extension)
+
+        self.bus.emit("e", {}, self.ctx)
+        self.assertEqual(seen, ["alpha", "beta"])
+
+    def test_async_handler_return_is_ignored(self) -> None:
+        # Synchronous-only contract: a coroutine return is not a dict, so it
+        # is treated as a no-op pass-through (not executed).
+        @self.bus.on("e", extension="x")
+        async def h(payload, ctx):
+            return {"v": 1}
+
+        out = self.bus.emit("e", {}, self.ctx)
+        self.assertEqual(out, {})
+
+
+# --- Ctx / add_skill ---
+
+
+class TestCtx(unittest.TestCase):
+    def test_add_skill_calls_callback(self) -> None:
+        added: list[str] = []
+        ctx = Ctx(add_skill=added.append, log=NoOpLog())
+        ctx.add_skill("compaction")
+        self.assertEqual(added, ["compaction"])
+
+
+# --- loader ---
+
+
+def _write_ext(ext_dir: Path, name: str, body: str) -> None:
+    pkg = ext_dir / name
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text(body)
+
+
+class TestLoader(unittest.TestCase):
+    def test_discover_packages_and_single_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp) / "extensions"
+            ext_dir.mkdir()
+            _write_ext(ext_dir, "pkg", "def register(b, n): pass\n")
+            (ext_dir / "single.py").write_text("def register(b, n): pass\n")
+            (ext_dir / "ignore.txt").write_text("nope")
+            self.assertEqual(_discover(ext_dir), ["pkg", "single"])
+
+    def test_load_all_imports_and_registers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp) / "extensions"
+            ext_dir.mkdir()
+            _write_ext(ext_dir, "greet", textwrap.dedent("""
+                def register(bus, name):
+                    @bus.on('tool_call')
+                    def h(payload, ctx):
+                        return {'blocked': True, 'reason': name}
+            """))
+            log = NoOpLog()
+            bus = EventBus(log)
+            loaded, failed = load_all(bus, ext_dir, log)
+            self.assertEqual(loaded, ["greet"])
+            self.assertEqual(failed, [])
+            ctx = Ctx(add_skill=lambda _k: None, log=log)
+            out = bus.emit("tool_call", {"name": "x", "input": {}}, ctx)
+            self.assertTrue(out["blocked"])
+            self.assertEqual(out["reason"], "greet")
+
+    def test_missing_register_factory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp) / "extensions"
+            ext_dir.mkdir()
+            _write_ext(ext_dir, "bad", "X = 1\n")
+            log = NoOpLog()
+            bus = EventBus(log)
+            loaded, failed = load_all(bus, ext_dir, log)
+            self.assertEqual(loaded, [])
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(failed[0][0], "bad")
+            self.assertIn("register", failed[0][1])
+
+    def test_broken_extension_does_not_block_others(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp) / "extensions"
+            ext_dir.mkdir()
+            _write_ext(ext_dir, "good", "def register(b, n): pass\n")
+            _write_ext(ext_dir, "bad", "def register(b, n): raise RuntimeError('boom')\n")
+            log = NoOpLog()
+            bus = EventBus(log)
+            loaded, failed = load_all(bus, ext_dir, log)
+            self.assertIn("good", loaded)
+            self.assertIn("bad", [n for n, _ in failed])
+
+    def test_load_one_then_unload_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp) / "extensions"
+            ext_dir.mkdir()
+            _write_ext(ext_dir, "ext", "def register(b, n):\n  b.on('e', lambda p, c: None)\n")
+            log = NoOpLog()
+            bus = EventBus(log)
+            load_one(bus, "ext", ext_dir, log)
+            self.assertEqual(bus.loaded_extensions(), ["ext"])
+            unload_one(bus, "ext")
+            self.assertEqual(bus.loaded_extensions(), [])
+
+    def test_reload_is_idempotent_no_duplicate_handlers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp) / "extensions"
+            ext_dir.mkdir()
+            _write_ext(ext_dir, "ext", textwrap.dedent("""
+                def register(bus, name):
+                    @bus.on('turn_end')
+                    def h(payload, ctx): return None
+            """))
+            log = NoOpLog()
+            bus = EventBus(log)
+            load_one(bus, "ext", ext_dir, log)
+            self.assertEqual(len(bus.handlers("turn_end")), 1)
+            load_one(bus, "ext", ext_dir, log)  # reload: clears prior first
+            self.assertEqual(len(bus.handlers("turn_end")), 1)
+
+    def test_missing_dir_is_noop(self) -> None:
+        log = NoOpLog()
+        bus = EventBus(log)
+        loaded, failed = load_all(bus, Path("/nonexistent/extensions"), log)
+        self.assertEqual(loaded, [])
+        self.assertEqual(failed, [])
+
+
+# --- skill injection (collect_skill_text) ---
+
+
+class TestSkillInjection(unittest.TestCase):
+    def _agent(self, tmp: str) -> Agent:
+        config = AppConfig(user_dir=tmp, tools_enabled=True)
+        return Agent(config=config, tool_registry=create_default_tool_registry(config))
+
+    def test_no_skills_returns_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(collect_skill_text(self._agent(tmp)), "")
+
+    def test_injects_active_skill_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            skills_dir = Path(tmp) / "extensions" / "compaction" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "compaction.md").write_text("# Compact me\nDo the thing.")
+            agent._this_skills = {"compaction/compaction"}
+            text = collect_skill_text(agent)
+            self.assertIn("Extension skill: compaction", text)
+            self.assertIn("Do the thing.", text)
+
+    def test_injects_active_skill_text_legacy_fallback(self) -> None:
+        # The old ~/.pyagent/skills/extensions/<key>.md location still resolves
+        # as a fallback for the declaring extension.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "compaction.md").write_text("# Compact me\nDo the thing.")
+            agent._this_skills = {"compaction/compaction"}
+            text = collect_skill_text(agent)
+            self.assertIn("Extension skill: compaction", text)
+            self.assertIn("Do the thing.", text)
+
+    def test_missing_skill_file_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            agent._this_skills = {"nonexistent/nonexistent"}
+            self.assertEqual(collect_skill_text(agent), "")
+
+    def test_budget_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            skills_dir = Path(tmp) / "extensions" / "big" / "skills"
+            skills_dir.mkdir(parents=True)
+            big = "X" * (MAX_EXTENSION_SKILLS_CHARS + 500)
+            (skills_dir / "big.md").write_text(big)
+            agent._this_skills = {"big/big"}
+            text = collect_skill_text(agent)
+            self.assertLessEqual(len(text), MAX_EXTENSION_SKILLS_CHARS + 200)
+            self.assertIn("[truncated", text)
+
+    def test_skills_hidden_from_normal_discovery(self) -> None:
+        # ~/.pyagent/skills/extensions/<key>.md must NOT appear in list_skills.
+        from pyagent.tools import list_skills
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills" / "extensions"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "secret.md").write_text("# secret ext skill")
+            agent = self._agent(tmp)
+            out = list_skills(scope="user", config=agent.config, cwd=tmp)
+            self.assertNotIn("secret", out)
+
+
+# --- agent loop wiring ---
+
+
+class RecordingClient:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = 0
+        self.seen_messages: list[list[dict]] = []
+        self.profile = type("P", (), {"model": "dummy-model"})()
+
+    def chat_stream(self, messages, tools=None):
+        self.seen_messages.append(list(messages))
+        response = self.responses[self.calls]
+        self.calls += 1
+        for chunk in response:
+            yield chunk
+
+    def list_models(self):
+        return {"models": []}
+
+
+def _make_agent(responses, **cfg_overrides):
+    config = AppConfig(max_iterations=2, **cfg_overrides)
+    agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+    agent.client = RecordingClient(responses)
+    return agent
+
+
+class TestAgentLoopWiring(unittest.TestCase):
+    def test_emits_fire_without_handlers_unchanged(self):
+        agent = _make_agent([[{"content": "hi"}]])
+        events = list(agent.run("hello"))
+        self.assertEqual(events[-1], {"type": "assistant_done", "content": "hi"})
+
+    def test_input_transform(self):
+        agent = _make_agent([[{"content": "ok"}]])
+
+        @agent.bus.on("input", extension="t")
+        def transform(payload, ctx):
+            return {"action": "transform", "text": "rewritten"}
+
+        list(agent.run("original"))
+        self.assertEqual(agent.client.seen_messages[0][1]["content"], "rewritten")
+
+    def test_input_handled_skips_llm(self):
+        agent = _make_agent([[{"content": "nope"}]])
+
+        @agent.bus.on("input", extension="t")
+        def handled(payload, ctx):
+            return {"action": "handled"}
+
+        events = list(agent.run("skip me"))
+        self.assertEqual(agent.client.calls, 0)
+        self.assertEqual(events[-1], {"type": "assistant_done", "content": ""})
+
+    def test_before_agent_start_augments_prompt(self):
+        agent = _make_agent([[{"content": "ok"}]])
+
+        @agent.bus.on("before_agent_start", extension="t")
+        def inject(payload, ctx):
+            return {"system_prompt": payload["system_prompt"] + "\n\nEXTRA"}
+
+        list(agent.run("hi"))
+        self.assertIn("EXTRA", agent.messages[0]["content"])
+
+    def test_context_event_prunes_request_only(self):
+        agent = _make_agent([[{"content": "ok"}]])
+
+        @agent.bus.on("context", extension="t")
+        def prune(payload, ctx):
+            return {"messages": payload["messages"][-2:]}
+
+        list(agent.run("hi"))
+        sent = agent.client.seen_messages[0]
+        self.assertEqual(len(sent), 2)
+        self.assertGreater(len(agent.messages), 2)
+
+    def test_tool_call_blocked(self):
+        agent = _make_agent([
+            [{"tool_calls": [{"id": "c1", "function": {
+                "name": "list_files", "arguments": {"path": "."}}}]}],
+            [{"content": "done"}],
+        ])
+
+        @agent.bus.on("tool_call", extension="t")
+        def gate(payload, ctx):
+            return {"blocked": True, "reason": "nope"}
+
+        list(agent.run("list"))
+        tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertIn("nope", tool_msgs[0]["content"])
+
+    def test_tool_result_redact(self):
+        agent = _make_agent([
+            [{"tool_calls": [{"id": "c1", "function": {
+                "name": "list_files", "arguments": {"path": "."}}}]}],
+            [{"content": "done"}],
+        ])
+
+        @agent.bus.on("tool_result", extension="t")
+        def redact(payload, ctx):
+            return {"content": payload["content"] + "\n[redacted]"}
+
+        list(agent.run("list"))
+        tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+        self.assertIn("[redacted]", tool_msgs[0]["content"])
+
+    def test_turn_end_carries_message_count(self):
+        agent = _make_agent([[{"content": "ok"}]])
+        seen: list[int] = []
+
+        @agent.bus.on("turn_end", extension="t")
+        def on_end(payload, ctx):
+            seen.append(payload["message_count"])
+
+        list(agent.run("hi"))
+        self.assertTrue(seen)
+        self.assertTrue(all(isinstance(c, int) for c in seen))
+
+    def test_agent_end_fires(self):
+        agent = _make_agent([[{"content": "ok"}]])
+        seen: list[bool] = []
+
+        @agent.bus.on("agent_end", extension="t")
+        def done(payload, ctx):
+            seen.append(True)
+
+        list(agent.run("hi"))
+        self.assertEqual(seen, [True])
+
+    def test_model_select_emits_on_set_model(self):
+        agent = _make_agent([[{"content": "ok"}]])
+        seen: list[str] = []
+
+        @agent.bus.on("model_select", extension="t")
+        def on_model(payload, ctx):
+            seen.append(payload["model"])
+
+        agent.set_model("gpt-foo")
+        self.assertEqual(seen, ["gpt-foo"])
+
+    def test_handler_crash_does_not_halt_loop(self):
+        agent = _make_agent([[{"content": "ok"}]])
+
+        @agent.bus.on("turn_start", extension="t")
+        def boom(payload, ctx):
+            raise RuntimeError("kaboom")
+
+        events = list(agent.run("hi"))
+        self.assertEqual(events[-1], {"type": "assistant_done", "content": "ok"})
+
+
+# --- ephemeral skill injection in the loop ---
+
+
+class TestEphemeralSkills(unittest.TestCase):
+    def test_skill_declared_this_turn_appears_next_turn_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
+
+            agent = _make_agent(
+                [[{"content": "a"}], [{"content": "b"}]], user_dir=tmp
+            )
+
+            @agent.bus.on("turn_end", extension="ext")
+            def declare(payload, ctx):
+                ctx.add_skill("guide")
+
+            # Turn 1: skill declared in turn_end; not yet in the prompt.
+            list(agent.run("first"))
+            self.assertNotIn("GUIDANCE TEXT", agent.messages[0]["content"])
+            # Turn 2: skill injected this turn.
+            list(agent.run("second"))
+            self.assertIn("GUIDANCE TEXT", agent.messages[0]["content"])
+            # Turn 3: still declared each turn_end, so persists.
+            agent.client = RecordingClient([[{"content": "c"}]])
+            list(agent.run("third"))
+            self.assertIn("GUIDANCE TEXT", agent.messages[0]["content"])
+
+    def test_skill_auto_expunges_when_no_longer_declared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
+
+            agent = _make_agent(
+                [[{"content": "a"}], [{"content": "b"}]], user_dir=tmp
+            )
+            declare_once = {"done": False}
+
+            @agent.bus.on("turn_end", extension="ext")
+            def declare(payload, ctx):
+                if not declare_once["done"]:
+                    ctx.add_skill("guide")
+                    declare_once["done"] = True
+
+            list(agent.run("first"))   # declare
+            list(agent.run("second"))  # injected
+            self.assertIn("GUIDANCE TEXT", agent.messages[0]["content"])
+            agent.client = RecordingClient([[{"content": "c"}]])
+            list(agent.run("third"))   # no longer declared -> gone
+            self.assertNotIn("GUIDANCE TEXT", agent.messages[0]["content"])
+
+    def test_skill_declared_at_turn_start_appears_this_turn(self):
+        # Regression for the one-turn-late race: a skill declared at
+        # turn_start (the ollama_coder pattern) must reach the LLM in the SAME
+        # turn, not the next one.
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
+
+            agent = _make_agent([[{"content": "a"}]], user_dir=tmp)
+
+            @agent.bus.on("turn_start", extension="ext")
+            def declare(payload, ctx):
+                ctx.add_skill("guide")
+
+            list(agent.run("first"))
+            self.assertIn("GUIDANCE TEXT", agent.messages[0]["content"])
+
+    def test_skill_declared_at_turn_start_reaches_llm_request(self):
+        # The injected skill must be in the messages actually sent to the LLM,
+        # not just in stored history.
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
+
+            agent = _make_agent([[{"content": "a"}]], user_dir=tmp)
+
+            @agent.bus.on("turn_start", extension="ext")
+            def declare(payload, ctx):
+                ctx.add_skill("guide")
+
+            list(agent.run("first"))
+            sent = agent.client.seen_messages[0]
+            self.assertEqual(sent[0]["role"], "system")
+            self.assertIn("GUIDANCE TEXT", sent[0]["content"])
+
+    def test_before_agent_start_augmentation_survives_turn_start_skill(self):
+        # A before_agent_start prompt change must not be clobbered when a
+        # turn_start handler also injects a skill in the same turn.
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "extensions" / "ext" / "skills"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "guide.md").write_text("GUIDANCE TEXT")
+
+            agent = _make_agent([[{"content": "a"}]], user_dir=tmp)
+
+            @agent.bus.on("before_agent_start", extension="bas")
+            def augment(payload, ctx):
+                return {"system_prompt": payload["system_prompt"] + "\n\nEXTRA"}
+
+            @agent.bus.on("turn_start", extension="ext")
+            def declare(payload, ctx):
+                ctx.add_skill("guide")
+
+            list(agent.run("first"))
+            content = agent.messages[0]["content"]
+            self.assertIn("EXTRA", content)
+            self.assertIn("GUIDANCE TEXT", content)
+
+
+# --- manager (/extension commands) ---
+
+
+class TestManager(unittest.TestCase):
+    def _agent(self, tmp: str) -> Agent:
+        config = AppConfig(user_dir=tmp, tools_enabled=True)
+        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        return agent
+
+    def test_list_empty(self):
+        from pyagent.extensions.manager import handle_extension_command
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            out = handle_extension_command(agent, [])
+            self.assertIn("No extensions", out)
+
+    def test_load_unload_reload_new(self):
+        from pyagent.extensions.manager import handle_extension_command
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            # new
+            out = handle_extension_command(agent, ["new", "demo"])
+            self.assertIn("Created", out)
+            self.assertTrue((Path(tmp) / "extensions" / "demo" / "__init__.py").exists())
+            self.assertTrue((Path(tmp) / "extensions" / "demo" / "tools" / "demo.py").exists())
+            # load
+            out = handle_extension_command(agent, ["load", "demo"])
+            self.assertIn("Loaded", out)
+            self.assertIn("demo", agent.bus.loaded_extensions())
+            # list
+            out = handle_extension_command(agent, ["list"])
+            self.assertIn("demo", out)
+            self.assertIn("loaded", out)
+            # unload
+            out = handle_extension_command(agent, ["unload", "demo"])
+            self.assertIn("Unloaded", out)
+            self.assertNotIn("demo", agent.bus.loaded_extensions())
+            # reload scans and loads all on disk
+            handle_extension_command(agent, ["reload"])
+            self.assertIn("demo", agent.bus.loaded_extensions())
+
+    def test_unload_not_loaded(self):
+        from pyagent.extensions.manager import handle_extension_command
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            out = handle_extension_command(agent, ["unload", "ghost"])
+            self.assertIn("not loaded", out)
+
+    def test_new_rejects_bad_name(self):
+        from pyagent.extensions.manager import handle_extension_command
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            out = handle_extension_command(agent, ["new", "1bad"])
+            self.assertIn("Tool name", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

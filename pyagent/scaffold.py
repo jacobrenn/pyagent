@@ -7,11 +7,57 @@ from .templates import render_tool_template
 from .user_runtime import (
     ensure_user_subdir,
     resolve_user_dir,
+    user_extensions_dir,
     user_tools_dir,
 )
 
 
 _VALID_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+
+
+EXTENSION_TEMPLATE = '''\
+"""PyAgent extension: {name}.
+
+Extensions subscribe to lifecycle events via ``register(bus, name)`` and may
+inject skills into the system prompt via ``ctx.add_skill``. See
+``extensions_prd.md`` for the event catalog and the mutation model.
+
+This extension is a *package*: its script (this file), skills, and tools are
+colocated under ``~/.pyagent/extensions/{name}/``::
+
+    ~/.pyagent/extensions/{name}/
+    __init__.py          # this file (register(bus, name))
+    skills/<key>.md      # skill text injected via ctx.add_skill("<key>")
+    tools/<tool>.py      # UV-script tools, discovered only while loaded
+
+Calling ``ctx.add_skill("<key>")`` from ``input``/``before_agent_start``/
+``turn_start`` injects the skill from ``skills/<key>.md`` THIS turn; calling it
+from ``turn_end`` (or a later event) applies it NEXT turn. The injection is
+auto-expunged after the turn, so re-declare each turn to keep it. Skills and
+tools under this directory are only discoverable while the extension is
+loaded (``/extension load {name}``); unloading hides them again.
+"""
+from __future__ import annotations
+
+
+def register(bus, name):
+    @bus.on("tool_call")
+    def on_tool_call(payload, ctx):
+        # Example safeguard: block destructive bash. Return a dict to mutate
+        # the payload (veto keys like ``blocked`` short-circuit), or None to
+        # pass through.
+        if payload["name"] == "bash" and "rm -rf" in payload["input"].get("command", ""):
+            return {"blocked": True, "reason": f"{name} blocks destructive commands"}
+        return None
+
+    @bus.on("turn_end")
+    def on_turn_end(payload, ctx):
+        # Inject a skill next turn once the conversation grows. Declaring at
+        # turn_end applies it next turn (one-turn lag); the skill text is read
+        # from ~/.pyagent/extensions/{name}/skills/<key>.md.
+        if payload.get("message_count", 0) > 20:
+            ctx.add_skill("{name}")
+'''
 
 
 class ScaffoldError(ValueError):
@@ -62,4 +108,55 @@ def create_user_tool(
         # where permissions are not honored). Execution still works via
         # `uv run <script>`.
         pass
+    return target
+
+
+def create_user_extension(
+    name: str,
+    *,
+    user_dir: str | Path | None = None,
+    overwrite: bool = False,
+) -> Path:
+    """Scaffold a starter extension package at ``~/.pyagent/extensions/<name>/``.
+
+    Creates a modular package layout::
+
+        extensions/<name>/__init__.py   # the extension script
+        extensions/<name>/skills/       # (empty; drop <key>.md files here)
+        extensions/<name>/tools/        # (empty; drop UV-script tools here)
+
+    Refuses to overwrite an existing package unless ``overwrite=True``. Returns
+    the absolute path to the new ``__init__.py``.
+    """
+    ext_name = _normalize_tool_name(name)
+    resolved = (
+        Path(user_dir).expanduser().resolve()
+        if user_dir is not None else resolve_user_dir()
+    )
+    exts = ensure_user_subdir(user_extensions_dir(resolved))
+    pkg = exts / ext_name
+    target = pkg / "__init__.py"
+
+    if pkg.exists() and not overwrite:
+        raise ScaffoldError(
+            f"Cannot create extension: `{pkg}` already exists. Pass overwrite=True to replace it."
+        )
+    if overwrite and pkg.exists():
+        import shutil
+        shutil.rmtree(pkg)
+
+    ensure_user_subdir(pkg)
+    ensure_user_subdir(pkg / "skills")
+    tools_dir = ensure_user_subdir(pkg / "tools")
+    target.write_text(EXTENSION_TEMPLATE.replace("{name}", ext_name), encoding="utf-8")
+
+    # Scaffold a starter tool in the extension's tools/ dir so the agent can
+    # find the colocated tool immediately.
+    tool_target = tools_dir / f"{ext_name}.py"
+    tool_target.write_text(render_tool_template(ext_name), encoding="utf-8")
+    try:
+        tool_target.chmod(0o755)
+    except OSError:
+        pass
+
     return target

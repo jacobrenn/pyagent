@@ -30,6 +30,7 @@ from .project_context import (
 from .scaffold import ScaffoldError, create_user_tool
 from .session_logger import SessionLogger
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
+from .extensions.manager import handle_extension_command
 
 PROMPT_INPUT_MIN_HEIGHT = 8
 PROMPT_INPUT_MAX_HEIGHT = 20
@@ -278,6 +279,9 @@ class PyAgentApp(App):
             project_context=self.project_context,
             project_context_files=self.project_context_files,
         )
+        # Extensions load after the agent exists.
+        self.agent.load_extensions()
+        self._initial_status_note = self._extensions_summary_note()
         self.is_processing = False
         self.debug_visible = False
         self.logging_enabled = False
@@ -326,6 +330,8 @@ class PyAgentApp(App):
                 f"Default system prompt has been created at `{self.agent.prompt_file_path}`. You can edit this file to customize the agent's personality.",
                 finalized=True,
             )
+        if self._initial_status_note:
+            self._add_message("system", self._initial_status_note, finalized=True)
         if self.project_context_files:
             loaded_files = "\n".join(
                 f"- `{path}`" for path in self.project_context_files
@@ -362,6 +368,18 @@ class PyAgentApp(App):
     def _ready_status(self) -> str:
         return f"Ready • {self._status_summary()}"
 
+    def _extensions_summary_note(self) -> str | None:
+        """One-line loaded-extensions summary for the startup banner."""
+        names = self.agent.bus.loaded_extensions()
+        if not names:
+            return None
+        return f"extensions loaded: {', '.join(names)}"
+
+    def _handle_extension_command(self, args: list[str]) -> bool:
+        output = handle_extension_command(self.agent, args)
+        self._add_system_note(output)
+        return True
+
     def _set_status(self, text: str) -> None:
         self.query_one("#status-bar", Static).update(text)
 
@@ -396,6 +414,7 @@ class PyAgentApp(App):
             "bash_enabled": self.agent.config.bash_enabled,
             "bash_readonly_mode": self.agent.config.bash_readonly_mode,
             "cwd": os.getcwd(),
+            "extensions": self.agent.bus.loaded_extensions(),
         }
 
     def _log_session_start(self, session_logger: SessionLogger) -> None:
@@ -461,6 +480,10 @@ class PyAgentApp(App):
             "- `/tools new <name>` — scaffold a starter UV-script tool in `~/.pyagent/tools/`\n"
             "- `/tools enable <name>` / `/tools disable <name>` — move a tool in or out of `tools/disabled/`\n"
             "- `/tools open <name>` — print the absolute path to a tool script\n"
+            "- `/extension list` — show extensions in `~/.pyagent/extensions/`\n"
+            "- `/extension reload` — re-scan and reload all extensions\n"
+            "- `/extension new <name>` — scaffold a starter extension\n"
+            "- `/extension load <name>` / `/extension unload <name>` — load or unload one extension\n"
             "- `/debug on|off` — show or hide the debug pane"
             "- `logging on|off` - enable or disable logging (logs saved to `~/.pyagent/logs/`)"
         )
@@ -539,6 +562,7 @@ class PyAgentApp(App):
             "/reload_profiles",
             "/reload_context",
             "/reload_tools",
+            "/extension",
             "/debug",
             "/logging",
             "/log",
@@ -730,6 +754,8 @@ class PyAgentApp(App):
                 self._add_system_note(f"Skill `{skill_id}` is already loaded.")
                 return True
             self.loaded_user_skills.append(skill_id)
+            if self.logging_enabled and self._session_logger is not None:
+                self._session_logger.log_skill_load(skill_id)
             self._add_system_note(
                 f"Loaded skill `{skill_id}` into the system prompt for this session.\n\n{self._reload_context_details()}"
             )
@@ -742,6 +768,8 @@ class PyAgentApp(App):
             return True
         self.loaded_user_skills = [
             name for name in self.loaded_user_skills if name != skill_id]
+        if self.logging_enabled and self._session_logger is not None:
+            self._session_logger.log_skill_unload(skill_id)
         self._add_system_note(
             f"Unloaded skill `{skill_id}` from the system prompt for this session.\n\n{self._reload_context_details()}"
         )
@@ -925,6 +953,7 @@ class PyAgentApp(App):
                 return True
             self._session_logger = logger
             self.logging_enabled = True
+            self.agent.attach_logger(logger)
             log_path = str(logger.jsonl_path)
             self._turn_counter = 0
             self._log_session_start(logger)
@@ -947,6 +976,7 @@ class PyAgentApp(App):
                 except Exception:
                     pass
                 self._session_logger = None
+            self.agent.attach_logger(None)
             self.logging_enabled = False
             self._add_system_note(f"Session logging stopped.")
             self._set_status(self._ready_status())
@@ -1280,6 +1310,9 @@ class PyAgentApp(App):
 
         if command in {"/logging", "/log"}:
             return self._handle_logging_command(args)
+
+        if command == "/extension":
+            return self._handle_extension_command(args)
 
         self._add_system_note(self._unknown_command_message(command))
         return True

@@ -54,6 +54,7 @@ def run(request: ChatRequest) -> ChatResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    agent.load_extensions()
     final_response = ""
     for event in agent.run(request.message):
         if event.get("type") == "assistant_done":

@@ -55,6 +55,10 @@ def user_log_dir(user_dir: Path | None = None) -> Path:
     return (user_dir or resolve_user_dir()) / "logs"
 
 
+def user_extensions_dir(user_dir: Path | None = None) -> Path:
+    return (user_dir or resolve_user_dir()) / "extensions"
+
+
 def ensure_user_subdir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path

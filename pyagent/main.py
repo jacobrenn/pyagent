@@ -90,6 +90,7 @@ def run_single_shot(
         model=model,
         skills=skills,
     )
+    agent.load_extensions()
     response = ""
     for event in agent.run(prompt):
         if event.get("type") == "assistant_done":

@@ -6,11 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# OTel severity numbers (subset we use)
-_SEVERITY_INFO = 9
-_SEVERITY_WARN = 13
-_SEVERITY_ERROR = 17
-_SEVERITY_DEBUG = 5
+_SEVERITY_DEBUG = "DEBUG"
+_SEVERITY_INFO = "INFO"
+_SEVERITY_WARN = "WARN"
+_SEVERITY_ERROR = "ERROR"
 
 
 def _iso_timestamp() -> str:
@@ -57,15 +56,13 @@ class SessionLogger:
 
     def _write_entry(
         self,
-        severity_number: int,
         severity_text: str,
         body: str,
         attributes: dict[str, Any] | None = None,
     ) -> None:
         entry: dict[str, Any] = {
-            "timeUnixNano": _iso_timestamp(),
-            "severityNumber": severity_number,
-            "severityText": severity_text,
+            "timestamp": _iso_timestamp(),
+            "severity": severity_text,
             "body": body,
         }
         if attributes:
@@ -75,16 +72,69 @@ class SessionLogger:
         self._file.flush()
 
     def info(self, body: str, attributes: dict[str, Any] | None = None) -> None:
-        self._write_entry(_SEVERITY_INFO, "INFO", body, attributes)
+        self._write_entry(_SEVERITY_INFO, body, attributes)
 
     def debug(self, body: str, attributes: dict[str, Any] | None = None) -> None:
-        self._write_entry(_SEVERITY_DEBUG, "DEBUG", body, attributes)
+        self._write_entry(_SEVERITY_DEBUG, body, attributes)
 
     def warn(self, body: str, attributes: dict[str, Any] | None = None) -> None:
-        self._write_entry(_SEVERITY_WARN, "WARN", body, attributes)
+        self._write_entry(_SEVERITY_WARN, body, attributes)
 
     def error(self, body: str, attributes: dict[str, Any] | None = None) -> None:
-        self._write_entry(_SEVERITY_ERROR, "ERROR", body, attributes)
+        self._write_entry(_SEVERITY_ERROR, body, attributes)
+
+    def log_event(
+        self,
+        event_name: str,
+        extension: str | None,
+        payload: dict[str, Any],
+        result: Any = None,
+    ) -> None:
+        """Record an extension bus event."""
+        body = f"Extension event: {event_name}"
+        attrs: dict[str, Any] = {
+            "event_type": "extension_event",
+            "event": event_name,
+            "payload": dict(payload),
+        }
+        if extension:
+            body += f" ({extension})"
+            attrs["extension"] = extension
+        if result is not None:
+            attrs["result"] = result
+        self._write_entry(_SEVERITY_DEBUG, body, attrs)
+
+    def log_extension_skills(
+        self, keys: list[str], text_chars: int
+    ) -> None:
+        """Record extension skills that were injected into the system prompt."""
+        if not keys:
+            return
+        self._write_entry(
+            _SEVERITY_INFO,
+            f"Loaded extension skills: {', '.join(keys)}",
+            {
+                "event_type": "extension_skills_loaded",
+                "keys": list(keys),
+                "text_chars": text_chars,
+            },
+        )
+
+    def log_skill_load(self, skill_id: str) -> None:
+        """Record a user/project skill explicitly loaded into context."""
+        self._write_entry(
+            _SEVERITY_INFO,
+            f"Skill loaded: {skill_id}",
+            {"event_type": "skill_load", "skill_id": skill_id},
+        )
+
+    def log_skill_unload(self, skill_id: str) -> None:
+        """Record a user/project skill explicitly unloaded from context."""
+        self._write_entry(
+            _SEVERITY_INFO,
+            f"Skill unloaded: {skill_id}",
+            {"event_type": "skill_unload", "skill_id": skill_id},
+        )
 
     @classmethod
     def from_config(cls, config: Any) -> SessionLogger:
@@ -102,7 +152,6 @@ class SessionLogger:
     def log_entry(self, entry: dict[str, Any]) -> None:
         self._write_entry(
             _SEVERITY_INFO,
-            "INFO",
             entry.get("body", entry.get("content", "")),
             {k: v for k, v in entry.items() if k not in ("body", "content")},
         )
@@ -125,10 +174,16 @@ class SessionLogger:
         stored in the ``attributes`` dict so downstream consumers can replay or
         inspect the conversation state.
         """
+        tool_names = [
+            tc.get("function", {}).get("name", "<unknown>")
+            for m in output_messages
+            for tc in m.get("tool_calls", [])
+        ]
+        tool_summary = f" — {', '.join(tool_names)}" if tool_names else ""
         body = (
             f"Turn {turn_number}: "
             f"{len(output_messages)} response(s), "
-            f"{sum(len(m.get('tool_calls', [])) for m in output_messages if m.get('tool_calls'))} tool call(s)"
+            f"{len(tool_names)} tool call(s){tool_summary}"
         )
         attrs = dict(attributes or {})
         attrs.update(
@@ -141,7 +196,7 @@ class SessionLogger:
                 "output_messages": output_messages,
             }
         )
-        self._write_entry(_SEVERITY_INFO, "INFO", body, attrs)
+        self._write_entry(_SEVERITY_INFO, body, attrs)
 
     def log_session_start(self, attributes: dict[str, Any] | None = None) -> None:
         """Log the start of a session with environment/profile metadata."""
@@ -149,7 +204,6 @@ class SessionLogger:
         attrs["event_type"] = "session_start"
         self._write_entry(
             _SEVERITY_INFO,
-            "INFO",
             "Session started",
             attrs,
         )
@@ -162,7 +216,6 @@ class SessionLogger:
         attrs.update({"event_type": "session_end", "turn_count": turn_count})
         self._write_entry(
             _SEVERITY_INFO,
-            "INFO",
             f"Session ended after {turn_count} turn(s)",
             attrs,
         )
