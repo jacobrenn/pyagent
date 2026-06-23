@@ -434,10 +434,22 @@ mkdir -p ~/.pyagent
 $EDITOR ~/.pyagent/system_prompt.txt
 ```
 
+Manage reusable system prompts from the CLI with the plural `prompts` subcommand:
+
+```bash
+pyagent prompts install ./coder.md
+pyagent prompts list
+pyagent prompts show coder.md
+pyagent prompts use coder.md
+pyagent prompts remove coder.md
+```
+
+Installed prompt files live under `~/.pyagent/system_prompts/`. `pyagent prompts use <name>` copies the selected prompt to the active system prompt path (`~/.pyagent/system_prompt.txt` by default, or `PYAGENT_SYSTEM_PROMPT_PATH` when set) and leaves the installed copy in place.
+
 Notes:
 
 - `/prompt` shows the currently active system prompt in the TUI.
-- The system prompt is loaded when the conversation is initialized or reset. After editing it, use `/clear` to start a fresh conversation with the updated prompt.
+- The system prompt is loaded when the conversation is initialized or reset. After editing or switching it, use `/clear` to start a fresh conversation with the updated prompt.
 - User and project instruction files are layered onto the base system prompt automatically.
 
 ## Tools
@@ -593,6 +605,13 @@ Then run `/tools reload` in PyAgent. UV installs `huggingface_hub` and `datasets
 PyAgent can install, list, and remove user-managed skills and tools under `~/.pyagent/`, and manage the on-disk lifecycle of extensions under `~/.pyagent/extensions/`.
 
 ```bash
+pyagent prompts list
+pyagent prompts install ./coder.md
+pyagent prompts install https://example.com/coder.md --name coder.md
+pyagent prompts show coder.md
+pyagent prompts use coder.md
+pyagent prompts remove coder.md
+
 pyagent skills list
 pyagent skills install ./review.md
 pyagent skills install https://example.com/review.md --name review.md
@@ -606,6 +625,8 @@ pyagent tools remove my_tool.py
 
 Notes:
 
+- Prompts are installed under `~/.pyagent/system_prompts/` and must use `.txt` or `.md`.
+- `pyagent prompts use <name>` copies the installed prompt to the active system prompt path; it does not remove the installed copy.
 - Skills are installed under `~/.pyagent/skills/` and must use `.md` or `.skill`.
 - Tools are installed under `~/.pyagent/tools/` and must use `.py`.
 - Use `--force` with `install` to overwrite an existing file.
@@ -635,7 +656,8 @@ Recommended user directory layout:
 ```text
 ~/.pyagent/
 ├── profiles.json                    # named model profiles
-├── system_prompt.txt                # base system prompt
+├── system_prompt.txt                # active base system prompt
+├── system_prompts/                  # reusable system prompts (*.txt, *.md)
 ├── AGENTS.md                        # optional user-global agent instructions
 ├── skills/                          # user-global skills (*.md, *.skill)
 └── tools/                           # user tools, one UV script per tool
@@ -727,7 +749,7 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 - `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn; `-1` means infinite
 - `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
 - `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
-- `PYAGENT_USER_DIR` — root for user-managed tools, skills, logs, and user-global `AGENTS.md`; default `~/.pyagent`. Model profiles use `PYAGENT_MODEL_PROFILES_PATH`.
+- `PYAGENT_USER_DIR` — root for user-managed prompts, tools, skills, logs, and user-global `AGENTS.md`; default `~/.pyagent`. Model profiles use `PYAGENT_MODEL_PROFILES_PATH`.
 
 ### Tool environment variables
 

@@ -39,6 +39,10 @@ def user_tools_dir(user_dir: Path | None = None) -> Path:
     return (user_dir or resolve_user_dir()) / "tools"
 
 
+def user_system_prompts_dir(user_dir: Path | None = None) -> Path:
+    return (user_dir or resolve_user_dir()) / "system_prompts"
+
+
 def user_agents_file(user_dir: Path | None = None) -> Path:
     return (user_dir or resolve_user_dir()) / "AGENTS.md"
 

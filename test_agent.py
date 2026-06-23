@@ -496,6 +496,61 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
         mock_stderr.write.assert_called()
 
+    def test_prompts_subcommands_manage_system_prompt_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            user_dir = base / "user"
+            active_prompt = base / "active" / "system_prompt.txt"
+            source = base / "coder.md"
+            source.write_text("Coder prompt\nUse concise answers.", encoding="utf-8")
+
+            env = {
+                "PYAGENT_USER_DIR": str(user_dir),
+                "PYAGENT_SYSTEM_PROMPT_PATH": str(active_prompt),
+            }
+            with mock.patch.dict(os.environ, env):
+                with mock.patch("sys.stdout"):
+                    main_entry(["prompts", "install", str(source)])
+
+                installed = user_dir / "system_prompts" / "coder.md"
+                self.assertTrue(installed.is_file())
+
+                with mock.patch("sys.stdout") as mock_stdout:
+                    main_entry(["prompts", "list"])
+                listed = "".join(
+                    call.args[0] for call in mock_stdout.write.call_args_list
+                )
+                self.assertIn("Prompts in", listed)
+                self.assertIn("- coder.md", listed)
+
+                with mock.patch("sys.stdout") as mock_stdout:
+                    main_entry(["prompts", "show", "coder"])
+                mock_stdout.write.assert_called_once_with(
+                    "Coder prompt\nUse concise answers."
+                )
+
+                with mock.patch("sys.stdout"):
+                    main_entry(["prompts", "use", "coder"])
+                self.assertTrue(installed.is_file())
+                self.assertEqual(
+                    active_prompt.read_text(encoding="utf-8"),
+                    "Coder prompt\nUse concise answers.",
+                )
+
+                with mock.patch("sys.stdout"):
+                    main_entry(["prompts", "remove", "coder"])
+                self.assertFalse(installed.exists())
+
+    def test_prompts_show_missing_exits_with_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": temp_dir}):
+                with mock.patch("sys.stderr") as mock_stderr:
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["prompts", "show", "missing"])
+
+        self.assertEqual(cm.exception.code, 2)
+        mock_stderr.write.assert_called()
+
 # ... (remaining file) ...
 
 
@@ -2086,7 +2141,7 @@ class ExtensionColocationTests(unittest.TestCase):
 
     def test_tool_and_skill_hidden_until_extension_loaded(self) -> None:
         from pyagent.extensions.manager import handle_extension_command
-        from pyagent.tools import list_skills
+        from pyagent.project_context import list_available_skills
 
         with tempfile.TemporaryDirectory() as tmp:
             user_dir = Path(tmp)
@@ -2094,9 +2149,12 @@ class ExtensionColocationTests(unittest.TestCase):
             config = AppConfig(user_dir=tmp, user_tools_enabled=True, tool_runner="python")
             agent = Agent(config=config)
 
-            # Before loading: tool not registered, skill not in list_skills.
+            # Before loading: tool not registered, skill not in normal skill discovery.
             self.assertNotIn("ext_only_tool", agent.tool_registry.names())
-            self.assertNotIn("ext_skill", list_skills(scope="user", config=config, cwd=tmp))
+            skill_labels = {
+                skill.label for skill in list_available_skills(tmp, user_dir=config.user_dir)
+            }
+            self.assertNotIn("ext_skill.md", skill_labels)
 
             with mock.patch("pyagent.agent.discover_external_tools", self._patch_discover(user_dir)), \
                  mock.patch("pyagent.agent.default_runner_command", lambda runner=None: _python_runner_command()):
@@ -2110,15 +2168,18 @@ class ExtensionColocationTests(unittest.TestCase):
                 self.assertNotIn("ext_only_tool", agent.tool_registry.names())
 
     def test_colocated_skill_resolves_and_is_hidden_from_list_skills(self) -> None:
-        from pyagent.tools import list_skills
+        from pyagent.project_context import list_available_skills
 
         with tempfile.TemporaryDirectory() as tmp:
             user_dir = Path(tmp)
             self._make_ext_package(user_dir, "myext")
             config = AppConfig(user_dir=tmp, tools_enabled=True)
             agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
-            # Colocated skill is never listed by list_skills.
-            self.assertNotIn("ext_skill", list_skills(scope="user", config=config, cwd=tmp))
+            # Colocated skill is never listed by normal skill discovery.
+            skill_labels = {
+                skill.label for skill in list_available_skills(tmp, user_dir=config.user_dir)
+            }
+            self.assertNotIn("ext_skill.md", skill_labels)
             # But resolves when the owning extension declares it.
             agent._this_skills = {"myext/ext_skill"}
             text = collect_skill_text(agent)
@@ -2871,15 +2932,17 @@ class TestSkillInjection(unittest.TestCase):
             self.assertIn("[truncated", text)
 
     def test_skills_hidden_from_normal_discovery(self) -> None:
-        # ~/.pyagent/skills/extensions/<key>.md must NOT appear in list_skills.
-        from pyagent.tools import list_skills
+        # ~/.pyagent/skills/extensions/<key>.md must NOT appear in normal skill discovery.
+        from pyagent.project_context import list_available_skills
         with tempfile.TemporaryDirectory() as tmp:
             skills_dir = Path(tmp) / "skills" / "extensions"
             skills_dir.mkdir(parents=True)
             (skills_dir / "secret.md").write_text("# secret ext skill")
             agent = self._agent(tmp)
-            out = list_skills(scope="user", config=agent.config, cwd=tmp)
-            self.assertNotIn("secret", out)
+            skill_labels = {
+                skill.label for skill in list_available_skills(tmp, user_dir=agent.config.user_dir)
+            }
+            self.assertNotIn("secret.md", skill_labels)
 
 
 # --- agent loop wiring ---
