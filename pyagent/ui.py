@@ -480,10 +480,12 @@ class PyAgentApp(App):
             "- `/tools new <name>` — scaffold a starter UV-script tool in `~/.pyagent/tools/`\n"
             "- `/tools enable <name>` / `/tools disable <name>` — move a tool in or out of `tools/disabled/`\n"
             "- `/tools open <name>` — print the absolute path to a tool script\n"
-            "- `/extension list` — show extensions in `~/.pyagent/extensions/`\n"
+            "- `/extension list` — show extensions in `~/.pyagent/extensions/` (also `/extensions`)\n"
             "- `/extension reload` — re-scan and reload all extensions\n"
             "- `/extension new <name>` — scaffold a starter extension\n"
-            "- `/extension load <name>` / `/extension unload <name>` — load or unload one extension\n"
+            "- `/extension load <name>` / `/extension unload <name>` — load, or unload (and disable for next session), one extension\n"
+            "- `/extension enable <name>` / `/extension disable <name>` — move an extension in or out of `extensions/disabled/`\n"
+            "- `/extension remove <name>` — permanently delete an extension from disk\n"
             "- `/debug on|off` — show or hide the debug pane"
             "- `logging on|off` - enable or disable logging (logs saved to `~/.pyagent/logs/`)"
         )
@@ -563,6 +565,7 @@ class PyAgentApp(App):
             "/reload_context",
             "/reload_tools",
             "/extension",
+            "/extensions",
             "/debug",
             "/logging",
             "/log",
@@ -1311,7 +1314,7 @@ class PyAgentApp(App):
         if command in {"/logging", "/log"}:
             return self._handle_logging_command(args)
 
-        if command == "/extension":
+        if command in {"/extension", "/extensions"}:
             return self._handle_extension_command(args)
 
         self._add_system_note(self._unknown_command_message(command))

@@ -10,6 +10,8 @@ import textwrap
 import time
 import unittest
 
+from typing import Any
+
 from fastapi.testclient import TestClient
 from pathlib import Path
 from types import SimpleNamespace
@@ -3247,8 +3249,11 @@ class TestManager(unittest.TestCase):
             out = handle_extension_command(agent, ["unload", "demo"])
             self.assertIn("Unloaded", out)
             self.assertNotIn("demo", agent.bus.loaded_extensions())
-            # reload scans and loads all on disk
+
             handle_extension_command(agent, ["reload"])
+            self.assertNotIn("demo", agent.bus.loaded_extensions())
+            out = handle_extension_command(agent, ["load", "demo"])
+            self.assertIn("Loaded", out)
             self.assertIn("demo", agent.bus.loaded_extensions())
 
     def test_unload_not_loaded(self):
