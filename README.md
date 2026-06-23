@@ -588,9 +588,9 @@ Then run `/tools reload` in PyAgent. UV installs `huggingface_hub` and `datasets
 
 `~/.pyagent/tools/` is user-owned. PyAgent enforces wall-clock timeouts but does not otherwise sandbox these scripts. Treat any tool you install there as code you have chosen to run.
 
-## Managing user skills and tools from the CLI
+## Managing user skills, tools, and extensions from the CLI
 
-PyAgent can install, list, and remove user-managed skills and tools under `~/.pyagent/`.
+PyAgent can install, list, and remove user-managed skills and tools under `~/.pyagent/`, and manage the on-disk lifecycle of extensions under `~/.pyagent/extensions/`.
 
 ```bash
 pyagent skills list
@@ -610,6 +610,25 @@ Notes:
 - Tools are installed under `~/.pyagent/tools/` and must use `.py`.
 - Use `--force` with `install` to overwrite an existing file.
 - Installed tools are marked executable automatically.
+
+### Managing extensions from the CLI
+
+The `pyagent extensions` subcommands operate on the on-disk lifecycle of extensions — they move extension packages between `~/.pyagent/extensions/` (enabled) and `~/.pyagent/extensions/disabled/` (disabled), or delete them outright. There is no live agent session, so they do not touch the in-memory bus; use the TUI `/extension load` / `/extension unload` commands for that.
+
+```bash
+pyagent extensions list                  # show enabled and disabled extensions
+pyagent extensions enable <name>         # move an extension out of disabled/ so it auto-loads on next session
+pyagent extensions disable <name>        # move an extension into disabled/ so it does NOT auto-load on next session
+pyagent extensions remove <name>         # permanently delete an extension (checked in both enabled and disabled/)
+```
+
+Notes:
+
+- An extension that is **enabled** (in `~/.pyagent/extensions/<name>/`) is auto-loaded on the next session start.
+- An extension that is **disabled** (in `~/.pyagent/extensions/disabled/<name>/`) is skipped at startup; its skills and tools are not discovered. Use `enable` to restore it.
+- After running `enable`/`disable` from the CLI, a **running** TUI session will not see the change until you run `/extension reload` (or restart). The CLI writes to disk; it does not talk to a live session.
+- `enable` only un-disables an extension that was previously `disable`d. If an extension is already enabled, `enable` reports that it was not found in the disabled directory.
+- `remove` deletes the extension package or file from disk and cannot be undone. It checks both the enabled and disabled directories.
 
 Recommended user directory layout:
 
@@ -659,6 +678,14 @@ Recommended user directory layout:
 - `/skills unload <id-or-path>` — unload a previously loaded skill from the system prompt
 - `/prompt` — show the active system prompt
 - `/reload_context` — reload user-global/project `AGENTS.md` files and explicitly loaded skills, reporting added/removed files
+- `/extension list` (or `/extensions list`) — show extensions in `~/.pyagent/extensions/`, including disabled ones
+- `/extension reload` — re-scan and reload all extensions
+- `/extension new <name>` — scaffold a starter extension
+- `/extension load <name>` — move (if disabled) into enabled/ and load into the bus this session
+- `/extension unload <name>` — remove from the bus this session and move into `disabled/` so it stays unloaded across restarts
+- `/extension enable <name>` — move an extension out of `disabled/` so it auto-loads next session (does not load into the running bus)
+- `/extension disable <name>` — move an extension into `disabled/` so it does not auto-load next session (unloads it from the running bus if loaded)
+- `/extension remove <name>` — permanently delete an extension from disk (checked in both enabled and disabled/)
 - `/logging on|off` — enable or disable session logging under `~/.pyagent/logs/`
 - `/debug` — show whether the debug pane is currently on or off
 - `/debug on|off` — show or hide the debug pane
@@ -832,11 +859,20 @@ A `before_agent_start` handler that returns `system_prompt` **replaces** the bas
 /extension list                       # show extensions in ~/.pyagent/extensions/
 /extension reload                     # re-scan and reload all extensions
 /extension new <name>                 # scaffold a starter extension
-/extension load <name>                # load one extension this session
-/extension unload <name>              # unload one extension this session
+/extension load <name>                # move (if disabled) into enabled/ and load into the bus this session
+/extension unload <name>              # remove from the bus this session AND move into disabled/ (stays unloaded across restarts)
+/extension enable <name>             # move an extension out of disabled/ so it auto-loads next session (does not load into the running bus)
+/extension disable <name>            # move an extension into disabled/ so it does NOT auto-load next session (unloads it from the running bus if loaded)
+/extension remove <name>              # permanently delete an extension from disk (checked in both enabled and disabled/)
 ```
 
-`load`/`unload` operate on the in-memory bus (no manifests) and also rebuild the external-tool registry so a loaded extension's colocated `tools/` becomes discoverable (and an unloaded extension's tools disappear). `reload` clears all handlers and re-scans the directory (idempotent: no double-subscribe). A failing extension is logged and skipped at load — it never blocks startup.
+`/extension` is also accepted as `/extensions`.
+
+- `load`/`unload` operate on the in-memory bus (no manifests) and also rebuild the external-tool registry so a loaded extension's colocated `tools/` becomes discoverable (and an unloaded extension's tools disappear).
+- `unload` persists: it moves the extension into `disabled/` and removes it from the bus, so it will **not** be re-loaded on the next session until you run `/extension load <name>` again. Use `unload` when you want "off now, off next time" in one step.
+- `disable` is `unload` minus nothing — it moves the extension to `disabled/` and, if it was loaded in the current session, detaches it from the bus. It will not auto-load next session. Use `disable` when you only care about startup behavior, not the current bus.
+- `enable` is the inverse of `disable`: it moves the extension back out of `disabled/` so it will auto-load on the next session. It does **not** load the extension into the current running bus — run `/extension load <name>` (or `/extension reload`) afterward to load it now.
+- `reload` clears all handlers and re-scans the directory (idempotent: no double-subscribe). A failing extension is logged and skipped at load — it never blocks startup.
 
 The `~/.pyagent/` layout:
 

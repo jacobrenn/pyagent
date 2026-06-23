@@ -238,11 +238,74 @@ def main(argv: list[str] | None = None) -> None:
 
     add_resource_parser("skills", "skill")
     add_resource_parser("tools", "tool")
+    
+    ext_parser = subparsers.add_parser(
+        "extensions", help="Manage installed extensions"
+    )
+    ext_subparsers = ext_parser.add_subparsers(
+        dest="ext_action", required=True
+    )
+    ext_subparsers.add_parser("list", help="List extensions")
+    
+    enable_parser = ext_subparsers.add_parser("enable", help="Enable an extension")
+    enable_parser.add_argument("name", help="Extension name")
+    
+    disable_parser = ext_subparsers.add_parser("disable", help="Disable an extension")
+    disable_parser.add_argument("name", help="Extension name")
+    
+    remove_parser = ext_subparsers.add_parser("remove", help="Remove an extension")
+    remove_parser.add_argument("name", help="Extension name")
 
     args = parser.parse_args(argv)
 
     if args.command in {"skills", "tools"}:
         _handle_resource_command(args)
+        return
+
+    if args.command == "extensions":
+        from .extensions.manager import _ext_dir, _disabled_ext_dir, _cmd_list, _cmd_enable, _cmd_disable, _cmd_remove
+        from .agent import Agent
+        
+        from .config import AppConfig
+        config = AppConfig.from_env()
+        
+        class MockAgent:
+            def __init__(self, config):
+                self.config = config
+                self.bus = type('Bus', (), {
+                    'loaded_extensions': staticmethod(lambda: []),
+                    'clear': staticmethod(lambda: None),
+                })()
+                self._ext_log = type('Log', (), {
+                    'error': staticmethod(lambda a, b: None),
+                })()
+                self._rebuild_external_tools = lambda: None
+
+        agent = MockAgent(config)
+
+        if args.ext_action == "list":
+
+            from .user_runtime import resolve_user_dir, user_extensions_dir
+            from .extensions.loader import _discover
+            ext_dir = user_extensions_dir(resolve_user_dir(config.user_dir))
+            disabled_dir = ext_dir / "disabled"
+            on_disk = _discover(ext_dir)
+            disabled = _discover(disabled_dir)
+            if not on_disk and not disabled:
+                print("No extensions found in `~/.pyagent/extensions/`.")
+            else:
+                lines = ["Extensions:"]
+                for name in on_disk:
+                    lines.append(f"- {name} [enabled]")
+                for name in disabled:
+                    lines.append(f"- {name} [disabled]")
+                print("\n".join(lines))
+        elif args.ext_action == "enable":
+            print(_cmd_enable(agent, args.name))
+        elif args.ext_action == "disable":
+            print(_cmd_disable(agent, args.name))
+        elif args.ext_action == "remove":
+            print(_cmd_remove(agent, args.name))
         return
 
     if args.command == "profiles":
