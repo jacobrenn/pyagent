@@ -3,6 +3,8 @@ from importlib.metadata import version
 from tabulate import tabulate
 import argparse
 import os
+from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -10,7 +12,7 @@ from .agent import Agent
 from .config import AppConfig
 from .model_profiles import load_profile_store
 from .project_context import load_full_context, resolve_available_skill
-from .resources import install_resource, kind_for_name, list_resources, remove_resource, resource_dir
+from .resources import install_resource, kind_for_name, list_resources, remove_resource, resolve_resource, resource_dir
 
 
 def get_version():
@@ -113,6 +115,43 @@ def _print_resource_list(kind_name: str) -> None:
     sys.stdout.flush()
 
 
+def _read_installed_resource(kind_name: str, target: str) -> str:
+    kind = kind_for_name(kind_name)
+    resource = resolve_resource(kind, target)
+    if resource is None:
+        root = resource_dir(kind)
+        raise ValueError(
+            f"No {kind.name} named {target!r} was found under {root}.")
+    try:
+        return resource.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Could not read {resource.path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Could not read {resource.path} as UTF-8 text: {exc}") from exc
+
+
+def _activate_system_prompt(target: str) -> tuple[Path, Path]:
+    kind = kind_for_name("prompts")
+    resource = resolve_resource(kind, target)
+    if resource is None:
+        root = resource_dir(kind)
+        raise ValueError(
+            f"No {kind.name} named {target!r} was found under {root}.")
+
+    config = AppConfig.from_env()
+    destination = Path(config.system_prompt_path)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp = destination.with_name(f".{destination.name}.tmp")
+        shutil.copyfile(resource.path, tmp)
+        shutil.move(str(tmp), str(destination))
+    except OSError as exc:
+        raise ValueError(
+            f"Could not copy {resource.path} to {destination}: {exc}") from exc
+    return resource.path, destination
+
+
 def _handle_resource_command(args: argparse.Namespace) -> None:
     kind = kind_for_name(args.command)
     action = args.resource_action
@@ -132,6 +171,16 @@ def _handle_resource_command(args: argparse.Namespace) -> None:
                 f"Installed {kind.name} `{result.destination.name}` to {result.destination} "
                 f"({result.bytes_written} bytes)\n"
             )
+            sys.stdout.flush()
+            return
+        if action == "show":
+            sys.stdout.write(_read_installed_resource(args.command, args.name))
+            sys.stdout.flush()
+            return
+        if action == "use":
+            source, destination = _activate_system_prompt(args.name)
+            sys.stdout.write(
+                f"Copied prompt {source} to active system prompt {destination}\n")
             sys.stdout.flush()
             return
         if action == "remove":
@@ -197,7 +246,13 @@ def main(argv: list[str] | None = None) -> None:
         "profiles", help="Show available profiles"
     )
 
-    def add_resource_parser(name: str, singular: str) -> None:
+    def add_resource_parser(
+        name: str,
+        singular: str,
+        *,
+        show: bool = False,
+        use: bool = False,
+    ) -> None:
         resource_parser = subparsers.add_parser(
             name,
             help=f"Manage installed {name}",
@@ -227,6 +282,24 @@ def main(argv: list[str] | None = None) -> None:
             action="store_true",
             help="Overwrite an existing file with the same name",
         )
+        if show:
+            show_parser = resource_subparsers.add_parser(
+                "show",
+                help=f"Print an installed {singular}",
+            )
+            show_parser.add_argument(
+                "name",
+                help=f"Installed {singular} filename or relative path",
+            )
+        if use:
+            use_parser = resource_subparsers.add_parser(
+                "use",
+                help=f"Copy an installed {singular} to the active system prompt file",
+            )
+            use_parser.add_argument(
+                "name",
+                help=f"Installed {singular} filename or relative path",
+            )
         remove_parser = resource_subparsers.add_parser(
             "remove",
             help=f"Remove an installed {singular}",
@@ -238,10 +311,11 @@ def main(argv: list[str] | None = None) -> None:
 
     add_resource_parser("skills", "skill")
     add_resource_parser("tools", "tool")
+    add_resource_parser("prompts", "prompt", show=True, use=True)
 
     args = parser.parse_args(argv)
 
-    if args.command in {"skills", "tools"}:
+    if args.command in {"skills", "tools", "prompts"}:
         _handle_resource_command(args)
         return
 

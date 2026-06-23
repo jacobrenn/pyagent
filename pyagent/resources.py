@@ -11,6 +11,7 @@ from .user_runtime import (
     ensure_user_subdir,
     resolve_user_dir,
     user_skills_dir,
+    user_system_prompts_dir,
     user_tools_dir,
 )
 
@@ -20,7 +21,7 @@ URL_SCHEMES = {"http", "https"}
 
 @dataclass(frozen=True, slots=True)
 class ManagedResource:
-    """A user-managed skill or tool file under ~/.pyagent."""
+    """A user-managed prompt, skill, or tool file under ~/.pyagent."""
 
     path: Path
     label: str
@@ -60,6 +61,14 @@ TOOL_KIND = ResourceKind(
     excluded_dirs=(".cache", "__pycache__"),
 )
 
+PROMPT_KIND = ResourceKind(
+    name="prompt",
+    directory_name="system_prompts",
+    default_suffix=".txt",
+    allowed_suffixes=(".txt", ".md"),
+    include_patterns=("*.txt", "*.md"),
+)
+
 
 def kind_for_name(name: str) -> ResourceKind:
     normalized = name.strip().lower()
@@ -67,6 +76,8 @@ def kind_for_name(name: str) -> ResourceKind:
         return SKILL_KIND
     if normalized in {"tool", "tools"}:
         return TOOL_KIND
+    if normalized in {"prompt", "prompts"}:
+        return PROMPT_KIND
     raise ValueError(f"Unknown resource kind: {name}")
 
 
@@ -76,6 +87,8 @@ def resource_dir(kind: ResourceKind, user_dir: str | os.PathLike[str] | None = N
         return user_skills_dir(base)
     if kind is TOOL_KIND:
         return user_tools_dir(base)
+    if kind is PROMPT_KIND:
+        return user_system_prompts_dir(base)
     return base / kind.directory_name
 
 
@@ -220,7 +233,7 @@ def _candidate_remove_names(kind: ResourceKind, target: str) -> list[str]:
     normalized = Path(cleaned).as_posix()
     names = [normalized]
     if Path(normalized).suffix == "":
-        names.append(f"{normalized}{kind.default_suffix}")
+        names.extend(f"{normalized}{suffix}" for suffix in kind.allowed_suffixes)
     return names
 
 

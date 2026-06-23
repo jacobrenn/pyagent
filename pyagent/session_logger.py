@@ -61,8 +61,8 @@ class SessionLogger:
         attributes: dict[str, Any] | None = None,
     ) -> None:
         entry: dict[str, Any] = {
-            "timestamp": _iso_timestamp(),
-            "severity": severity_text,
+            "timeUnixNano": _iso_timestamp(),
+            "severityText": severity_text,
             "body": body,
         }
         if attributes:
