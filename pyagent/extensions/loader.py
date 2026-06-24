@@ -115,7 +115,8 @@ def load_all(bus: EventBus, ext_dir: Path, log: Any) -> tuple[list[str], list[tu
             loaded.append(name)
         except Exception as exc:
             failed.append((name, str(exc)))
-            _log_error(log, f"extension {name} failed to load", {"error": str(exc)})
+            _log_error(log, f"extension {name} failed to load", {
+                       "error": str(exc)})
     return loaded, failed
 
 
@@ -165,7 +166,8 @@ def collect_skill_text(agent: Any) -> str:
             remaining = MAX_EXTENSION_SKILLS_CHARS - used
             if remaining <= 0:
                 break
-            text = text[:remaining] + f"\n\n[truncated {len(text) - remaining} characters]"
+            text = text[:remaining] + \
+                f"\n\n[truncated {len(text) - remaining} characters]"
         chunk = f"# Extension skill: {key}\n\n{text}"
         chunks.append(chunk)
         used += len(chunk)

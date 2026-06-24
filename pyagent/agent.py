@@ -632,7 +632,8 @@ class Agent:
                 self._skill_target = "this"
                 self.bus.emit(
                     "turn_start",
-                    {"turn_index": iteration, "timestamp": datetime.now(timezone.utc).isoformat()},
+                    {"turn_index": iteration, "timestamp": datetime.now(
+                        timezone.utc).isoformat()},
                     ctx,
                 )
                 self._skill_target = "next"
@@ -650,13 +651,16 @@ class Agent:
                 # stored history). Deepcopy only when an extension cares.
                 if self.bus.handlers("context"):
                     context_payload = self.bus.emit(
-                        "context", {"messages": copy.deepcopy(self.messages)}, ctx
+                        "context", {"messages": copy.deepcopy(
+                            self.messages)}, ctx
                     )
-                    request_messages = context_payload.get("messages", self.messages)
+                    request_messages = context_payload.get(
+                        "messages", self.messages)
                 else:
                     request_messages = self.messages
 
-                self.bus.emit("message_start", {"message": {"role": "assistant"}}, ctx)
+                self.bus.emit("message_start", {
+                              "message": {"role": "assistant"}}, ctx)
                 for chunk in self.client.chat_stream(
                     request_messages,
                     tools=self.tools if self.config.tools_enabled else None,
@@ -692,7 +696,8 @@ class Agent:
                 self._trim_history()
 
                 # message_end: allow replacing the finalized assistant message.
-                end_event = self.bus.emit("message_end", {"message": assistant_message}, ctx)
+                end_event = self.bus.emit(
+                    "message_end", {"message": assistant_message}, ctx)
                 replaced = end_event.get("message")
                 if isinstance(replaced, dict) and replaced.get("role") == "assistant":
                     assistant_message = replaced
@@ -761,11 +766,13 @@ class Agent:
                     # tool_call: audit/gate/mutate before execution.
                     tc_event = self.bus.emit(
                         "tool_call",
-                        {"tool_call_id": tool_call_id, "name": name, "input": arguments},
+                        {"tool_call_id": tool_call_id,
+                            "name": name, "input": arguments},
                         ctx,
                     )
                     if tc_event.get("blocked"):
-                        reason = tc_event.get("reason", "Blocked by an extension.")
+                        reason = tc_event.get(
+                            "reason", "Blocked by an extension.")
                         result = f"Blocked: {reason}"
                         self.messages.append(
                             {
@@ -786,7 +793,8 @@ class Agent:
                     result = self.tool_registry.execute(name, arguments)
 
                     # tool_result: filter/redact/transform the result.
-                    is_error = isinstance(result, str) and result.startswith("Error:")
+                    is_error = isinstance(
+                        result, str) and result.startswith("Error:")
                     tr_event = self.bus.emit(
                         "tool_result",
                         {

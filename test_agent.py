@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -37,6 +39,7 @@ from pyagent.external_tools import (
     discover_external_tools,
 )
 from pyagent.llm_client import OpenAICompatibleClient, OllamaClient, build_chat_client
+from pyagent.main import main as pyagent_main
 from pyagent.model_profiles import (
     ModelProfile,
     load_profile_store,
@@ -502,7 +505,8 @@ class MainCliTests(unittest.TestCase):
             user_dir = base / "user"
             active_prompt = base / "active" / "system_prompt.txt"
             source = base / "coder.md"
-            source.write_text("Coder prompt\nUse concise answers.", encoding="utf-8")
+            source.write_text(
+                "Coder prompt\nUse concise answers.", encoding="utf-8")
 
             env = {
                 "PYAGENT_USER_DIR": str(user_dir),
@@ -1104,6 +1108,46 @@ class ConfigTests(unittest.TestCase):
 
         self.assertFalse(config.builtin_tools_enabled)
         self.assertFalse(config.user_tools_enabled)
+
+
+class ExtensionCliTests(unittest.TestCase):
+    def _run_cli(self, argv: list[str], user_dir: str) -> str:
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": user_dir}):
+            with contextlib.redirect_stdout(output):
+                pyagent_main(argv)
+        return output.getvalue().strip()
+
+    def test_extensions_list_reports_enabled_and_disabled_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ext_dir = Path(td) / "extensions"
+            disabled_dir = ext_dir / "disabled"
+            (ext_dir / "active").mkdir(parents=True)
+            (ext_dir / "active" /
+             "__init__.py").write_text("def register(bus, name): pass\n")
+            disabled_dir.mkdir()
+            (disabled_dir / "resting.py").write_text("def register(bus, name): pass\n")
+
+            output = self._run_cli(["extensions", "list"], td)
+
+        self.assertIn("- active [enabled]", output)
+        self.assertIn("- resting [disabled]", output)
+
+    def test_extensions_enable_and_disable_move_extension_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ext_dir = Path(td) / "extensions"
+            (ext_dir / "demo").mkdir(parents=True)
+            (ext_dir / "demo" / "__init__.py").write_text("def register(bus, name): pass\n")
+
+            disabled = self._run_cli(["extensions", "disable", "demo"], td)
+            self.assertIn("Disabled extension `demo`", disabled)
+            self.assertFalse((ext_dir / "demo").exists())
+            self.assertTrue((ext_dir / "disabled" / "demo").exists())
+
+            enabled = self._run_cli(["extensions", "enable", "demo"], td)
+            self.assertIn("Enabled extension `demo`", enabled)
+            self.assertTrue((ext_dir / "demo").exists())
+            self.assertFalse((ext_dir / "disabled" / "demo").exists())
 
 
 class ClientTests(unittest.TestCase):
@@ -2146,7 +2190,8 @@ class ExtensionColocationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             user_dir = Path(tmp)
             self._make_ext_package(user_dir, "myext")
-            config = AppConfig(user_dir=tmp, user_tools_enabled=True, tool_runner="python")
+            config = AppConfig(
+                user_dir=tmp, user_tools_enabled=True, tool_runner="python")
             agent = Agent(config=config)
 
             # Before loading: tool not registered, skill not in normal skill discovery.
@@ -2157,7 +2202,7 @@ class ExtensionColocationTests(unittest.TestCase):
             self.assertNotIn("ext_skill.md", skill_labels)
 
             with mock.patch("pyagent.agent.discover_external_tools", self._patch_discover(user_dir)), \
-                 mock.patch("pyagent.agent.default_runner_command", lambda runner=None: _python_runner_command()):
+                    mock.patch("pyagent.agent.default_runner_command", lambda runner=None: _python_runner_command()):
                 agent.load_extensions(start_session=False)
                 self.assertIn("myext", agent.bus.loaded_extensions())
                 self.assertIn("ext_only_tool", agent.tool_registry.names())
@@ -2174,7 +2219,8 @@ class ExtensionColocationTests(unittest.TestCase):
             user_dir = Path(tmp)
             self._make_ext_package(user_dir, "myext")
             config = AppConfig(user_dir=tmp, tools_enabled=True)
-            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            agent = Agent(
+                config=config, tool_registry=create_default_tool_registry(config))
             # Colocated skill is never listed by normal skill discovery.
             skill_labels = {
                 skill.label for skill in list_available_skills(tmp, user_dir=config.user_dir)
@@ -2192,7 +2238,8 @@ class ExtensionColocationTests(unittest.TestCase):
             user_dir = Path(tmp)
             self._make_ext_package(user_dir, "myext")
             config = AppConfig(user_dir=tmp, tools_enabled=True)
-            agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+            agent = Agent(
+                config=config, tool_registry=create_default_tool_registry(config))
             agent._this_skills = {"other/ext_skill"}
             self.assertEqual(collect_skill_text(agent), "")
 
@@ -2519,11 +2566,13 @@ class SessionLoggerEventTests(unittest.TestCase):
 
     def test_log_event_records_extension_event(self) -> None:
         logger = SessionLogger(log_dir=self.tmpdir)
-        logger.log_event("tool_call", "audit", {"name": "bash"}, {"blocked": True})
+        logger.log_event("tool_call", "audit", {
+                         "name": "bash"}, {"blocked": True})
         lines = self._load_lines(logger)
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["severityText"], "DEBUG")
-        self.assertEqual(lines[0]["body"], "Extension event: tool_call (audit)")
+        self.assertEqual(lines[0]["body"],
+                         "Extension event: tool_call (audit)")
         self.assertEqual(lines[0]["attributes"]["event"], "tool_call")
         self.assertEqual(lines[0]["attributes"]["extension"], "audit")
         self.assertEqual(lines[0]["attributes"]["payload"], {"name": "bash"})
@@ -2541,7 +2590,8 @@ class SessionLoggerEventTests(unittest.TestCase):
         logger.log_extension_skills(["foo", "bar"], 1234)
         lines = self._load_lines(logger)
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["attributes"]["event_type"], "extension_skills_loaded")
+        self.assertEqual(lines[0]["attributes"]
+                         ["event_type"], "extension_skills_loaded")
         self.assertEqual(lines[0]["attributes"]["keys"], ["foo", "bar"])
         self.assertEqual(lines[0]["attributes"]["text_chars"], 1234)
 
@@ -2630,7 +2680,6 @@ class EventBusLoggingTests(unittest.TestCase):
         # No assertion needed: reaching this line means no exception was raised.
 
 
-
 # --- extension system: event bus, loader, skill injection, loop wiring ---
 # (consolidated from test_extensions.py)
 class TestEventBus(unittest.TestCase):
@@ -2648,7 +2697,8 @@ class TestEventBus(unittest.TestCase):
         def h(payload, ctx):
             return {"blocked": True, "reason": "no"}
 
-        out = self.bus.emit("tool_call", {"name": "bash", "input": {}}, self.ctx)
+        out = self.bus.emit(
+            "tool_call", {"name": "bash", "input": {}}, self.ctx)
         self.assertTrue(out["blocked"])
         self.assertEqual(out["reason"], "no")
 
@@ -2834,7 +2884,8 @@ class TestLoader(unittest.TestCase):
             ext_dir = Path(tmp) / "extensions"
             ext_dir.mkdir()
             _write_ext(ext_dir, "good", "def register(b, n): pass\n")
-            _write_ext(ext_dir, "bad", "def register(b, n): raise RuntimeError('boom')\n")
+            _write_ext(ext_dir, "bad",
+                       "def register(b, n): raise RuntimeError('boom')\n")
             log = NoOpLog()
             bus = EventBus(log)
             loaded, failed = load_all(bus, ext_dir, log)
@@ -2845,7 +2896,8 @@ class TestLoader(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ext_dir = Path(tmp) / "extensions"
             ext_dir.mkdir()
-            _write_ext(ext_dir, "ext", "def register(b, n):\n  b.on('e', lambda p, c: None)\n")
+            _write_ext(ext_dir, "ext",
+                       "def register(b, n):\n  b.on('e', lambda p, c: None)\n")
             log = NoOpLog()
             bus = EventBus(log)
             load_one(bus, "ext", ext_dir, log)
@@ -2968,7 +3020,8 @@ class RecordingClient:
 
 def _make_agent(responses, **cfg_overrides):
     config = AppConfig(max_iterations=2, **cfg_overrides)
-    agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+    agent = Agent(
+        config=config, tool_registry=create_default_tool_registry(config))
     agent.client = RecordingClient(responses)
     return agent
 
@@ -2977,7 +3030,8 @@ class TestAgentLoopWiring(unittest.TestCase):
     def test_emits_fire_without_handlers_unchanged(self):
         agent = _make_agent([[{"content": "hi"}]])
         events = list(agent.run("hello"))
-        self.assertEqual(events[-1], {"type": "assistant_done", "content": "hi"})
+        self.assertEqual(
+            events[-1], {"type": "assistant_done", "content": "hi"})
 
     def test_input_transform(self):
         agent = _make_agent([[{"content": "ok"}]])
@@ -2987,7 +3041,8 @@ class TestAgentLoopWiring(unittest.TestCase):
             return {"action": "transform", "text": "rewritten"}
 
         list(agent.run("original"))
-        self.assertEqual(agent.client.seen_messages[0][1]["content"], "rewritten")
+        self.assertEqual(
+            agent.client.seen_messages[0][1]["content"], "rewritten")
 
     def test_input_handled_skips_llm(self):
         agent = _make_agent([[{"content": "nope"}]])
@@ -3095,7 +3150,8 @@ class TestAgentLoopWiring(unittest.TestCase):
             raise RuntimeError("kaboom")
 
         events = list(agent.run("hi"))
-        self.assertEqual(events[-1], {"type": "assistant_done", "content": "ok"})
+        self.assertEqual(
+            events[-1], {"type": "assistant_done", "content": "ok"})
 
 
 # --- ephemeral skill injection in the loop ---
@@ -3218,7 +3274,8 @@ class TestEphemeralSkills(unittest.TestCase):
 class TestManager(unittest.TestCase):
     def _agent(self, tmp: str) -> Agent:
         config = AppConfig(user_dir=tmp, tools_enabled=True)
-        agent = Agent(config=config, tool_registry=create_default_tool_registry(config))
+        agent = Agent(
+            config=config, tool_registry=create_default_tool_registry(config))
         return agent
 
     def test_list_empty(self):
@@ -3235,8 +3292,10 @@ class TestManager(unittest.TestCase):
             # new
             out = handle_extension_command(agent, ["new", "demo"])
             self.assertIn("Created", out)
-            self.assertTrue((Path(tmp) / "extensions" / "demo" / "__init__.py").exists())
-            self.assertTrue((Path(tmp) / "extensions" / "demo" / "tools" / "demo.py").exists())
+            self.assertTrue((Path(tmp) / "extensions" /
+                            "demo" / "__init__.py").exists())
+            self.assertTrue((Path(tmp) / "extensions" /
+                            "demo" / "tools" / "demo.py").exists())
             # load
             out = handle_extension_command(agent, ["load", "demo"])
             self.assertIn("Loaded", out)

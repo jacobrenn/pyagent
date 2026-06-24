@@ -233,7 +233,8 @@ def _candidate_remove_names(kind: ResourceKind, target: str) -> list[str]:
     normalized = Path(cleaned).as_posix()
     names = [normalized]
     if Path(normalized).suffix == "":
-        names.extend(f"{normalized}{suffix}" for suffix in kind.allowed_suffixes)
+        names.extend(
+            f"{normalized}{suffix}" for suffix in kind.allowed_suffixes)
     return names
 
 

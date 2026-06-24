@@ -46,9 +46,11 @@ if __name__ == "__main__":  # ponytail: cheapest smoke test
     assert bus.loaded_extensions() == ["template"]
     ctx = Ctx(add_skill=lambda _k: None, log=log)
 
-    out = bus.emit("tool_call", {"name": "bash", "input": {"command": "ls"}}, ctx)
+    out = bus.emit("tool_call", {"name": "bash",
+                   "input": {"command": "ls"}}, ctx)
     assert "blocked" not in out
-    out = bus.emit("tool_call", {"name": "bash", "input": {"command": "rm -rf /"}}, ctx)
+    out = bus.emit("tool_call", {"name": "bash",
+                   "input": {"command": "rm -rf /"}}, ctx)
     assert out["blocked"] and "template" in out["reason"]
 
     added: list[str] = []

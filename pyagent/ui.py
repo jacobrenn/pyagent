@@ -331,7 +331,8 @@ class PyAgentApp(App):
                 finalized=True,
             )
         if self._initial_status_note:
-            self._add_message("system", self._initial_status_note, finalized=True)
+            self._add_message(
+                "system", self._initial_status_note, finalized=True)
         if self.project_context_files:
             loaded_files = "\n".join(
                 f"- `{path}`" for path in self.project_context_files

@@ -148,7 +148,8 @@ def create_user_extension(
     ensure_user_subdir(pkg)
     ensure_user_subdir(pkg / "skills")
     tools_dir = ensure_user_subdir(pkg / "tools")
-    target.write_text(EXTENSION_TEMPLATE.replace("{name}", ext_name), encoding="utf-8")
+    target.write_text(EXTENSION_TEMPLATE.replace(
+        "{name}", ext_name), encoding="utf-8")
 
     # Scaffold a starter tool in the extension's tools/ dir so the agent can
     # find the colocated tool immediately.

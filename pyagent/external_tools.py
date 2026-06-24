@@ -301,7 +301,8 @@ def discover_external_tools(
         runner_command) if runner_command is not None else default_runner_command(runner_name)
     status = runner_status or check_runner_available(runner_name)
     cache_path = user_tools_cache_dir(resolved_user_dir) / CACHE_FILE_NAME
-    extra_dirs = [Path(d).expanduser().resolve() for d in (extra_tool_dirs or [])]
+    extra_dirs = [Path(d).expanduser().resolve()
+                  for d in (extra_tool_dirs or [])]
 
     result = DiscoveryResult(
         user_dir=resolved_user_dir,
@@ -317,7 +318,8 @@ def discover_external_tools(
     cache = _load_cache(cache_path) if cache_enabled else {}
     fresh_cache: dict[str, dict[str, Any]] = {}
 
-    candidate_scripts = _candidate_scripts(tools_dir) + _candidate_scripts_in_dirs(extra_dirs)
+    candidate_scripts = _candidate_scripts(
+        tools_dir) + _candidate_scripts_in_dirs(extra_dirs)
     for script_path in candidate_scripts:
         if not status.available:
             result.broken.append(

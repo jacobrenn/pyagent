@@ -123,10 +123,11 @@ def _cmd_unload(agent: Any, name: str) -> str:
     _cmd_disable(agent, name)
     return f"Unloaded and disabled `{name}`. Use `/extension load {name}` to re-enable."
 
+
 def _cmd_enable(agent: Any, name: str) -> str:
     disabled_dir = _disabled_ext_dir(agent)
     ext_dir = _ext_dir(agent)
-    
+
     # Search in disabled dir
     found = False
     # Extensions can be dirs or .py files
@@ -138,27 +139,28 @@ def _cmd_enable(agent: Any, name: str) -> str:
                 entry.rename(dest)
                 found = True
                 break
-            
+
     if not found:
         return f"Extension `{name}` not found in disabled directory."
-    
+
     return f"Enabled extension `{name}`. Run `/extension load {name}` to load it now."
+
 
 def _cmd_disable(agent: Any, name: str) -> str:
     ext_dir = _ext_dir(agent)
     disabled_dir = _disabled_ext_dir(agent)
     disabled_dir.mkdir(exist_ok=True)
-    
+
     # Find the extension on disk
     found_entry = None
     for entry in ext_dir.iterdir():
         if entry.name == name or (entry.is_file() and entry.stem == name):
             found_entry = entry
             break
-            
+
     if found_entry is None:
         return f"Extension `{name}` not found in extensions directory."
-    
+
     # Unload from bus if loaded
     if name in agent.bus.loaded_extensions():
         unload_one(agent.bus, name)
@@ -168,32 +170,35 @@ def _cmd_disable(agent: Any, name: str) -> str:
     found_entry.rename(dest)
     return f"Disabled extension `{name}`. It will not be loaded on startup."
 
+
 def _cmd_remove(agent: Any, name: str) -> str:
     ext_dir = _ext_dir(agent)
     disabled_dir = _disabled_ext_dir(agent)
-    
+
     # Try to find in active or disabled
     found_entry = None
     for d in [ext_dir, disabled_dir]:
-        if not d.is_dir(): continue
+        if not d.is_dir():
+            continue
         for entry in d.iterdir():
             if entry.name == name or (entry.is_file() and entry.stem == name):
                 found_entry = entry
                 break
-        if found_entry: break
-        
+        if found_entry:
+            break
+
     if found_entry is None:
         return f"Extension `{name}` not found."
-    
+
     # Unload if loaded
     if name in agent.bus.loaded_extensions():
         unload_one(agent.bus, name)
         agent._rebuild_external_tools()
-        
+
     import shutil
     if found_entry.is_dir():
         shutil.rmtree(found_entry)
     else:
         found_entry.unlink()
-        
+
     return f"Removed extension `{name}`."

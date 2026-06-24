@@ -88,7 +88,8 @@ class EventBus:
     def off(self, event: str, handler: Handler) -> None:
         hs = self._handlers.get(event)
         if hs:
-            self._handlers[event] = [(h, n) for (h, n) in hs if h is not handler]
+            self._handlers[event] = [(h, n)
+                                     for (h, n) in hs if h is not handler]
 
     def off_extension(self, name: str) -> None:
         """Remove every handler tagged with ``name`` (``/extension unload``)."""
@@ -194,9 +195,11 @@ if __name__ == "__main__":
             return {"blocked": True, "reason": "destructive"}
         return None
 
-    out = bus.emit("tool_call", {"name": "bash", "input": {"command": "ls"}}, ctx)
+    out = bus.emit("tool_call", {"name": "bash",
+                   "input": {"command": "ls"}}, ctx)
     assert "blocked" not in out, out
-    out = bus.emit("tool_call", {"name": "bash", "input": {"command": "rm -rf /"}}, ctx)
+    out = bus.emit("tool_call", {"name": "bash",
+                   "input": {"command": "rm -rf /"}}, ctx)
     assert out.get("blocked") is True, out
     assert ctx.extension == "sg"
 
