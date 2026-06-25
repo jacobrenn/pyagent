@@ -152,9 +152,34 @@ def _activate_system_prompt(target: str) -> tuple[Path, Path]:
     return resource.path, destination
 
 
+def _tool_file_display_name(name: str) -> str:
+    file_name = Path(name.strip()).name
+    return file_name if file_name.endswith(".py") else f"{file_name}.py"
+
+
+def _handle_tool_toggle_command(args: argparse.Namespace) -> None:
+    from .external_tools import move_tool_script
+
+    enable = args.resource_action == "enable"
+    new_path, error = move_tool_script(args.name, enable=enable)
+    if error is not None:
+        sys.stderr.write(f"{error}\n")
+        sys.stderr.flush()
+        sys.exit(2)
+
+    verb = "Enabled" if enable else "Disabled"
+    display_name = _tool_file_display_name(args.name)
+    sys.stdout.write(f"{verb} tool `{display_name}` at {new_path}\n")
+    sys.stdout.flush()
+
+
 def _handle_resource_command(args: argparse.Namespace) -> None:
     kind = kind_for_name(args.command)
     action = args.resource_action
+
+    if kind.name == "tool" and action in {"enable", "disable"}:
+        _handle_tool_toggle_command(args)
+        return
 
     try:
         if action == "list":
@@ -372,6 +397,18 @@ def main(argv: list[str] | None = None) -> None:
             "name",
             help=f"Installed {singular} filename or relative path",
         )
+        if name == "tools":
+            for action, help_text in (
+                ("enable", "Move a tool out of tools/disabled/"),
+                ("disable", "Move a tool into tools/disabled/"),
+            ):
+                action_parser = resource_subparsers.add_parser(
+                    action, help=help_text)
+                action_parser.add_argument(
+                    "name",
+                    metavar="tool_file",
+                    help="Tool filename/path or name, with or without .py",
+                )
 
     add_resource_parser("skills", "skill")
     add_resource_parser("tools", "tool")

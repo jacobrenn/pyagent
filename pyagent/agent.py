@@ -472,6 +472,84 @@ class Agent:
             kept_blocks) for message in block]
         self.messages = [system_message, *trimmed_messages]
 
+    def _trailing_tool_result_block_indexes(self, messages: list[dict[str, Any]]) -> set[int]:
+        """Return indexes for a trailing contiguous block of tool results.
+
+        Models need freshly produced tool output intact for the immediate
+        follow-up request. When a single assistant response requested multiple
+        tools, their tool messages are contiguous, so preserve that whole
+        trailing block while it is still the newest context.
+        """
+        if not messages or messages[-1].get("role") != "tool":
+            return set()
+
+        start = len(messages) - 1
+        while start > 0 and messages[start - 1].get("role") == "tool":
+            start -= 1
+        return set(range(start, len(messages)))
+
+    def _mask_tool_result_content(self, content: str, max_chars: int) -> str:
+        """Shorten an older long tool result while keeping useful context."""
+        if max_chars <= 0 or len(content) <= max_chars:
+            return content
+
+        placeholder = (
+            "[Previous tool output masked to reduce context; "
+            f"original length {len(content)} characters.]"
+        )
+        marker_template = (
+            "\n\n... [masked {omitted} characters from previous tool output; "
+            "original length {total}] ...\n\n"
+        )
+        marker = marker_template.format(omitted=0, total=len(content))
+        budget = max_chars - len(marker)
+        if budget < 2:
+            return placeholder[:max_chars]
+
+        head_chars = max(1, budget * 2 // 3)
+        tail_chars = max(1, budget - head_chars)
+        omitted = max(0, len(content) - head_chars - tail_chars)
+        marker = marker_template.format(omitted=omitted, total=len(content))
+
+        while head_chars + tail_chars + len(marker) > max_chars and tail_chars > 1:
+            tail_chars -= 1
+        while head_chars + tail_chars + len(marker) > max_chars and head_chars > 1:
+            head_chars -= 1
+
+        masked = f"{content[:head_chars]}{marker}{content[-tail_chars:]}"
+        return masked[:max_chars]
+
+    def _mask_previous_tool_results_for_request(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Mask older long tool outputs in the request sent to the model.
+
+        Stored history remains untouched. A trailing contiguous tool-result
+        block stays intact so the model can consume the tool output it just
+        requested.
+        """
+        max_chars = self.config.max_previous_tool_result_chars
+        if max_chars <= 0:
+            return messages
+
+        trailing_tool_indexes = self._trailing_tool_result_block_indexes(messages)
+        masked_messages: list[dict[str, Any]] | None = None
+        for index, message in enumerate(messages):
+            if message.get("role") != "tool" or index in trailing_tool_indexes:
+                continue
+
+            content = str(message.get("content", ""))
+            masked_content = self._mask_tool_result_content(content, max_chars)
+            if masked_content == content:
+                continue
+
+            if masked_messages is None:
+                masked_messages = [dict(item) for item in messages]
+            masked_messages[index]["content"] = masked_content
+
+        return masked_messages if masked_messages is not None else messages
+
     def _normalize_arguments(self, arguments: Any) -> dict[str, Any]:
         if isinstance(arguments, dict):
             return arguments
@@ -658,6 +736,9 @@ class Agent:
                         "messages", self.messages)
                 else:
                     request_messages = self.messages
+                request_messages = self._mask_previous_tool_results_for_request(
+                    request_messages
+                )
 
                 self.bus.emit("message_start", {
                               "message": {"role": "assistant"}}, ctx)

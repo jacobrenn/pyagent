@@ -60,6 +60,7 @@ from pyagent.scaffold import ScaffoldError, create_user_tool
 from pyagent.tools import (
     BUILTIN_ORIGIN,
     EXTERNAL_ORIGIN,
+    ToolRegistry,
     ToolSpec,
     append_file,
     bash,
@@ -563,9 +564,11 @@ class DummyClient:
         self.responses = responses
         self.calls = 0
         self.seen_tools: list[object] = []
+        self.seen_messages: list[list[dict[str, Any]]] = []
 
     def chat_stream(self, messages, tools=None):
         self.seen_tools.append(tools)
+        self.seen_messages.append([dict(message) for message in messages])
         response = self.responses[self.calls]
         self.calls += 1
         for chunk in response:
@@ -667,6 +670,67 @@ class PyAgentUiContextTests(unittest.TestCase):
 
 
 class AgentTests(unittest.TestCase):
+    def _run_two_tool_sequence(
+        self,
+        first_result: str,
+        second_result: str,
+        *,
+        mask_limit: int = 120,
+    ) -> tuple[Agent, list[dict[str, Any]]]:
+        registry = ToolRegistry(
+            [
+                ToolSpec(
+                    name="first_tool",
+                    description="Return the first result",
+                    parameters={"type": "object", "properties": {}},
+                    handler=lambda **_: first_result,
+                ),
+                ToolSpec(
+                    name="second_tool",
+                    description="Return the second result",
+                    parameters={"type": "object", "properties": {}},
+                    handler=lambda **_: second_result,
+                ),
+            ]
+        )
+        config = AppConfig(
+            max_iterations=3,
+            max_history_messages=50,
+            max_previous_tool_result_chars=mask_limit,
+        )
+        agent = Agent(config=config, tool_registry=registry)
+        agent.client = DummyClient(
+            [
+                [
+                    {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {"name": "first_tool", "arguments": {}},
+                            }
+                        ]
+                    }
+                ],
+                [
+                    {
+                        "tool_calls": [
+                            {
+                                "id": "call_2",
+                                "function": {"name": "second_tool", "arguments": {}},
+                            }
+                        ]
+                    }
+                ],
+                [{"content": "done"}],
+            ]
+        )
+        events = list(agent.run("use two tools"))
+        return agent, events
+
+    @staticmethod
+    def _tool_messages(request: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [message for message in request if message.get("role") == "tool"]
+
     def test_tools_disabled_omits_tool_definitions_and_updates_system_prompt(self) -> None:
         config = AppConfig(max_iterations=1, tools_enabled=False)
         agent = Agent(
@@ -819,6 +883,74 @@ class AgentTests(unittest.TestCase):
             ["system", "assistant", "user"],
         )
         self.assertEqual(agent.messages[-1]["content"], "latest question")
+
+    def test_request_masks_previous_long_tool_outputs_but_keeps_latest_full(self) -> None:
+        first_result = "A" * 300
+        second_result = "B" * 300
+
+        agent, events = self._run_two_tool_sequence(first_result, second_result)
+
+        self.assertEqual(events[-1], {"type": "assistant_done", "content": "done"})
+        second_request_tools = self._tool_messages(agent.client.seen_messages[1])
+        self.assertEqual(second_request_tools[-1]["content"], first_result)
+
+        third_request_tools = self._tool_messages(agent.client.seen_messages[2])
+        self.assertEqual(len(third_request_tools), 2)
+        self.assertIn("masked", third_request_tools[0]["content"])
+        self.assertLessEqual(len(third_request_tools[0]["content"]), 120)
+        self.assertLess(len(third_request_tools[0]["content"]), len(first_result))
+        self.assertEqual(third_request_tools[1]["content"], second_result)
+        self.assertEqual(
+            [
+                message["content"]
+                for message in agent.messages
+                if message.get("role") == "tool"
+            ],
+            [first_result, second_result],
+        )
+
+        agent.client = DummyClient([[{"content": "follow-up"}]])
+        list(agent.run("now answer a follow-up"))
+
+        follow_up_tools = self._tool_messages(agent.client.seen_messages[0])
+        self.assertEqual(len(follow_up_tools), 2)
+        self.assertIn("masked", follow_up_tools[0]["content"])
+        self.assertIn("masked", follow_up_tools[1]["content"])
+        self.assertEqual(
+            [
+                message["content"]
+                for message in agent.messages
+                if message.get("role") == "tool"
+            ],
+            [first_result, second_result],
+        )
+
+    def test_request_leaves_short_previous_tool_outputs_unmasked(self) -> None:
+        first_result = "short result"
+        second_result = "B" * 300
+
+        agent, _events = self._run_two_tool_sequence(first_result, second_result)
+
+        third_request_tools = self._tool_messages(agent.client.seen_messages[2])
+        self.assertEqual(third_request_tools[0]["content"], first_result)
+        self.assertEqual(third_request_tools[1]["content"], second_result)
+
+    def test_request_tool_output_masking_can_be_disabled(self) -> None:
+        first_result = "A" * 300
+        second_result = "B" * 300
+        for limit in (0, -1):
+            with self.subTest(limit=limit):
+                agent, _events = self._run_two_tool_sequence(
+                    first_result,
+                    second_result,
+                    mask_limit=limit,
+                )
+
+                third_request_tools = self._tool_messages(
+                    agent.client.seen_messages[2]
+                )
+                self.assertEqual(third_request_tools[0]["content"], first_result)
+                self.assertEqual(third_request_tools[1]["content"], second_result)
 
     def test_set_model_updates_agent_and_client(self) -> None:
         agent = Agent(config=AppConfig(),
@@ -1109,6 +1241,15 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.builtin_tools_enabled)
         self.assertFalse(config.user_tools_enabled)
 
+    def test_from_env_reads_previous_tool_result_mask_limit(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS": "1234"},
+        ):
+            config = AppConfig.from_env()
+
+        self.assertEqual(config.max_previous_tool_result_chars, 1234)
+
 
 class ExtensionCliTests(unittest.TestCase):
     def _run_cli(self, argv: list[str], user_dir: str) -> str:
@@ -1148,6 +1289,24 @@ class ExtensionCliTests(unittest.TestCase):
             self.assertIn("Enabled extension `demo`", enabled)
             self.assertTrue((ext_dir / "demo").exists())
             self.assertFalse((ext_dir / "disabled" / "demo").exists())
+
+    def test_tools_enable_and_disable_move_tool_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tools_dir = Path(td) / "tools"
+            tools_dir.mkdir(parents=True)
+            (tools_dir / "echo.py").write_text("# placeholder\n")
+
+            disabled = self._run_cli(["tools", "disable", "echo.py"], td)
+            self.assertIn("Disabled tool `echo.py`", disabled)
+            self.assertFalse((tools_dir / "echo.py").exists())
+            self.assertTrue((tools_dir / "disabled" / "echo.py").exists())
+
+            enabled = self._run_cli(
+                ["tools", "enable", str(tools_dir / "disabled" / "echo.py")], td
+            )
+            self.assertIn("Enabled tool `echo.py`", enabled)
+            self.assertTrue((tools_dir / "echo.py").exists())
+            self.assertFalse((tools_dir / "disabled" / "echo.py").exists())
 
 
 class ClientTests(unittest.TestCase):

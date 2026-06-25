@@ -42,6 +42,7 @@ class AppConfig:
     request_timeout: int = 300
     max_iterations: int = 10
     max_history_messages: int = 24
+    max_previous_tool_result_chars: int = 4_000
     stream_batch_interval: float = 0.05
     default_profile: str | None = None
     model_profiles_path: str = _default_profiles_path()
@@ -96,6 +97,12 @@ class AppConfig:
                 os.getenv(
                     "PYAGENT_MAX_HISTORY_MESSAGES",
                     str(defaults.max_history_messages),
+                )
+            ),
+            max_previous_tool_result_chars=int(
+                os.getenv(
+                    "PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS",
+                    str(defaults.max_previous_tool_result_chars),
                 )
             ),
             stream_batch_interval=float(

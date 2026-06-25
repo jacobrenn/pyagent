@@ -589,8 +589,8 @@ Then run `/tools reload` in PyAgent. UV installs `huggingface_hub` and `datasets
 
 - New or changed scripts: `/tools reload` rescans the directory and rebuilds the registry.
 - Schema cache: stored at `~/.pyagent/tools/.cache/manifests.json`, keyed by path, mtime, and size.
-- Disable a tool: `/tools disable <name>` moves it to `~/.pyagent/tools/disabled/`.
-- Re-enable a tool: `/tools enable <name>`.
+- Disable a tool: `/tools disable <name>` or `pyagent tools disable <tool_file>` moves it to `~/.pyagent/tools/disabled/`.
+- Re-enable a tool: `/tools enable <name>` or `pyagent tools enable <tool_file>`.
 - Locate a script: `/tools open <name>` prints its absolute path.
 - Name collisions: built-ins win when built-in tools are enabled. `/tools` reports colliding external scripts so you can rename them. If `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, those built-in names are no longer reserved and an external tool may register the same name.
 - Broken scripts: timeout, non-zero `describe`, and malformed JSON are listed under "Broken external tools" and skipped.
@@ -620,6 +620,8 @@ pyagent skills remove review.md
 pyagent tools list
 pyagent tools install ./my_tool.py
 pyagent tools install https://example.com/my_tool.py --name my_tool.py
+pyagent tools disable my_tool.py
+pyagent tools enable my_tool.py
 pyagent tools remove my_tool.py
 ```
 
@@ -629,6 +631,8 @@ Notes:
 - `pyagent prompts use <name>` copies the installed prompt to the active system prompt path; it does not remove the installed copy.
 - Skills are installed under `~/.pyagent/skills/` and must use `.md` or `.skill`.
 - Tools are installed under `~/.pyagent/tools/` and must use `.py`.
+- `pyagent tools disable <tool_file>` moves a tool into `~/.pyagent/tools/disabled/`; `pyagent tools enable <tool_file>` moves it back. Use filenames or paths, with or without `.py`.
+- CLI tool enable/disable changes disk state only; restart PyAgent or run `/tools reload` in an active TUI to apply it there.
 - Use `--force` with `install` to overwrite an existing file.
 - Installed tools are marked executable automatically.
 
@@ -748,6 +752,7 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 - `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
 - `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn; `-1` means infinite
 - `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
+- `PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS` — maximum characters to send for older tool-result messages; the current trailing tool-result block is kept intact, and `0` or `-1` disables masking
 - `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
 - `PYAGENT_USER_DIR` — root for user-managed prompts, tools, skills, logs, and user-global `AGENTS.md`; default `~/.pyagent`. Model profiles use `PYAGENT_MODEL_PROFILES_PATH`.
 

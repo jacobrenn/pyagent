@@ -467,6 +467,12 @@ def build_external_tool_specs(
     return specs
 
 
+def _tool_script_file_name(name: str) -> str:
+    """Return the managed tool filename for a user-provided name/path."""
+    file_name = Path(name.strip()).name
+    return file_name if file_name.endswith(".py") else f"{file_name}.py"
+
+
 def move_tool_script(
     name: str,
     *,
@@ -476,7 +482,8 @@ def move_tool_script(
     """Move ``<name>.py`` into or out of ``tools/disabled/``.
 
     Returns ``(new_path, error)``. ``error`` is non-None on failure.
-    The ``name`` argument may include or omit the ``.py`` suffix.
+    The ``name`` argument may be a filename or path and may include or omit
+    the ``.py`` suffix; only the basename is used.
     """
     resolved_user_dir = (
         Path(user_dir).expanduser().resolve(
@@ -485,7 +492,7 @@ def move_tool_script(
     tools = user_tools_dir(resolved_user_dir)
     disabled_dir = user_tools_disabled_dir(resolved_user_dir)
 
-    file_name = name if name.endswith(".py") else f"{name}.py"
+    file_name = _tool_script_file_name(name)
     enabled_path = tools / file_name
     disabled_path = disabled_dir / file_name
 
@@ -517,7 +524,7 @@ def find_tool_script(
         ) if user_dir is not None else resolve_user_dir()
     )
     tools = user_tools_dir(resolved_user_dir)
-    file_name = name if name.endswith(".py") else f"{name}.py"
+    file_name = _tool_script_file_name(name)
     for candidate in (tools / file_name, tools / "disabled" / file_name):
         if candidate.is_file():
             return candidate
