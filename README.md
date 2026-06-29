@@ -220,6 +220,19 @@ Example:
 }
 ```
 
+### Managing profiles from the CLI
+
+You can now manage your model profiles directly from the CLI without editing the JSON file:
+
+```bash
+pyagent profiles list                             # show all profiles and the current default
+pyagent profiles create --name my-model --provider ollama --model gemma4:latest [options] # creates a new profile with the given parameters
+```
+
+Options for `profiles create`:
+- `--base_url` — endpoint base URL
+- `--api_key_env` — environment variable containing the API key
+
 ### Fallback profile from environment
 
 If the profile file does not exist, PyAgent creates an implicit `default` profile from environment variables:
@@ -645,6 +658,7 @@ pyagent extensions list                  # show enabled and disabled extensions
 pyagent extensions enable <name>         # move an extension out of disabled/ so it auto-loads on next session
 pyagent extensions disable <name>        # move an extension into disabled/ so it does NOT auto-load on next session
 pyagent extensions remove <name>         # permanently delete an extension (checked in both enabled and disabled/)
+pyagent extensions new <name> [url]       # scaffold a new extension or install from a GitHub URL (supports subdirectories)
 ```
 
 Notes:

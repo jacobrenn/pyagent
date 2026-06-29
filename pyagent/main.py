@@ -273,6 +273,10 @@ def _handle_extensions_command(args: argparse.Namespace) -> None:
                 lines.append(f"- {name} [disabled]")
             print("\n".join(lines))
         return
+    if args.ext_action == "new":
+        from .extensions.manager import _cmd_new
+        print(_cmd_new(agent, args.name, args.url))
+        return
     if args.ext_action == "enable":
         print(_cmd_enable(agent, args.name))
         return
@@ -332,8 +336,16 @@ def main(argv: list[str] | None = None) -> None:
         help="Port to bind"
     )
     profiles_parser = subparsers.add_parser(
-        "profiles", help="Show available profiles"
+        "profiles", help="Manage model profiles"
     )
+    profiles_subparsers = profiles_parser.add_subparsers(dest="profile_action")
+    profiles_subparsers.add_parser("list", help="Show available profiles")
+    create_parser = profiles_subparsers.add_parser("create", help="Create a new profile")
+    create_parser.add_argument("--name", required=True, help="Profile name")
+    create_parser.add_argument("--provider", required=True, help="Model provider")
+    create_parser.add_argument("--base_url", required=True, help="Base URL for the provider")
+    create_parser.add_argument("--model", required=True, help="Model name")
+    create_parser.add_argument("--api_key_env", help="Environment variable for API key")
 
     def add_resource_parser(
         name: str,
@@ -435,6 +447,12 @@ def main(argv: list[str] | None = None) -> None:
             action, help=help_text)
         action_parser.add_argument("name", help="Extension name")
 
+    new_parser = extensions_subparsers.add_parser(
+        "new", help="Scaffold or install an extension"
+    )
+    new_parser.add_argument("name", help="Extension name")
+    new_parser.add_argument("url", nargs="?", help="GitHub URL to install from")
+
     args = parser.parse_args(argv)
 
     if args.command in {"skills", "tools", "prompts"}:
@@ -450,29 +468,44 @@ def main(argv: list[str] | None = None) -> None:
             config = AppConfig.from_env()
             profile_store = load_profile_store(config.model_profiles_path)
 
-            default_profile_name = profile_store.default_profile
-            rows = []
-            for profile_name in profile_store.names():
-                profile = profile_store.get(profile_name)
-                name = profile.name
-                if name == default_profile_name:
-                    name = f"* {name}"
-                row = [name, profile.model, profile.base_url]
-                rows.append(row)
-            table = tabulate(
-                rows,
-                headers=["Name", "Model", "Base URL"]
-            )
-            response = f"Default Profile: {default_profile_name}\n\nAll Profiles:\n{table}\n"
+            if args.profile_action == "list":
+                default_profile_name = profile_store.default_profile
+                rows = []
+                for profile_name in profile_store.names():
+                    profile = profile_store.get(profile_name)
+                    name = profile.name
+                    if name == default_profile_name:
+                        name = f"* {name}"
+                    row = [name, profile.model, profile.base_url]
+                    rows.append(row)
+                table = tabulate(
+                    rows,
+                    headers=["Name", "Model", "Base URL"]
+                )
+                response = f"Default Profile: {default_profile_name}\n\nAll Profiles:\n{table}\n"
+                sys.stdout.write(response)
+                sys.stdout.flush()
+                sys.exit(0)
+
+            if args.profile_action == "create":
+                from .model_profiles import ModelProfile, update_profile_store, save_profile_store
+                new_profile = ModelProfile(
+                    name=args.name,
+                    provider=args.provider,
+                    model=args.model,
+                    base_url=args.base_url or "",
+                    api_key_env=args.api_key_env,
+                )
+                update_profile_store(profile_store, new_profile)
+                save_profile_store(profile_store)
+                sys.stdout.write(f"Created profile `{args.name}`\n")
+                sys.stdout.flush()
+                sys.exit(0)
 
         except Exception as exc:
             sys.stderr.write(f"{exc}\n")
             sys.stderr.flush()
             sys.exit(2)
-
-        sys.stdout.write(response)
-        sys.stdout.flush()
-        sys.exit(0)
 
     if args.command == "serve":
         try:
