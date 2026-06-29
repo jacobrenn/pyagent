@@ -32,7 +32,8 @@ def handle_extension_command(agent: Any, args: list[str]) -> str:
     if sub == "new":
         if not rest:
             return "Usage: `/extension new <name>`"
-        return _cmd_new(agent, rest[0])
+        url = rest[1] if len(rest) > 1 else None
+        return _cmd_new(agent, rest[0], url)
     if sub == "load":
         if not rest:
             return "Usage: `/extension load <name>`"
@@ -83,7 +84,62 @@ def _cmd_reload(agent: Any) -> str:
     return "\n".join(parts)
 
 
-def _cmd_new(agent: Any, name: str) -> str:
+def _cmd_new(agent: Any, name: str, url: str | None = None) -> str:
+    if url:
+        import subprocess
+        import shutil
+        ext_dir = _ext_dir(agent)
+        dest = ext_dir / name
+        if dest.exists():
+            return f"Extension `{name}` already exists at `{dest}`. Remove it first."
+
+        repo_url = url
+        sub_path = None
+        if "/tree/" in url:
+            parts = url.split("/tree/")
+            repo_url = parts[0] + ".git" if not parts[0].endswith(".git") else parts[0]
+            sub_path = parts[1]
+
+        try:
+            tmp_dir = ext_dir / f".tmp_{name}"
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+
+            subprocess.run(
+                ["git", "clone", repo_url, str(tmp_dir)],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+
+            if sub_path:
+                path_segments = sub_path.split("/")
+                folder_path = Path(*path_segments[1:])
+                src = tmp_dir / folder_path
+                if not src.exists():
+                    shutil.rmtree(tmp_dir)
+                    return f"Subdirectory `{sub_path}` not found in repository `{repo_url}`."
+                
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    dest.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest / src.name)
+            else:
+                tmp_dir.rename(dest)
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return (
+                f"Installed extension `{name}` from `{url}` to `{dest}`.\n"
+                f"Run `/extension load {name}` to load it."
+            )
+        except subprocess.CalledProcessError as exc:
+            shutil.rmtree(tmp_dir if 'tmp_dir' in locals() else Path(), ignore_errors=True)
+            return f"Failed to clone `{repo_url}`: {exc.stderr or exc}"
+        except Exception as exc:
+            shutil.rmtree(tmp_dir if 'tmp_dir' in locals() else Path(), ignore_errors=True)
+            return f"An error occurred while installing `{name}`: {exc}"
+
     try:
         path = create_user_extension(name, user_dir=agent.config.user_dir)
     except ScaffoldError as exc:
