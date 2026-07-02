@@ -338,7 +338,7 @@ def main(argv: list[str] | None = None) -> None:
     profiles_parser = subparsers.add_parser(
         "profiles", help="Manage model profiles"
     )
-    profiles_subparsers = profiles_parser.add_subparsers(dest="profile_action")
+    profiles_subparsers = profiles_parser.add_subparsers(dest="profile_action", required=True)
     profiles_subparsers.add_parser("list", help="Show available profiles")
     create_parser = profiles_subparsers.add_parser("create", help="Create a new profile")
     create_parser.add_argument("--name", required=True, help="Profile name")
