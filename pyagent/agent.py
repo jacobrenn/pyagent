@@ -533,7 +533,8 @@ class Agent:
         if max_chars <= 0:
             return messages
 
-        trailing_tool_indexes = self._trailing_tool_result_block_indexes(messages)
+        trailing_tool_indexes = self._trailing_tool_result_block_indexes(
+            messages)
         masked_messages: list[dict[str, Any]] | None = None
         for index, message in enumerate(messages):
             if message.get("role") != "tool" or index in trailing_tool_indexes:

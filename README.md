@@ -331,7 +331,28 @@ pyagent serve --host 0.0.0.0 --port 8000
 Endpoints:
 
 - `GET /health` — basic health check
+- `GET /version` — installed PyAgent package version
 - `POST /run` — run a single non-streaming agent turn
+- `GET /prompts` — list installed reusable system prompts
+- `POST /prompts/install` — install a prompt from a multipart file upload (`file`) or JSON HTTP(S) URL (`{"url": "..."}`)
+- `GET /prompts/{name}` — read an installed prompt
+- `POST /prompts/{name}/use` — copy an installed prompt to the active system prompt path
+- `DELETE /prompts/{name}` — remove an installed prompt
+- `GET /skills?cwd=/path/to/project` — list user and project skills discoverable from a cwd
+- `POST /skills/install` — install a user skill from a multipart file upload (`file`) or JSON HTTP(S) URL
+- `DELETE /skills/{name}` — remove a user-managed skill
+- `GET /tools` — list tool configuration, built-ins, installed tool files, discovered external tools, broken tools, disabled tools, and name collisions
+- `POST /tools/install` — install a user tool from a multipart file upload (`file`) or JSON HTTP(S) URL
+- `POST /tools/new` — scaffold a starter user tool (`{"name": "my_tool"}`)
+- `GET /tools/{name}/path` — locate an enabled or disabled user tool script
+- `POST /tools/{name}/enable` / `POST /tools/{name}/disable` — move a user tool in or out of `tools/disabled/`
+- `DELETE /tools/{name}` — remove a user-managed tool
+- `GET /extensions` — list enabled and disabled extensions on disk
+- `POST /extensions/new` — scaffold an extension (`{"name": "demo"}`) or install one from a GitHub URL (`{"name": "demo", "url": "..."}`)
+- `POST /extensions/{name}/enable` / `POST /extensions/{name}/disable` — move an extension in or out of `extensions/disabled/`
+- `DELETE /extensions/{name}` — remove an extension from disk
+
+Install endpoints intentionally accept uploaded files or HTTP(S) URLs, not arbitrary server-local source paths. `GET /tools` performs the same external-tool discovery used by PyAgent, so user tool scripts may be run with `uv run <script> describe`.
 
 Example request:
 
@@ -364,7 +385,25 @@ Example response:
 
 The API uses the same profile selection, model override, context loading, and optional skill validation as single-shot CLI mode. Skills may be scoped IDs such as `user:code-review.md` or `project:skills/review.md`; unscoped names resolve to user skills first. You may pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores incoming `system` messages so runtime instructions cannot be overridden by API callers.
 
-If FastAPI or Uvicorn are missing, `pyagent serve` exits with a clear error.
+If FastAPI or Uvicorn are missing, `pyagent serve` exits with a clear error. If an agent turn yields an internal error event, `POST /run` returns an HTTP error instead of an empty successful response.
+
+Resource install examples:
+
+```bash
+# Upload a local prompt file
+curl -X POST http://127.0.0.1:8000/prompts/install \
+  -F file=@./coder.md
+
+# Install a skill from a URL
+curl -X POST http://127.0.0.1:8000/skills/install \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com/review.md"}'
+
+# Scaffold a user tool
+curl -X POST http://127.0.0.1:8000/tools/new \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "my_tool"}'
+```
 
 ### Python API client
 
@@ -395,8 +434,10 @@ Client details:
 
 - `PyAgentClient.health()` returns the decoded `/health` JSON payload.
 - `PyAgentClient.is_healthy()` returns `True` or `False` without raising on connection failures.
+- `PyAgentClient.version()` returns the decoded `/version` JSON payload.
 - `PyAgentClient.run(...)` returns a typed `RunResponse` object.
-- `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, and timeouts.
+- Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_extensions()`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
+- `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, upload-file read failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 
 ## Instructions, skills, and project context

@@ -189,17 +189,15 @@ def list_resources(kind: ResourceKind, *, user_dir: str | os.PathLike[str] | Non
     return resources
 
 
-def install_resource(
+def _write_resource_bytes(
     kind: ResourceKind,
     source: str,
+    data: bytes,
     *,
     user_dir: str | os.PathLike[str] | None = None,
     name: str | None = None,
     force: bool = False,
 ) -> ResourceInstallResult:
-    if not source.strip():
-        raise ValueError("Source must not be empty.")
-
     destination_name = _destination_name(source, kind, name)
     _validate_destination_name(destination_name, kind)
     root = ensure_user_subdir(resource_dir(kind, user_dir))
@@ -209,7 +207,6 @@ def install_resource(
         raise ValueError(
             f"Destination already exists: {destination}. Use --force to overwrite.")
 
-    data = _read_source(source)
     try:
         tmp = destination.with_name(f".{destination.name}.tmp")
         tmp.write_bytes(data)
@@ -224,6 +221,51 @@ def install_resource(
             pass
 
     return ResourceInstallResult(source=source, destination=destination, bytes_written=len(data))
+
+
+def install_resource(
+    kind: ResourceKind,
+    source: str,
+    *,
+    user_dir: str | os.PathLike[str] | None = None,
+    name: str | None = None,
+    force: bool = False,
+) -> ResourceInstallResult:
+    if not source.strip():
+        raise ValueError("Source must not be empty.")
+
+    data = _read_source(source)
+    return _write_resource_bytes(
+        kind,
+        source,
+        data,
+        user_dir=user_dir,
+        name=name,
+        force=force,
+    )
+
+
+def install_resource_bytes(
+    kind: ResourceKind,
+    data: bytes,
+    *,
+    source_name: str,
+    user_dir: str | os.PathLike[str] | None = None,
+    name: str | None = None,
+    force: bool = False,
+) -> ResourceInstallResult:
+    if not source_name.strip() and not (name or "").strip():
+        raise ValueError(
+            "Could not determine a destination filename. Use name.")
+    source = source_name.strip() or str(name or "")
+    return _write_resource_bytes(
+        kind,
+        source,
+        data,
+        user_dir=user_dir,
+        name=name,
+        force=force,
+    )
 
 
 def _candidate_remove_names(kind: ResourceKind, target: str) -> list[str]:

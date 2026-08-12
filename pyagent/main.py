@@ -338,14 +338,19 @@ def main(argv: list[str] | None = None) -> None:
     profiles_parser = subparsers.add_parser(
         "profiles", help="Manage model profiles"
     )
-    profiles_subparsers = profiles_parser.add_subparsers(dest="profile_action", required=True)
+    profiles_subparsers = profiles_parser.add_subparsers(
+        dest="profile_action", required=True)
     profiles_subparsers.add_parser("list", help="Show available profiles")
-    create_parser = profiles_subparsers.add_parser("create", help="Create a new profile")
+    create_parser = profiles_subparsers.add_parser(
+        "create", help="Create a new profile")
     create_parser.add_argument("--name", required=True, help="Profile name")
-    create_parser.add_argument("--provider", required=True, help="Model provider")
-    create_parser.add_argument("--base_url", required=True, help="Base URL for the provider")
+    create_parser.add_argument(
+        "--provider", required=True, help="Model provider")
+    create_parser.add_argument(
+        "--base_url", required=True, help="Base URL for the provider")
     create_parser.add_argument("--model", required=True, help="Model name")
-    create_parser.add_argument("--api_key_env", help="Environment variable for API key")
+    create_parser.add_argument(
+        "--api_key_env", help="Environment variable for API key")
 
     def add_resource_parser(
         name: str,
@@ -451,7 +456,8 @@ def main(argv: list[str] | None = None) -> None:
         "new", help="Scaffold or install an extension"
     )
     new_parser.add_argument("name", help="Extension name")
-    new_parser.add_argument("url", nargs="?", help="GitHub URL to install from")
+    new_parser.add_argument(
+        "url", nargs="?", help="GitHub URL to install from")
 
     args = parser.parse_args(argv)
 

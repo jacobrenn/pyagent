@@ -97,7 +97,8 @@ def _cmd_new(agent: Any, name: str, url: str | None = None) -> str:
         sub_path = None
         if "/tree/" in url:
             parts = url.split("/tree/")
-            repo_url = parts[0] + ".git" if not parts[0].endswith(".git") else parts[0]
+            repo_url = parts[0] + \
+                ".git" if not parts[0].endswith(".git") else parts[0]
             sub_path = parts[1]
 
         try:
@@ -119,7 +120,7 @@ def _cmd_new(agent: Any, name: str, url: str | None = None) -> str:
                 if not src.exists():
                     shutil.rmtree(tmp_dir)
                     return f"Subdirectory `{sub_path}` not found in repository `{repo_url}`."
-                
+
                 if src.is_dir():
                     shutil.copytree(src, dest)
                 else:
@@ -134,10 +135,12 @@ def _cmd_new(agent: Any, name: str, url: str | None = None) -> str:
                 f"Run `/extension load {name}` to load it."
             )
         except subprocess.CalledProcessError as exc:
-            shutil.rmtree(tmp_dir if 'tmp_dir' in locals() else Path(), ignore_errors=True)
+            shutil.rmtree(tmp_dir if 'tmp_dir' in locals()
+                          else Path(), ignore_errors=True)
             return f"Failed to clone `{repo_url}`: {exc.stderr or exc}"
         except Exception as exc:
-            shutil.rmtree(tmp_dir if 'tmp_dir' in locals() else Path(), ignore_errors=True)
+            shutil.rmtree(tmp_dir if 'tmp_dir' in locals()
+                          else Path(), ignore_errors=True)
             return f"An error occurred while installing `{name}`: {exc}"
 
     try:

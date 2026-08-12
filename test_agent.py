@@ -91,6 +91,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_version_endpoint_returns_version(self) -> None:
+        from pyagent.api import create_app
+
+        client = TestClient(create_app())
+
+        response = client.get("/version")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("version", response.json())
+
     def test_run_endpoint_returns_agent_response_payload(self) -> None:
         from pyagent.api import create_app
 
@@ -188,6 +198,183 @@ class ApiTests(unittest.TestCase):
             {"detail": "each message must include a non-empty string role"},
         )
 
+    def test_run_endpoint_returns_http_error_for_agent_error_event(self) -> None:
+        from pyagent.api import create_app
+
+        mock_agent = mock.Mock()
+        mock_agent.run.return_value = [
+            {"type": "error", "message": "API Error: boom"},
+        ]
+
+        client = TestClient(create_app())
+        with mock.patch("pyagent.main.build_agent_for_request", return_value=mock_agent):
+            response = client.post("/run", json={"message": "Hi"})
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {"detail": "API Error: boom"})
+
+    def test_prompt_api_manages_uploaded_prompts(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            user_dir = base / "user"
+            active_prompt = base / "active" / "system_prompt.txt"
+            env = {
+                "PYAGENT_USER_DIR": str(user_dir),
+                "PYAGENT_SYSTEM_PROMPT_PATH": str(active_prompt),
+            }
+            with mock.patch.dict(os.environ, env):
+                client = TestClient(create_app())
+
+                installed = client.post(
+                    "/prompts/install",
+                    files={
+                        "file": ("coder.md", b"Coder prompt", "text/markdown")},
+                )
+                self.assertEqual(installed.status_code, 200)
+                self.assertEqual(installed.json()["label"], "coder.md")
+
+                listed = client.get("/prompts")
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(
+                    [item["label"] for item in listed.json()["items"]],
+                    ["coder.md"],
+                )
+
+                shown = client.get("/prompts/coder.md")
+                self.assertEqual(shown.status_code, 200)
+                self.assertEqual(shown.json()["content"], "Coder prompt")
+
+                used = client.post("/prompts/coder.md/use")
+                self.assertEqual(used.status_code, 200)
+                self.assertEqual(active_prompt.read_text(
+                    encoding="utf-8"), "Coder prompt")
+
+                removed = client.delete("/prompts/coder.md")
+                self.assertEqual(removed.status_code, 200)
+                self.assertFalse(
+                    (user_dir / "system_prompts" / "coder.md").exists())
+
+    def test_skill_api_installs_from_url_lists_and_removes(self) -> None:
+        from pyagent.api import create_app
+
+        class FakeUrlResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b"# Review\nUse care."
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            user_dir = base / "user"
+            project = base / "project"
+            (project / "skills").mkdir(parents=True)
+            (project / "skills" / "testing.md").write_text(
+                "# Testing\nPrefer unit tests.", encoding="utf-8"
+            )
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": str(user_dir)}):
+                client = TestClient(create_app())
+                with mock.patch("pyagent.resources.request.urlopen", return_value=FakeUrlResponse()):
+                    installed = client.post(
+                        "/skills/install",
+                        json={"url": "https://example.test/review.md"},
+                    )
+                self.assertEqual(installed.status_code, 200)
+                self.assertEqual(installed.json()["label"], "review.md")
+
+                listed = client.get("/skills", params={"cwd": str(project)})
+                self.assertEqual(listed.status_code, 200)
+                skill_ids = {item["id"] for item in listed.json()["skills"]}
+                self.assertIn("user:review.md", skill_ids)
+                self.assertIn("project:skills/testing.md", skill_ids)
+
+                removed = client.delete("/skills/review.md")
+                self.assertEqual(removed.status_code, 200)
+                self.assertFalse((user_dir / "skills" / "review.md").exists())
+
+    def test_tool_api_lists_and_manages_tool_files(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            user_dir = Path(td) / "user"
+            env = {
+                "PYAGENT_USER_DIR": str(user_dir),
+                "PYAGENT_BUILTIN_TOOLS_ENABLED": "true",
+                "PYAGENT_USER_TOOLS_ENABLED": "true",
+            }
+            with mock.patch.dict(os.environ, env):
+                client = TestClient(create_app())
+
+                listed = client.get("/tools")
+                self.assertEqual(listed.status_code, 200)
+                builtin_names = {item["name"]
+                                 for item in listed.json()["builtin"]}
+                self.assertIn("read_file", builtin_names)
+
+                created = client.post("/tools/new", json={"name": "demo_tool"})
+                self.assertEqual(created.status_code, 200)
+                self.assertTrue(
+                    (user_dir / "tools" / "demo_tool.py").is_file())
+
+                located = client.get("/tools/demo_tool/path")
+                self.assertEqual(located.status_code, 200)
+                self.assertEqual(
+                    Path(located.json()["path"]).name, "demo_tool.py")
+
+                disabled = client.post("/tools/demo_tool/disable")
+                self.assertEqual(disabled.status_code, 200)
+                self.assertTrue(
+                    (user_dir / "tools" / "disabled" / "demo_tool.py").is_file())
+
+                enabled = client.post("/tools/demo_tool/enable")
+                self.assertEqual(enabled.status_code, 200)
+                self.assertTrue(
+                    (user_dir / "tools" / "demo_tool.py").is_file())
+
+                removed = client.delete("/tools/demo_tool.py")
+                self.assertEqual(removed.status_code, 200)
+                self.assertFalse(
+                    (user_dir / "tools" / "demo_tool.py").exists())
+
+    def test_extension_api_manages_disk_lifecycle(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            user_dir = Path(td) / "user"
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": str(user_dir)}):
+                client = TestClient(create_app())
+
+                created = client.post("/extensions/new", json={"name": "demo"})
+                self.assertEqual(created.status_code, 200)
+                self.assertTrue((user_dir / "extensions" /
+                                "demo" / "__init__.py").is_file())
+
+                listed = client.get("/extensions")
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(
+                    [item["name"] for item in listed.json()["enabled"]],
+                    ["demo"],
+                )
+
+                disabled = client.post("/extensions/demo/disable")
+                self.assertEqual(disabled.status_code, 200)
+                self.assertTrue((user_dir / "extensions" /
+                                "disabled" / "demo").is_dir())
+
+                enabled = client.post("/extensions/demo/enable")
+                self.assertEqual(enabled.status_code, 200)
+                self.assertTrue((user_dir / "extensions" / "demo").is_dir())
+
+                removed = client.delete("/extensions/demo")
+                self.assertEqual(removed.status_code, 200)
+                self.assertFalse((user_dir / "extensions" / "demo").exists())
+
 
 class PyAgentClientTests(unittest.TestCase):
     def test_run_includes_messages_payload(self) -> None:
@@ -226,6 +413,50 @@ class PyAgentClientTests(unittest.TestCase):
                 "skills": ["foo.md"],
             },
         )
+
+    def test_management_helpers_call_expected_endpoints(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        client = PyAgentClient()
+        with mock.patch.object(client, "_request_json", return_value={"version": "1.2.3"}) as mock_request:
+            self.assertEqual(client.version(), {"version": "1.2.3"})
+        mock_request.assert_called_once_with("GET", "/version")
+
+        with mock.patch.object(client, "_request_json", return_value={"message": "ok"}) as mock_request:
+            result = client.new_extension(
+                "demo", url="https://example.test/repo.git")
+        self.assertEqual(result, {"message": "ok"})
+        mock_request.assert_called_once_with(
+            "POST",
+            "/extensions/new",
+            {"name": "demo", "url": "https://example.test/repo.git"},
+        )
+
+    def test_install_helper_supports_url_and_file_uploads(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        client = PyAgentClient()
+        with mock.patch.object(client, "_request_json", return_value={"label": "coder.md"}) as mock_request:
+            self.assertEqual(
+                client.install_prompt(
+                    url="https://example.test/coder.md", force=True),
+                {"label": "coder.md"},
+            )
+        mock_request.assert_called_once_with(
+            "POST",
+            "/prompts/install",
+            {"url": "https://example.test/coder.md", "force": True},
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".py") as tmp:
+            tmp.write(b"print('hi')\n")
+            tmp.flush()
+            with mock.patch.object(client, "_request_multipart", return_value={"label": "tool.py"}) as mock_upload:
+                self.assertEqual(
+                    client.install_tool(file_path=tmp.name, name="tool.py"),
+                    {"label": "tool.py"},
+                )
+        mock_upload.assert_called_once()
 
 
 class AgentMessageLoadingTests(unittest.TestCase):
@@ -888,17 +1119,22 @@ class AgentTests(unittest.TestCase):
         first_result = "A" * 300
         second_result = "B" * 300
 
-        agent, events = self._run_two_tool_sequence(first_result, second_result)
+        agent, events = self._run_two_tool_sequence(
+            first_result, second_result)
 
-        self.assertEqual(events[-1], {"type": "assistant_done", "content": "done"})
-        second_request_tools = self._tool_messages(agent.client.seen_messages[1])
+        self.assertEqual(
+            events[-1], {"type": "assistant_done", "content": "done"})
+        second_request_tools = self._tool_messages(
+            agent.client.seen_messages[1])
         self.assertEqual(second_request_tools[-1]["content"], first_result)
 
-        third_request_tools = self._tool_messages(agent.client.seen_messages[2])
+        third_request_tools = self._tool_messages(
+            agent.client.seen_messages[2])
         self.assertEqual(len(third_request_tools), 2)
         self.assertIn("masked", third_request_tools[0]["content"])
         self.assertLessEqual(len(third_request_tools[0]["content"]), 120)
-        self.assertLess(len(third_request_tools[0]["content"]), len(first_result))
+        self.assertLess(
+            len(third_request_tools[0]["content"]), len(first_result))
         self.assertEqual(third_request_tools[1]["content"], second_result)
         self.assertEqual(
             [
@@ -929,9 +1165,11 @@ class AgentTests(unittest.TestCase):
         first_result = "short result"
         second_result = "B" * 300
 
-        agent, _events = self._run_two_tool_sequence(first_result, second_result)
+        agent, _events = self._run_two_tool_sequence(
+            first_result, second_result)
 
-        third_request_tools = self._tool_messages(agent.client.seen_messages[2])
+        third_request_tools = self._tool_messages(
+            agent.client.seen_messages[2])
         self.assertEqual(third_request_tools[0]["content"], first_result)
         self.assertEqual(third_request_tools[1]["content"], second_result)
 
@@ -949,8 +1187,10 @@ class AgentTests(unittest.TestCase):
                 third_request_tools = self._tool_messages(
                     agent.client.seen_messages[2]
                 )
-                self.assertEqual(third_request_tools[0]["content"], first_result)
-                self.assertEqual(third_request_tools[1]["content"], second_result)
+                self.assertEqual(
+                    third_request_tools[0]["content"], first_result)
+                self.assertEqual(
+                    third_request_tools[1]["content"], second_result)
 
     def test_set_model_updates_agent_and_client(self) -> None:
         agent = Agent(config=AppConfig(),
@@ -1302,7 +1542,8 @@ class ExtensionCliTests(unittest.TestCase):
             self.assertTrue((tools_dir / "disabled" / "echo.py").exists())
 
             enabled = self._run_cli(
-                ["tools", "enable", str(tools_dir / "disabled" / "echo.py")], td
+                ["tools", "enable", str(
+                    tools_dir / "disabled" / "echo.py")], td
             )
             self.assertIn("Enabled tool `echo.py`", enabled)
             self.assertTrue((tools_dir / "echo.py").exists())
