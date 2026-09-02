@@ -82,6 +82,20 @@ from pyagent.user_runtime import RunnerStatus
 from pyagent.main import build_agent_for_request, main as main_entry, run_single_shot
 from urllib import error
 
+
+def _decode_sse_events(body: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for block in body.replace("\r\n", "\n").split("\n\n"):
+        data_lines = [
+            line.partition(":")[2].lstrip()
+            for line in block.splitlines()
+            if line.startswith("data:")
+        ]
+        if data_lines:
+            events.append(json.loads("\n".join(data_lines)))
+    return events
+
+
 # ... (all existing test classes) ...
 
 
@@ -273,6 +287,212 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("version", response.json())
 
+    def test_profile_api_lists_profiles_without_exposing_secrets(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            profile_path = Path(td) / "profiles.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "model": "qwen",
+                                "api_key": "do-not-return",
+                                "headers": {
+                                    "Authorization": "Bearer secret",
+                                    "X-Project": "PyAgent",
+                                },
+                                "httpx_kwargs": {
+                                    "verify": False,
+                                    "auth": {"password": "hidden"},
+                                },
+                            },
+                            "remote": {
+                                "provider": "openai",
+                                "model": "gpt-test",
+                                "api_key_env": "OPENAI_API_KEY",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = {
+                "PYAGENT_MODEL_PROFILES_PATH": str(profile_path),
+                "PYAGENT_PROFILE": "remote",
+            }
+            with mock.patch.dict(os.environ, env):
+                response = TestClient(create_app()).get("/profiles")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["default_profile"], "local")
+        self.assertEqual(payload["effective_default_profile"], "remote")
+        self.assertTrue(payload["default_overridden_by_env"])
+        local = next(
+            profile for profile in payload["profiles"]
+            if profile["name"] == "local"
+        )
+        self.assertTrue(local["has_inline_api_key"])
+        self.assertNotIn("api_key", local)
+        self.assertEqual(local["headers"], {"X-Project": "PyAgent"})
+        self.assertEqual(local["redacted_headers"], ["Authorization"])
+        self.assertEqual(local["httpx_kwargs"]["verify"], False)
+        self.assertEqual(local["httpx_kwargs"]["auth"], "<redacted>")
+
+    def test_profile_api_crud_default_and_partial_update(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            profile_path = Path(td) / "profiles.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "model": "qwen",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"PYAGENT_MODEL_PROFILES_PATH": str(profile_path)},
+            ):
+                client = TestClient(create_app())
+                created = client.post(
+                    "/profiles",
+                    json={
+                        "name": "openai-mini",
+                        "provider": "openai",
+                        "api_mode": "responses",
+                        "model": "gpt-4.1-mini",
+                        "api_key": "inline-secret",
+                        "headers": {"X-Project": "one"},
+                    },
+                )
+                duplicate = client.post(
+                    "/profiles",
+                    json={
+                        "name": "openai-mini",
+                        "provider": "openai",
+                        "model": "gpt-4.1-mini",
+                    },
+                )
+                updated = client.put(
+                    "/profiles/openai-mini",
+                    json={
+                        "model": "gpt-4.1",
+                        "api_key": None,
+                        "api_key_env": "OPENAI_API_KEY",
+                    },
+                )
+                null_model = client.put(
+                    "/profiles/openai-mini", json={"model": None}
+                )
+                default_delete = client.delete("/profiles/local")
+                made_default = client.post("/profiles/openai-mini/default")
+                removed = client.delete("/profiles/local")
+                only_delete = client.delete("/profiles/openai-mini")
+                missing = client.get("/profiles/missing")
+                stored = load_profile_store(str(profile_path))
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["provider"], "openai_compatible")
+        self.assertEqual(
+            created.json()["base_url"], "https://api.openai.com/v1"
+        )
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["model"], "gpt-4.1")
+        self.assertFalse(updated.json()["has_inline_api_key"])
+        self.assertEqual(updated.json()["api_key_env"], "OPENAI_API_KEY")
+        self.assertEqual(updated.json()["headers"], {"X-Project": "one"})
+        self.assertEqual(null_model.status_code, 400)
+        self.assertEqual(default_delete.status_code, 409)
+        self.assertTrue(made_default.json()["is_default"])
+        self.assertEqual(removed.status_code, 200)
+        self.assertEqual(only_delete.status_code, 409)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(stored.default_profile, "openai-mini")
+        self.assertEqual(stored.names(), ["openai-mini"])
+        self.assertIsNone(stored.get().api_key)
+        self.assertEqual(stored.get().api_key_env, "OPENAI_API_KEY")
+
+    def test_profile_api_validates_configuration_and_lists_models(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            profile_path = Path(td) / "profiles.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "model": "qwen",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"PYAGENT_MODEL_PROFILES_PATH": str(profile_path)},
+            ):
+                client = TestClient(create_app())
+                invalid = client.post(
+                    "/profiles",
+                    json={
+                        "name": "bad",
+                        "provider": "ollama",
+                        "api_mode": "responses",
+                        "model": "qwen",
+                    },
+                )
+                fake_model_client = mock.Mock()
+                fake_model_client.list_models.return_value = {
+                    "models": ["qwen:latest", "qwen:latest", "coder:7b"]
+                }
+                with mock.patch(
+                    "pyagent.llm_client.build_chat_client",
+                    return_value=fake_model_client,
+                ) as mock_build:
+                    models = client.get("/profiles/local/models")
+                failed_model_client = mock.Mock()
+                failed_model_client.list_models.return_value = {
+                    "error": "endpoint unavailable"
+                }
+                with mock.patch(
+                    "pyagent.llm_client.build_chat_client",
+                    return_value=failed_model_client,
+                ):
+                    model_error = client.get("/profiles/local/models")
+
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(models.status_code, 200)
+        self.assertEqual(
+            models.json(),
+            {"profile": "local", "models": ["qwen:latest", "coder:7b"]},
+        )
+        mock_build.assert_called_once()
+        fake_model_client.list_models.assert_called_once_with()
+        fake_model_client.close.assert_called_once_with()
+        self.assertEqual(model_error.status_code, 502)
+        self.assertEqual(
+            model_error.json(), {"detail": "endpoint unavailable"}
+        )
+        failed_model_client.close.assert_called_once_with()
+
     def test_agent_definition_api_crud_and_revision_lookup(self) -> None:
         from pyagent.api import create_app
 
@@ -368,6 +588,61 @@ class ApiTests(unittest.TestCase):
         mock_agent.load_messages.assert_called_once_with(
             [{"role": "user", "content": "Earlier"}]
         )
+        mock_agent.close.assert_called_once_with(reason="api_request_complete")
+
+    def test_agent_definition_stream_endpoint_includes_definition_metadata(self) -> None:
+        from pyagent.api import create_app
+
+        mock_agent = mock.Mock()
+        mock_agent.run.return_value = [
+            {"type": "content_delta", "delta": "Reviewed"},
+            {"type": "assistant_done", "content": "Reviewed"},
+        ]
+        mock_agent.current_profile.return_value = SimpleNamespace(
+            name="local",
+            provider="ollama",
+            model="test-model",
+            resolved_api_mode=lambda: "chat_completions",
+        )
+        mock_agent.messages = [
+            {"role": "assistant", "content": "Reviewed"}
+        ]
+        mock_agent.project_context_files = ["AGENTS.md"]
+        definition = SimpleNamespace(name="reviewer", revision=3)
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.agent_definitions.build_agent_from_definition",
+            return_value=(mock_agent, definition, mock.Mock()),
+        ) as mock_build:
+            response = client.post(
+                "/agents/reviewer/run/stream",
+                json={
+                    "message": "Review this",
+                    "messages": [{"role": "user", "content": "Earlier"}],
+                    "revision": 3,
+                    "cwd": "/tmp/project",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        events = _decode_sse_events(response.text)
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["start", "content_delta", "done"],
+        )
+        self.assertEqual(events[0]["agent"], "reviewer")
+        self.assertEqual(events[0]["revision"], 3)
+        self.assertEqual(events[-1]["agent"], "reviewer")
+        self.assertEqual(events[-1]["revision"], 3)
+        self.assertEqual(events[-1]["response"], "Reviewed")
+        mock_build.assert_called_once_with(
+            "reviewer", revision=3, cwd="/tmp/project"
+        )
+        mock_agent.load_messages.assert_called_once_with(
+            [{"role": "user", "content": "Earlier"}]
+        )
+        mock_agent.load_extensions.assert_called_once_with()
         mock_agent.close.assert_called_once_with(reason="api_request_complete")
 
     def test_run_endpoint_returns_agent_response_payload(self) -> None:
@@ -482,6 +757,225 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json(), {"detail": "API Error: boom"})
+
+    def test_run_stream_endpoint_emits_ordered_events_and_final_metadata(self) -> None:
+        from pyagent.api import create_app
+
+        mock_agent = mock.Mock()
+        mock_agent.run.return_value = [
+            {"type": "debug", "label": "chunk", "data": {"raw": True}},
+            {"type": "assistant_start"},
+            {"type": "content_delta", "delta": "Hello\n"},
+            {
+                "type": "tool_call",
+                "tool_call_id": "call-1",
+                "name": "read_file",
+                "arguments": {"path": "README.md"},
+            },
+            {
+                "type": "tool_result",
+                "tool_call_id": "call-1",
+                "name": "read_file",
+                "result": "Contents",
+                "is_error": False,
+            },
+            {"type": "content_delta", "delta": "World!"},
+            {"type": "assistant_done", "content": "Hello\nWorld!"},
+        ]
+        mock_agent.current_profile.return_value = SimpleNamespace(
+            name="p1",
+            provider="ollama",
+            model="m1",
+            resolved_api_mode=lambda: "chat_completions",
+        )
+        mock_agent.project_context_files = ["AGENTS.md"]
+        mock_agent.messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello\nWorld!"},
+        ]
+        prior_messages = [{"role": "user", "content": "Earlier"}]
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.main.build_agent_for_request", return_value=mock_agent
+        ) as mock_build:
+            response = client.post(
+                "/run/stream",
+                json={
+                    "message": "Hi",
+                    "messages": prior_messages,
+                    "profile": "p1",
+                    "model": "m1",
+                    "cwd": "/tmp",
+                    "skills": ["foo.md"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
+        self.assertEqual(response.headers["cache-control"], "no-cache")
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
+        events = _decode_sse_events(response.text)
+        self.assertEqual(
+            [event["type"] for event in events],
+            [
+                "start",
+                "assistant_start",
+                "content_delta",
+                "tool_call",
+                "tool_result",
+                "content_delta",
+                "done",
+            ],
+        )
+        self.assertEqual(
+            [event["sequence"] for event in events],
+            list(range(1, len(events) + 1)),
+        )
+        self.assertEqual({event["run_id"] for event in events}, {
+                         events[0]["run_id"]})
+        self.assertTrue(all(event["schema_version"] == 1 for event in events))
+        self.assertEqual(events[3]["tool_call_id"], "call-1")
+        self.assertEqual(events[4]["tool_call_id"], "call-1")
+        self.assertFalse(events[4]["is_error"])
+        self.assertEqual(events[-1]["response"], "Hello\nWorld!")
+        self.assertEqual(events[-1]["messages"], mock_agent.messages)
+        self.assertEqual(events[-1]["context_files"], ["AGENTS.md"])
+        mock_build.assert_called_once_with(
+            profile="p1", model="m1", cwd="/tmp", skills=["foo.md"]
+        )
+        mock_agent.load_messages.assert_called_once_with(prior_messages)
+        mock_agent.load_extensions.assert_called_once_with()
+        mock_agent.close.assert_called_once_with(reason="api_request_complete")
+
+    def test_run_stream_supports_debug_and_terminal_error_events(self) -> None:
+        from pyagent.api import create_app
+
+        debug_agent = mock.Mock()
+        debug_agent.run.return_value = [
+            {"type": "debug", "label": "chunk", "data": {"raw": True}},
+            {"type": "assistant_done", "content": "Done"},
+        ]
+        debug_agent.current_profile.return_value = SimpleNamespace(
+            name="p1", provider="ollama", model="m1"
+        )
+        debug_agent.project_context_files = []
+        debug_agent.messages = [{"role": "assistant", "content": "Done"}]
+
+        error_agent = mock.Mock()
+        error_agent.run.return_value = [
+            {"type": "error", "message": "API Error: boom"},
+            {"type": "assistant_done", "content": "not reached"},
+        ]
+        error_agent.current_profile.return_value = SimpleNamespace(
+            name="p1", provider="ollama", model="m1"
+        )
+        error_agent.project_context_files = []
+        error_agent.messages = []
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.main.build_agent_for_request",
+            side_effect=[debug_agent, error_agent],
+        ):
+            debug_response = client.post(
+                "/run/stream?include_debug=true", json={"message": "Hi"}
+            )
+            error_response = client.post(
+                "/run/stream", json={"message": "Hi"}
+            )
+
+        debug_events = _decode_sse_events(debug_response.text)
+        self.assertEqual(
+            [event["type"] for event in debug_events],
+            ["start", "debug", "done"],
+        )
+        error_events = _decode_sse_events(error_response.text)
+        self.assertEqual(
+            [event["type"] for event in error_events], ["start", "error"]
+        )
+        self.assertEqual(error_events[-1]["code"], "agent_error")
+        self.assertEqual(error_events[-1]["message"], "API Error: boom")
+        debug_agent.close.assert_called_once_with(reason="api_request_complete")
+        error_agent.close.assert_called_once_with(reason="api_request_complete")
+
+    def test_run_stream_normalizes_incomplete_and_internal_failures(self) -> None:
+        from pyagent.api import create_app
+
+        def broken_events():
+            yield {"type": "content_delta", "delta": "Partial"}
+            raise RuntimeError("stream exploded")
+
+        incomplete_agent = mock.Mock()
+        incomplete_agent.run.return_value = []
+        incomplete_agent.current_profile.return_value = SimpleNamespace(
+            name="p1", provider="ollama", model="m1"
+        )
+        incomplete_agent.project_context_files = []
+        incomplete_agent.messages = []
+
+        broken_agent = mock.Mock()
+        broken_agent.run.return_value = broken_events()
+        broken_agent.current_profile.return_value = SimpleNamespace(
+            name="p1", provider="ollama", model="m1"
+        )
+        broken_agent.project_context_files = []
+        broken_agent.messages = []
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.main.build_agent_for_request",
+            side_effect=[incomplete_agent, broken_agent],
+        ):
+            incomplete_response = client.post(
+                "/run/stream", json={"message": "Hi"}
+            )
+            broken_response = client.post(
+                "/run/stream", json={"message": "Hi"}
+            )
+
+        incomplete_events = _decode_sse_events(incomplete_response.text)
+        self.assertEqual(
+            [event["type"] for event in incomplete_events],
+            ["start", "error"],
+        )
+        self.assertEqual(incomplete_events[-1]["code"], "incomplete_run")
+        broken_events_response = _decode_sse_events(broken_response.text)
+        self.assertEqual(
+            [event["type"] for event in broken_events_response],
+            ["start", "content_delta", "error"],
+        )
+        self.assertEqual(
+            broken_events_response[-1]["code"], "internal_error"
+        )
+        self.assertEqual(
+            broken_events_response[-1]["message"], "stream exploded"
+        )
+        incomplete_agent.close.assert_called_once_with(
+            reason="api_request_complete"
+        )
+        broken_agent.close.assert_called_once_with(
+            reason="api_request_complete"
+        )
+
+    def test_run_stream_returns_configuration_errors_before_streaming(self) -> None:
+        from pyagent.api import create_app
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.main.build_agent_for_request",
+            side_effect=ValueError("Unknown profile 'missing'"),
+        ):
+            response = client.post(
+                "/run/stream", json={"message": "Hi", "profile": "missing"}
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(), {"detail": "Unknown profile 'missing'"}
+        )
 
     def test_prompt_api_manages_uploaded_prompts(self) -> None:
         from pyagent.api import create_app
@@ -684,6 +1178,59 @@ class PyAgentClientTests(unittest.TestCase):
             },
         )
 
+    def test_stream_helpers_build_expected_paths_and_payloads(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        client = PyAgentClient()
+        stream = iter([{"type": "done"}])
+        with mock.patch.object(
+            client, "_stream_sse", return_value=stream
+        ) as mock_stream:
+            result = client.stream_run(
+                "Hi",
+                messages=[{"role": "user", "content": "Earlier"}],
+                profile="p1",
+                model="m1",
+                cwd="/tmp",
+                skills=["foo.md"],
+                include_debug=True,
+            )
+        self.assertIs(result, stream)
+        mock_stream.assert_called_once_with(
+            "POST",
+            "/run/stream?include_debug=true",
+            {
+                "message": "Hi",
+                "messages": [{"role": "user", "content": "Earlier"}],
+                "profile": "p1",
+                "model": "m1",
+                "cwd": "/tmp",
+                "skills": ["foo.md"],
+            },
+        )
+
+        agent_stream = iter([{"type": "done"}])
+        with mock.patch.object(
+            client, "_stream_sse", return_value=agent_stream
+        ) as mock_stream:
+            result = client.stream_agent(
+                "review agent",
+                "Review",
+                revision=2,
+                cwd="/tmp/project",
+            )
+        self.assertIs(result, agent_stream)
+        mock_stream.assert_called_once_with(
+            "POST",
+            "/agents/review%20agent/run/stream",
+            {
+                "message": "Review",
+                "messages": [],
+                "revision": 2,
+                "cwd": "/tmp/project",
+            },
+        )
+
     def test_management_helpers_call_expected_endpoints(self) -> None:
         from pyagent.client import PyAgentClient
 
@@ -701,6 +1248,72 @@ class PyAgentClientTests(unittest.TestCase):
             "/extensions/new",
             {"name": "demo", "url": "https://example.test/repo.git"},
         )
+
+    def test_profile_helpers_call_expected_endpoints(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        client = PyAgentClient()
+        cases = [
+            ("list_profiles", (), {}, "GET", "/profiles", None),
+            (
+                "show_profile",
+                ("openai mini",),
+                {},
+                "GET",
+                "/profiles/openai%20mini",
+                None,
+            ),
+            (
+                "create_profile",
+                ({"name": "remote", "provider": "openai", "model": "gpt"},),
+                {},
+                "POST",
+                "/profiles",
+                {"name": "remote", "provider": "openai", "model": "gpt"},
+            ),
+            (
+                "update_profile",
+                ("remote", {"model": "gpt-new"}),
+                {},
+                "PUT",
+                "/profiles/remote",
+                {"model": "gpt-new"},
+            ),
+            (
+                "set_default_profile",
+                ("remote",),
+                {},
+                "POST",
+                "/profiles/remote/default",
+                {},
+            ),
+            (
+                "remove_profile",
+                ("remote",),
+                {},
+                "DELETE",
+                "/profiles/remote",
+                None,
+            ),
+            (
+                "list_profile_models",
+                ("remote",),
+                {},
+                "GET",
+                "/profiles/remote/models",
+                None,
+            ),
+        ]
+        for method_name, args, kwargs, http_method, path, payload in cases:
+            with self.subTest(method=method_name), mock.patch.object(
+                client, "_request_json", return_value={"ok": True}
+            ) as mock_request:
+                result = getattr(client, method_name)(*args, **kwargs)
+            self.assertEqual(result, {"ok": True})
+            if payload is None:
+                mock_request.assert_called_once_with(http_method, path)
+            else:
+                mock_request.assert_called_once_with(http_method, path, payload)
 
     def test_agent_definition_helpers_call_expected_endpoints(self) -> None:
         from pyagent.client import PyAgentClient
@@ -3563,6 +4176,22 @@ class _FakeUrlOpenResponse:
         return False
 
 
+class _FakeStreamingResponse:
+    def __init__(self, body: str):
+        self._lines = body.encode("utf-8").splitlines(keepends=True)
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.closed = True
+        return False
+
+
 class ClientTests(unittest.TestCase):
     def test_health_returns_status_payload(self) -> None:
         from pyagent.client import PyAgentClient
@@ -3645,6 +4274,97 @@ class ClientTests(unittest.TestCase):
                 "skills": ["foo.md"],
             },
         )
+
+    def test_stream_run_parses_sse_and_closes_response(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        body = (
+            'id: 1\nevent: start\ndata: {"type":"start","run_id":"r1"}\n\n'
+            ': heartbeat\n\n'
+            'id: 2\nevent: content_delta\n'
+            'data: {"type":"content_delta",\n'
+            'data: "delta":"héllo\\nworld"}\n\n'
+            'id: 3\nevent: error\n'
+            'data: {"type":"error","message":"boom"}'
+        )
+        fake_response = _FakeStreamingResponse(body)
+        with mock.patch(
+            "pyagent.client.request.urlopen", return_value=fake_response
+        ) as mock_urlopen:
+            client = PyAgentClient("http://127.0.0.1:8000")
+            events = list(
+                client.stream_run(
+                    "Hi",
+                    profile="p1",
+                    skills=["review.md"],
+                    include_debug=True,
+                )
+            )
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["start", "content_delta", "error"],
+        )
+        self.assertEqual(events[1]["sequence"], 2)
+        self.assertEqual(events[1]["delta"], "héllo\nworld")
+        self.assertEqual(events[-1]["message"], "boom")
+        self.assertTrue(fake_response.closed)
+        req = mock_urlopen.call_args.args[0]
+        self.assertEqual(
+            req.full_url,
+            "http://127.0.0.1:8000/run/stream?include_debug=true",
+        )
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.headers["Accept"], "text/event-stream")
+        self.assertEqual(req.headers["Content-type"], "application/json")
+        self.assertEqual(
+            json.loads(req.data.decode("utf-8")),
+            {
+                "message": "Hi",
+                "messages": [],
+                "profile": "p1",
+                "model": None,
+                "cwd": None,
+                "skills": ["review.md"],
+            },
+        )
+
+    def test_stream_iterator_closes_response_when_stopped_early(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        fake_response = _FakeStreamingResponse(
+            'event: start\ndata: {"type":"start"}\n\n'
+            'event: done\ndata: {"type":"done"}\n\n'
+        )
+        with mock.patch(
+            "pyagent.client.request.urlopen", return_value=fake_response
+        ):
+            events = PyAgentClient().stream_run("Hi")
+            self.assertEqual(next(events)["type"], "start")
+            events.close()
+
+        self.assertTrue(fake_response.closed)
+
+    def test_stream_run_raises_clear_pre_stream_http_error(self) -> None:
+        from pyagent.client import PyAgentClient, PyAgentClientError
+
+        http_error = error.HTTPError(
+            url="http://127.0.0.1:8000/run/stream",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=None,
+        )
+        http_error.read = lambda: b'{"detail": "Unknown profile"}'
+        with mock.patch(
+            "pyagent.client.request.urlopen", side_effect=http_error
+        ):
+            events = PyAgentClient().stream_run("Hi")
+            with self.assertRaises(PyAgentClientError) as cm:
+                next(events)
+
+        self.assertIn("HTTP 400", str(cm.exception))
+        self.assertIn("Unknown profile", str(cm.exception))
 
     def test_run_raises_clear_error_for_http_error_detail(self) -> None:
         from pyagent.client import PyAgentClient, PyAgentClientError
@@ -4298,6 +5018,24 @@ class TestAgentLoopWiring(unittest.TestCase):
         list(agent.run("list"))
         tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
         self.assertIn("[redacted]", tool_msgs[0]["content"])
+
+    def test_tool_events_include_call_id_and_error_state(self):
+        agent = _make_agent([
+            [{"tool_calls": [{"id": "c1", "function": {
+                "name": "list_files", "arguments": {"path": "."}}}]}],
+            [{"content": "done"}],
+        ])
+
+        events = list(agent.run("list"))
+        tool_call = next(
+            event for event in events if event.get("type") == "tool_call"
+        )
+        tool_result = next(
+            event for event in events if event.get("type") == "tool_result"
+        )
+        self.assertEqual(tool_call["tool_call_id"], "c1")
+        self.assertEqual(tool_result["tool_call_id"], "c1")
+        self.assertFalse(tool_result["is_error"])
 
     def test_turn_end_carries_message_count(self):
         agent = _make_agent([[{"content": "ok"}]])

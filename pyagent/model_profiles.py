@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from .config import AppConfig
@@ -210,7 +211,56 @@ def save_profile_store(store: ProfileStore) -> None:
     }
     path = Path(os.path.expanduser(store.path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            json.dump(payload, temporary_file, indent=2)
+            temporary_file.write("\n")
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+            temporary_path = Path(temporary_file.name)
+        os.replace(temporary_path, path)
+    except OSError:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+
+def validate_model_profile(profile: ModelProfile) -> None:
+    if not profile.name.strip():
+        raise ValueError("Profile name must not be empty.")
+    if not profile.model.strip():
+        raise ValueError(f"Profile '{profile.name}' must define a non-empty model.")
+    if not profile.base_url.strip():
+        raise ValueError(f"Profile '{profile.name}' must define a non-empty base URL.")
+    profile.resolved_provider()
+    profile.resolved_api_mode()
+
+
+def normalize_model_profile(profile: ModelProfile) -> ModelProfile:
+    validate_model_profile(profile)
+    return replace(
+        profile,
+        name=profile.name.strip(),
+        provider=profile.resolved_provider(),
+        model=profile.model.strip(),
+        base_url=profile.base_url.strip(),
+        api_mode=profile.resolved_api_mode(),
+        api_key=profile.api_key.strip() if profile.api_key else None,
+        api_key_env=profile.api_key_env.strip() if profile.api_key_env else None,
+        headers={str(key): str(value) for key, value in profile.headers.items()},
+        httpx_kwargs=dict(profile.httpx_kwargs),
+    )
 
 
 def update_profile_store(
@@ -218,13 +268,38 @@ def update_profile_store(
     profile: ModelProfile,
     make_default: bool = False,
 ) -> ProfileStore:
-    profile.resolved_provider()
-    profile.resolved_api_mode()
+    profile = normalize_model_profile(profile)
     store.profiles[profile.name] = profile
     if make_default or not store.default_profile:
         store.default_profile = profile.name
     elif store.default_profile not in store.profiles:
         store.default_profile = profile.name
+    return store
+
+
+def set_default_profile(store: ProfileStore, name: str) -> ProfileStore:
+    if name not in store.profiles:
+        available = ", ".join(store.names()) or "<none>"
+        raise ValueError(
+            f"Unknown profile '{name}'. Available profiles: {available}"
+        )
+    store.default_profile = name
+    return store
+
+
+def remove_profile(store: ProfileStore, name: str) -> ProfileStore:
+    if name not in store.profiles:
+        available = ", ".join(store.names()) or "<none>"
+        raise ValueError(
+            f"Unknown profile '{name}'. Available profiles: {available}"
+        )
+    if len(store.profiles) == 1:
+        raise ValueError("Cannot remove the only model profile.")
+    if name == store.default_profile:
+        raise ValueError(
+            "Cannot remove the default model profile. Set another default first."
+        )
+    del store.profiles[name]
     return store
 
 

@@ -435,12 +435,18 @@ Endpoints:
 
 - `GET /health` — basic health check
 - `GET /version` — installed PyAgent package version
+- `GET /profiles` / `POST /profiles` — list or create model profiles
+- `GET /profiles/{name}` / `PUT /profiles/{name}` / `DELETE /profiles/{name}` — inspect, partially update, or remove a profile
+- `POST /profiles/{name}/default` — make a profile the stored default
+- `GET /profiles/{name}/models` — list models reported by a profile's endpoint
 - `POST /run` — run a single non-streaming agent turn
+- `POST /run/stream` — stream an agent turn as Server-Sent Events (SSE)
 - `GET /agents` / `POST /agents` — list or create versioned agent definitions
 - `GET /agents/{name}?revision=<n>` / `GET /agents/{name}/revisions` — read or list definition revisions
 - `PUT /agents/{name}` / `DELETE /agents/{name}` — create a new revision or remove a definition
 - `POST /agents/{name}/validate?revision=<n>&cwd=<path>` — resolve and validate a definition
 - `POST /agents/{name}/run` — run one non-streaming turn using a current or pinned definition revision
+- `POST /agents/{name}/run/stream` — stream a turn using a current or pinned definition revision
 - `GET /prompts` — list installed reusable system prompts
 - `POST /prompts/install` — install a prompt from a multipart file upload (`file`) or JSON HTTP(S) URL (`{"url": "..."}`)
 - `GET /prompts/{name}` — read an installed prompt
@@ -495,6 +501,87 @@ Example response:
 The API uses the same profile selection, model override, context loading, and optional skill validation as single-shot CLI mode. Skills may be scoped IDs such as `user:code-review.md` or `project:skills/review.md`; unscoped names resolve to user skills first. You may pass prior conversation history in the optional `messages` field on `POST /run`; PyAgent preserves its own active system prompt and ignores incoming `system` messages so runtime instructions cannot be overridden by API callers.
 
 If FastAPI or Uvicorn are missing, `pyagent serve` exits with a clear error. If an agent turn yields an internal error event, `POST /run` returns an HTTP error instead of an empty successful response.
+
+### Streaming API
+
+`POST /run/stream` accepts the same JSON body as `POST /run` and returns `text/event-stream`. Use `curl -N` to prevent output buffering:
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/run/stream \
+  -H 'Accept: text/event-stream' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "Summarize README.md",
+    "profile": "local-qwen",
+    "cwd": "."
+  }'
+```
+
+Stored agent definitions use the same event contract:
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/agents/reviewer/run/stream \
+  -H 'Accept: text/event-stream' \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "Review the current changes", "revision": 1}'
+```
+
+Each JSON event includes `schema_version`, `run_id`, a monotonically increasing `sequence`, `timestamp`, and `type`. Event types are:
+
+- `start` — selected profile/provider/API mode/model and loaded context; stored-agent streams also include `agent` and `revision`
+- `assistant_start` — assistant processing has started
+- `content_delta` — incremental response text in `delta`
+- `tool_call` — tool name, arguments, and `tool_call_id`
+- `tool_result` — result, `tool_call_id`, and `is_error`
+- `debug` — internal agent diagnostics, only with `?include_debug=true`
+- `done` — successful terminal event containing the final `response`, updated `messages`, and run metadata
+- `error` — unsuccessful terminal event containing `code` and `message`
+
+Idle connections receive SSE heartbeat comments. Request/configuration failures discovered before streaming starts retain normal HTTP error statuses. After SSE headers are sent, model and agent failures are represented by a terminal `error` event while the HTTP status remains `200`. Exactly one `done` or `error` event terminates a normally connected stream.
+
+Closing the HTTP connection signals cancellation and closes the agent after the current blocking model or tool operation yields. There is not yet a persistent run registry or a separate cancellation endpoint.
+
+### Profile API examples
+
+List the configured profiles:
+
+```bash
+curl http://127.0.0.1:8000/profiles
+```
+
+The response includes the profile-file path, the stored default, and the effective default. `PYAGENT_PROFILE`, when set, takes precedence over the stored default and is reported through `effective_default_profile` and `default_overridden_by_env`.
+
+Create a profile:
+
+```bash
+curl -X POST http://127.0.0.1:8000/profiles \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "openai-mini",
+    "provider": "openai",
+    "api_mode": "responses",
+    "model": "gpt-4.1-mini",
+    "api_key_env": "OPENAI_API_KEY",
+    "make_default": false
+  }'
+```
+
+`name`, `provider`, and `model` are required. `base_url` defaults from the provider and `api_mode` defaults to `chat_completions`. Creation returns `409` if the name already exists. Profiles may contain either `api_key` or `api_key_env`, but environment-variable references are recommended.
+
+Updates have partial-update semantics: omitted fields are preserved, `api_key: null` and `api_key_env: null` clear those credential settings, and empty `headers` or `httpx_kwargs` objects clear those complete mappings.
+
+```bash
+curl -X PUT http://127.0.0.1:8000/profiles/openai-mini \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "gpt-4.1", "api_key_env": "OPENAI_API_KEY"}'
+
+curl -X POST http://127.0.0.1:8000/profiles/openai-mini/default
+curl http://127.0.0.1:8000/profiles/openai-mini/models
+```
+
+Profile responses never return inline API keys. They expose `has_inline_api_key` instead, omit sensitive header values, list their names in `redacted_headers`, and redact sensitive nested `httpx_kwargs` values. Supplying `headers` or `httpx_kwargs` during an update replaces that entire mapping, so omit those fields to preserve redacted settings.
+
+The only remaining profile cannot be removed. The stored default also cannot be removed until another profile is selected as default; both conflicts return `409`. Setting the stored default does not override `PYAGENT_PROFILE` in the server environment.
 
 ### Agent-definition API examples
 
@@ -611,6 +698,19 @@ client = PyAgentClient("http://127.0.0.1:8000")
 
 print(client.health())
 
+profiles = client.list_profiles()
+print(profiles["default_profile"])
+
+client.create_profile({
+    "name": "openai-mini",
+    "provider": "openai",
+    "api_mode": "responses",
+    "model": "gpt-4.1-mini",
+    "api_key_env": "OPENAI_API_KEY",
+})
+client.update_profile("openai-mini", {"model": "gpt-4.1"})
+print(client.list_profile_models("openai-mini"))
+
 result = client.run(
     "Summarize README.md",
     messages=[{"role": "user", "content": "We already discussed installation."}],
@@ -623,7 +723,18 @@ result = client.run(
 print(result.response)
 print(result.profile, result.provider, result.api_mode, result.model)
 print(result.context_files)
+
+for event in client.stream_run(
+    "Summarize README.md",
+    profile="local-qwen",
+):
+    if event["type"] == "content_delta":
+        print(event["delta"], end="", flush=True)
+    elif event["type"] == "error":
+        raise RuntimeError(event["message"])
 ```
+
+`stream_run()` and `stream_agent()` return iterators of decoded SSE event dictionaries. HTTP and transport failures raise `PyAgentClientError`; terminal `error` events from an established stream are yielded so callers can display or handle them. Closing the iterator early closes the HTTP response.
 
 Manage and run reusable agent definitions with the same client:
 
@@ -670,8 +781,9 @@ Client details:
 - `PyAgentClient.health()` returns the decoded `/health` JSON payload.
 - `PyAgentClient.is_healthy()` returns `True` or `False` without raising on connection failures.
 - `PyAgentClient.version()` returns the decoded `/version` JSON payload.
-- `PyAgentClient.run(...)` returns a typed `RunResponse` object.
-- Agent-definition helpers include `list_agents()`, `create_agent()`, `show_agent()`, `list_agent_revisions()`, `update_agent()`, `validate_agent()`, `remove_agent()`, and `run_agent()`; `run_agent()` returns a typed `AgentRunResponse`.
+- `PyAgentClient.run(...)` returns a typed `RunResponse` object; `stream_run(...)` yields decoded SSE events.
+- Profile helpers include `list_profiles()`, `show_profile()`, `create_profile()`, `update_profile()`, `set_default_profile()`, `remove_profile()`, and `list_profile_models()`.
+- Agent-definition helpers include `list_agents()`, `create_agent()`, `show_agent()`, `list_agent_revisions()`, `update_agent()`, `validate_agent()`, `remove_agent()`, `run_agent()`, and `stream_agent()`; `run_agent()` returns a typed `AgentRunResponse`.
 - Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_extensions()`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, upload-file read failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.

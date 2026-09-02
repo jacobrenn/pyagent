@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import shutil
+import threading
 from typing import Any
 from urllib import parse
 
@@ -35,6 +37,7 @@ from .user_runtime import resolve_user_dir, user_extensions_dir
 
 try:
     from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - exercised via CLI guard
     raise RuntimeError(
@@ -138,6 +141,63 @@ class AgentDefinitionRunResponse(ChatResponse):
 
 class VersionResponse(BaseModel):
     version: str
+
+
+class ProfileCreateRequest(StrictRequestModel):
+    name: str = Field(..., min_length=1)
+    provider: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
+    base_url: str | None = None
+    api_mode: str = "chat_completions"
+    api_key: str | None = Field(default=None, repr=False)
+    api_key_env: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    httpx_kwargs: dict[str, Any] = Field(default_factory=dict)
+    make_default: bool = False
+
+
+class ProfileUpdateRequest(StrictRequestModel):
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    api_mode: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
+    api_key_env: str | None = None
+    headers: dict[str, str] | None = None
+    httpx_kwargs: dict[str, Any] | None = None
+
+
+class ProfileResponse(BaseModel):
+    name: str
+    provider: str
+    api_mode: str
+    model: str
+    base_url: str
+    api_key_env: str | None = None
+    has_inline_api_key: bool = False
+    headers: dict[str, str] = Field(default_factory=dict)
+    redacted_headers: list[str] = Field(default_factory=list)
+    httpx_kwargs: dict[str, Any] = Field(default_factory=dict)
+    is_default: bool = False
+
+
+class ProfileListResponse(BaseModel):
+    path: str
+    default_profile: str
+    effective_default_profile: str
+    default_overridden_by_env: bool
+    profiles: list[ProfileResponse]
+
+
+class ProfileActionResponse(BaseModel):
+    message: str
+    profile: str
+    default_profile: str
+
+
+class ProfileModelsResponse(BaseModel):
+    profile: str
+    models: list[str]
 
 
 class ResourceItem(BaseModel):
@@ -279,6 +339,7 @@ class _ParsedInstallRequest:
 
 
 app = FastAPI(title="PyAgent API")
+_PROFILE_STORE_LOCK = threading.RLock()
 
 
 @app.get("/health")
@@ -291,6 +352,201 @@ def version() -> VersionResponse:
     from .main import get_version
 
     return VersionResponse(version=get_version())
+
+
+@app.get("/profiles", response_model=ProfileListResponse)
+def list_profiles() -> ProfileListResponse:
+    store = _load_profile_store_or_400()
+    config = AppConfig.from_env()
+    effective_default = config.default_profile or store.default_profile
+    return ProfileListResponse(
+        path=store.path,
+        default_profile=store.default_profile,
+        effective_default_profile=effective_default,
+        default_overridden_by_env=config.default_profile is not None,
+        profiles=[
+            _profile_response(store.get(name), store.default_profile)
+            for name in store.names()
+        ],
+    )
+
+
+@app.post("/profiles", response_model=ProfileResponse, status_code=201)
+def create_profile(request: ProfileCreateRequest) -> ProfileResponse:
+    from .model_profiles import (
+        ModelProfile,
+        default_base_url_for_provider,
+        normalize_model_profile,
+        update_profile_store,
+    )
+
+    name = _normalize_profile_api_name(request.name)
+    try:
+        base_url = request.base_url or default_base_url_for_provider(
+            request.provider
+        )
+        profile = normalize_model_profile(
+            ModelProfile(
+                name=name,
+                provider=request.provider,
+                model=request.model,
+                base_url=base_url,
+                api_mode=request.api_mode,
+                api_key=request.api_key,
+                api_key_env=request.api_key_env,
+                headers=request.headers,
+                httpx_kwargs=request.httpx_kwargs,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with _PROFILE_STORE_LOCK:
+        store = _load_profile_store_or_400()
+        if name in store.profiles:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A profile named {name!r} already exists.",
+            )
+        update_profile_store(
+            store, profile, make_default=request.make_default)
+        _save_profile_store_or_400(store)
+    return _profile_response(profile, store.default_profile)
+
+
+@app.get("/profiles/{name}/models", response_model=ProfileModelsResponse)
+def list_profile_models(name: str) -> ProfileModelsResponse:
+    from .llm_client import build_chat_client
+
+    profile = _get_profile_or_404(name)
+    try:
+        profile.resolved_api_key()
+        client = build_chat_client(
+            profile, timeout=AppConfig.from_env().request_timeout)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        result = client.list_models()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        client.close()
+    if not isinstance(result, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="The model endpoint returned an invalid model listing.",
+        )
+    if result.get("error"):
+        raise HTTPException(status_code=502, detail=str(result["error"]))
+    models = [
+        str(model)
+        for model in result.get("models", [])
+        if isinstance(model, str) and model
+    ]
+    return ProfileModelsResponse(
+        profile=profile.name,
+        models=list(dict.fromkeys(models)),
+    )
+
+
+@app.post("/profiles/{name}/default", response_model=ProfileResponse)
+def make_profile_default(name: str) -> ProfileResponse:
+    from .model_profiles import set_default_profile
+
+    normalized_name = _normalize_profile_api_name(name)
+    with _PROFILE_STORE_LOCK:
+        store = _load_profile_store_or_400()
+        if normalized_name not in store.profiles:
+            _raise_profile_not_found(normalized_name, store)
+        set_default_profile(store, normalized_name)
+        _save_profile_store_or_400(store)
+    return _profile_response(store.get(normalized_name), store.default_profile)
+
+
+@app.get("/profiles/{name}", response_model=ProfileResponse)
+def get_profile(name: str) -> ProfileResponse:
+    store = _load_profile_store_or_400()
+    normalized_name = _normalize_profile_api_name(name)
+    if normalized_name not in store.profiles:
+        _raise_profile_not_found(normalized_name, store)
+    return _profile_response(store.get(normalized_name), store.default_profile)
+
+
+@app.put("/profiles/{name}", response_model=ProfileResponse)
+def update_profile(
+    name: str,
+    request: ProfileUpdateRequest,
+) -> ProfileResponse:
+    from .model_profiles import (
+        ModelProfile,
+        normalize_model_profile,
+        update_profile_store,
+    )
+
+    normalized_name = _normalize_profile_api_name(name)
+    changes = _model_payload(request, exclude_unset=True)
+    with _PROFILE_STORE_LOCK:
+        store = _load_profile_store_or_400()
+        if normalized_name not in store.profiles:
+            _raise_profile_not_found(normalized_name, store)
+        current = store.get(normalized_name)
+        values: dict[str, Any] = {
+            "provider": current.provider,
+            "model": current.model,
+            "base_url": current.base_url,
+            "api_mode": current.api_mode,
+            "api_key": current.api_key,
+            "api_key_env": current.api_key_env,
+            "headers": current.headers,
+            "httpx_kwargs": current.httpx_kwargs,
+        }
+        for field_name in ("provider", "model", "base_url", "api_mode"):
+            if field_name in changes and changes[field_name] is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile field '{field_name}' cannot be null.",
+                )
+        for field_name in ("headers", "httpx_kwargs"):
+            if field_name in changes and changes[field_name] is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Profile field '{field_name}' cannot be null; "
+                        "use an empty object to clear it."
+                    ),
+                )
+        values.update(changes)
+        try:
+            profile = normalize_model_profile(
+                ModelProfile(name=normalized_name, **values)
+            )
+            update_profile_store(store, profile)
+            _save_profile_store_or_400(store)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _profile_response(profile, store.default_profile)
+
+
+@app.delete("/profiles/{name}", response_model=ProfileActionResponse)
+def delete_profile(name: str) -> ProfileActionResponse:
+    from .model_profiles import remove_profile
+
+    normalized_name = _normalize_profile_api_name(name)
+    with _PROFILE_STORE_LOCK:
+        store = _load_profile_store_or_400()
+        if normalized_name not in store.profiles:
+            _raise_profile_not_found(normalized_name, store)
+        try:
+            remove_profile(store, normalized_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _save_profile_store_or_400(store)
+    return ProfileActionResponse(
+        message=f"Removed profile {normalized_name!r}.",
+        profile=normalized_name,
+        default_profile=store.default_profile,
+    )
 
 
 @app.post("/run", response_model=ChatResponse)
@@ -342,6 +598,37 @@ def run(request: ChatRequest) -> ChatResponse:
         )
     finally:
         agent.close(reason="api_request_complete")
+
+
+@app.post("/run/stream")
+def run_stream(
+    request: ChatRequest,
+    include_debug: bool = False,
+) -> StreamingResponse:
+    from .main import build_agent_for_request
+
+    agent = None
+    try:
+        agent = build_agent_for_request(
+            profile=request.profile,
+            model=request.model,
+            cwd=request.cwd,
+            skills=request.skills,
+        )
+        agent.load_messages(request.messages)
+        agent.load_extensions()
+    except ValueError as exc:
+        _close_agent_quietly(agent)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _close_agent_quietly(agent)
+        raise
+
+    return _agent_streaming_response(
+        agent,
+        request.message,
+        include_debug=include_debug,
+    )
 
 
 @app.get("/agents", response_model=AgentDefinitionListResponse)
@@ -512,6 +799,42 @@ def run_agent_definition(
         model=profile.model,
         messages=agent.messages,
         context_files=list(agent.project_context_files),
+    )
+
+
+@app.post("/agents/{name}/run/stream")
+def run_agent_definition_stream(
+    name: str,
+    request: AgentDefinitionRunRequest,
+    include_debug: bool = False,
+) -> StreamingResponse:
+    from .agent_definitions import AgentDefinitionError, build_agent_from_definition
+
+    agent = None
+    try:
+        agent, definition, _ = build_agent_from_definition(
+            name,
+            revision=request.revision,
+            cwd=request.cwd,
+        )
+        agent.load_messages(request.messages)
+        agent.load_extensions()
+    except AgentDefinitionError as exc:
+        _close_agent_quietly(agent)
+        status = 404 if "No agent definition" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        _close_agent_quietly(agent)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _close_agent_quietly(agent)
+        raise
+
+    return _agent_streaming_response(
+        agent,
+        request.message,
+        include_debug=include_debug,
+        extra={"agent": definition.name, "revision": definition.revision},
     )
 
 
@@ -796,6 +1119,178 @@ def delete_extension(name: str) -> ResourceActionResponse:
 
     message = _run_extension_action(lambda agent: _cmd_remove(agent, name))
     return ResourceActionResponse(message=message)
+
+
+def _close_agent_quietly(agent: Any | None) -> None:
+    if agent is None:
+        return
+    try:
+        agent.close(reason="api_request_complete")
+    except Exception:
+        pass
+
+
+def _agent_runtime_data(
+    agent: Any,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile = agent.current_profile()
+    resolve_api_mode = getattr(profile, "resolved_api_mode", None)
+    api_mode = (
+        resolve_api_mode()
+        if callable(resolve_api_mode)
+        else str(getattr(profile, "api_mode", "chat_completions"))
+    )
+    return {
+        "profile": profile.name,
+        "provider": profile.provider,
+        "api_mode": api_mode,
+        "model": profile.model,
+        "context_files": list(agent.project_context_files),
+        **dict(extra or {}),
+    }
+
+
+def _agent_streaming_response(
+    agent: Any,
+    message: str,
+    *,
+    include_debug: bool,
+    extra: dict[str, Any] | None = None,
+) -> StreamingResponse:
+    from .streaming import stream_agent_sse
+
+    try:
+        start_data = _agent_runtime_data(agent, extra)
+    except Exception:
+        _close_agent_quietly(agent)
+        raise
+
+    def completion_data(response: str) -> dict[str, Any]:
+        return {
+            "response": response,
+            **_agent_runtime_data(agent, extra),
+            "messages": copy.deepcopy(agent.messages),
+        }
+
+    return StreamingResponse(
+        stream_agent_sse(
+            agent,
+            message,
+            start_data=start_data,
+            completion_data=completion_data,
+            include_debug=include_debug,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _normalize_profile_api_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Profile name must not be empty.")
+    if "/" in name or "\\" in name:
+        raise HTTPException(
+            status_code=400,
+            detail="Profile names must not contain path separators.",
+        )
+    return name
+
+
+def _load_profile_store_or_400():
+    from .model_profiles import load_profile_store
+
+    config = AppConfig.from_env()
+    try:
+        return load_profile_store(config.model_profiles_path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _save_profile_store_or_400(store: Any) -> None:
+    from .model_profiles import save_profile_store
+
+    try:
+        save_profile_store(store)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _raise_profile_not_found(name: str, store: Any) -> None:
+    available = ", ".join(store.names()) or "<none>"
+    raise HTTPException(
+        status_code=404,
+        detail=f"Unknown profile '{name}'. Available profiles: {available}",
+    )
+
+
+def _get_profile_or_404(name: str):
+    normalized_name = _normalize_profile_api_name(name)
+    store = _load_profile_store_or_400()
+    if normalized_name not in store.profiles:
+        _raise_profile_not_found(normalized_name, store)
+    return store.get(normalized_name)
+
+
+def _is_sensitive_profile_key(name: str) -> bool:
+    normalized = name.strip().lower().replace("_", "-")
+    if normalized in {"auth", "authentication", "key"}:
+        return True
+    sensitive_markers = (
+        "authorization",
+        "api-key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "cookie",
+    )
+    return normalized.endswith("-key") or any(
+        marker in normalized for marker in sensitive_markers
+    )
+
+
+def _redact_profile_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                "<redacted>"
+                if _is_sensitive_profile_key(str(key))
+                else _redact_profile_value(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_profile_value(item) for item in value]
+    return value
+
+
+def _profile_response(profile: Any, default_profile: str) -> ProfileResponse:
+    visible_headers: dict[str, str] = {}
+    redacted_headers: list[str] = []
+    for name, value in profile.headers.items():
+        if _is_sensitive_profile_key(name):
+            redacted_headers.append(name)
+        else:
+            visible_headers[name] = value
+    return ProfileResponse(
+        name=profile.name,
+        provider=profile.resolved_provider(),
+        api_mode=profile.resolved_api_mode(),
+        model=profile.model,
+        base_url=profile.base_url,
+        api_key_env=profile.api_key_env,
+        has_inline_api_key=bool(profile.api_key),
+        headers=visible_headers,
+        redacted_headers=sorted(redacted_headers),
+        httpx_kwargs=_redact_profile_value(profile.httpx_kwargs),
+        is_default=profile.name == default_profile,
+    )
 
 
 def _model_payload(model: BaseModel, *, exclude_unset: bool = False) -> dict[str, Any]:

@@ -26,7 +26,9 @@ Core files:
 - `pyagent/scaffold.py` + `pyagent/templates/tool_template.py` — `/tools new` scaffolding
 - `pyagent/user_runtime.py` — single source of truth for `~/.pyagent/` paths and runner availability
 - `pyagent/config.py` — environment-driven runtime config and system prompt
-- `pyagent/model_profiles.py` — loads saved model profiles from JSON and env fallback
+- `pyagent/model_profiles.py` — loads, validates, atomically saves, and mutates saved model profiles with env fallback
+- `pyagent/api.py` + `pyagent/client.py` — FastAPI server and dependency-free synchronous client for regular and SSE-streaming runs, profiles, agent definitions, and managed resources
+- `pyagent/streaming.py` — SSE framing, background agent iteration, heartbeat delivery, backpressure, and disconnect cleanup
 - `pyagent/agent_definitions.py` — versioned reusable agent definitions, resource validation, and workspace-bound agent construction
 - `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
@@ -90,6 +92,7 @@ In `pyagent/agent.py`:
 - Preserve the existing fallback behavior that appends tool output when needed.
 - If changing message history or system prompt composition (which now includes loading from a configurable file), make sure project context still gets applied after reset.
 - Keep provider-specific request/stream formatting out of the core loop when possible.
+- HTTP streams emit versioned SSE events with one terminal `done` or `error`; preserve pre-stream HTTP errors, tool-call IDs, debug opt-in, and agent cleanup on disconnect.
 
 ## Model/profile conventions
 
@@ -97,7 +100,9 @@ In `pyagent/agent.py`:
 - OpenAI-compatible profiles select `chat_completions` (default) or `responses` with `api_mode`; native Ollama only accepts the default mode.
 - Prefer JSON over new dependencies.
 - Prefer `api_key_env` over inline secrets in examples and docs.
-- Make profile switching explicit in the UI rather than relying on hidden env-only state.
+- Profile API responses must never expose inline API keys and must redact credential-like header/transport values.
+- Profile API updates are partial; omitted values preserve stored settings, including secrets, while explicit `null` clears credential fields.
+- Make profile switching explicit in the UI rather than relying on hidden env-only state; API responses distinguish the stored default from a `PYAGENT_PROFILE` override.
 - If changing profile semantics, update `README.md`, `AGENTS.md`, and relevant skills docs.
 
 ## Project-context loading

@@ -859,10 +859,21 @@ class Agent:
                         recent_tool_results.append(
                             {"name": "<invalid>", "arguments": {}, "result": result}
                         )
-                        yield {"type": "tool_result", "name": "<invalid>", "result": result}
+                        yield {
+                            "type": "tool_result",
+                            "tool_call_id": tool_call_id,
+                            "name": "<invalid>",
+                            "result": result,
+                            "is_error": True,
+                        }
                         continue
 
-                    yield {"type": "tool_call", "name": name, "arguments": arguments}
+                    yield {
+                        "type": "tool_call",
+                        "tool_call_id": tool_call_id,
+                        "name": name,
+                        "arguments": arguments,
+                    }
 
                     # tool_call: audit/gate/mutate before execution.
                     tc_event = self.bus.emit(
@@ -887,7 +898,13 @@ class Agent:
                             {"name": name, "arguments": arguments, "result": result}
                         )
                         self._trim_history()
-                        yield {"type": "tool_result", "name": name, "result": result}
+                        yield {
+                            "type": "tool_result",
+                            "tool_call_id": tool_call_id,
+                            "name": name,
+                            "result": result,
+                            "is_error": True,
+                        }
                         continue
                     arguments = tc_event.get("input", arguments)
 
@@ -935,7 +952,13 @@ class Agent:
                         {"name": name, "arguments": arguments, "result": result}
                     )
                     self._trim_history()
-                    yield {"type": "tool_result", "name": name, "result": result}
+                    yield {
+                        "type": "tool_result",
+                        "tool_call_id": tool_call_id,
+                        "name": name,
+                        "result": result,
+                        "is_error": bool(is_error),
+                    }
 
                 self.bus.emit(
                     "turn_end",

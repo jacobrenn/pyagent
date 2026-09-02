@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import socket
-from typing import Any
+from typing import Any, Iterator
 from urllib import error, parse, request
 import uuid
 
@@ -228,6 +228,93 @@ class PyAgentClient:
                 f"PyAgent server response is missing required field: {exc.args[0]}"
             ) from exc
 
+    def stream_run(
+        self,
+        message: str,
+        *,
+        messages: list[dict] | None = None,
+        profile: str | None = None,
+        model: str | None = None,
+        cwd: str | None = None,
+        skills: list[str] | None = None,
+        include_debug: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream one agent turn as decoded Server-Sent Events."""
+        payload = {
+            "message": message,
+            "messages": list(messages or []),
+            "profile": profile,
+            "model": model,
+            "cwd": cwd,
+            "skills": list(skills or []),
+        }
+        path = "/run/stream"
+        if include_debug:
+            path += "?" + parse.urlencode({"include_debug": "true"})
+        return self._stream_sse("POST", path, payload)
+
+    # Model profiles -----------------------------------------------------
+
+    def list_profiles(self) -> dict[str, Any]:
+        """List model profiles and stored/effective default metadata."""
+        return self._expect_dict(
+            self._request_json("GET", "/profiles"), "profiles list"
+        )
+
+    def show_profile(self, name: str) -> dict[str, Any]:
+        """Return one secret-safe model profile."""
+        return self._expect_dict(
+            self._request_json(
+                "GET", self._path_with_name("/profiles", name)
+            ),
+            "profile",
+        )
+
+    def create_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create a model profile from a JSON-compatible dictionary."""
+        return self._expect_dict(
+            self._request_json("POST", "/profiles", profile),
+            "profile create",
+        )
+
+    def update_profile(self, name: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Partially update a model profile, preserving omitted fields."""
+        return self._expect_dict(
+            self._request_json(
+                "PUT", self._path_with_name("/profiles", name), changes
+            ),
+            "profile update",
+        )
+
+    def set_default_profile(self, name: str) -> dict[str, Any]:
+        """Set the default profile stored in the server's profile file."""
+        return self._expect_dict(
+            self._request_json(
+                "POST",
+                self._path_with_name("/profiles", name, "/default"),
+                {},
+            ),
+            "profile default",
+        )
+
+    def remove_profile(self, name: str) -> dict[str, Any]:
+        """Remove a non-default profile from the server."""
+        return self._expect_dict(
+            self._request_json(
+                "DELETE", self._path_with_name("/profiles", name)
+            ),
+            "profile remove",
+        )
+
+    def list_profile_models(self, name: str) -> dict[str, Any]:
+        """List models reported by a profile's configured endpoint."""
+        return self._expect_dict(
+            self._request_json(
+                "GET", self._path_with_name("/profiles", name, "/models")
+            ),
+            "profile models",
+        )
+
     # Agent definitions ---------------------------------------------------
 
     def list_agents(self) -> dict[str, Any]:
@@ -336,6 +423,28 @@ class PyAgentClient:
             raise PyAgentClientError(
                 f"PyAgent server returned an invalid agent run response: {exc}"
             ) from exc
+
+    def stream_agent(
+        self,
+        name: str,
+        message: str,
+        *,
+        messages: list[dict] | None = None,
+        revision: int | None = None,
+        cwd: str | None = None,
+        include_debug: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream one turn from a stored agent-definition revision."""
+        payload = {
+            "message": message,
+            "messages": list(messages or []),
+            "revision": revision,
+            "cwd": cwd,
+        }
+        path = self._path_with_name("/agents", name, "/run/stream")
+        if include_debug:
+            path += "?" + parse.urlencode({"include_debug": "true"})
+        return self._stream_sse("POST", path, payload)
 
     # Prompts -------------------------------------------------------------
 
@@ -672,6 +781,118 @@ class PyAgentClient:
         )
 
     # Request helpers -----------------------------------------------------
+
+    def _stream_sse(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object],
+    ) -> Iterator[dict[str, Any]]:
+        """Send a JSON request and yield decoded Server-Sent Events."""
+        url = f"{self.base_url}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        headers = {"Accept": "text/event-stream", **self.headers}
+        headers["Content-Type"] = "application/json"
+        req = request.Request(url, data=body, headers=headers, method=method)
+
+        def events() -> Iterator[dict[str, Any]]:
+            event_name: str | None = None
+            event_id: str | None = None
+            data_lines: list[str] = []
+
+            def decode_event() -> dict[str, Any] | None:
+                if not data_lines:
+                    return None
+                raw_data = "\n".join(data_lines)
+                try:
+                    decoded = json.loads(raw_data)
+                except json.JSONDecodeError as exc:
+                    raise PyAgentClientError(
+                        f"PyAgent server returned invalid SSE JSON from {url}"
+                    ) from exc
+                if not isinstance(decoded, dict):
+                    raise PyAgentClientError(
+                        f"PyAgent server returned an invalid SSE event from {url}"
+                    )
+                if event_name and "type" not in decoded:
+                    decoded["type"] = event_name
+                if event_id and "sequence" not in decoded:
+                    try:
+                        decoded["sequence"] = int(event_id)
+                    except ValueError:
+                        decoded["sequence"] = event_id
+                return decoded
+
+            try:
+                response = request.urlopen(req, timeout=self.timeout)
+            except error.HTTPError as exc:
+                detail = self._extract_error_detail(exc)
+                raise PyAgentClientError(
+                    f"PyAgent server returned HTTP {exc.code}: {detail}"
+                ) from exc
+            except error.URLError as exc:
+                reason = exc.reason
+                if isinstance(reason, socket.timeout):
+                    raise PyAgentClientError(
+                        f"Timed out connecting to PyAgent server at {url}"
+                    ) from exc
+                raise PyAgentClientError(
+                    f"Could not connect to PyAgent server at {url}: {reason}"
+                ) from exc
+            except (TimeoutError, socket.timeout) as exc:
+                raise PyAgentClientError(
+                    f"Timed out connecting to PyAgent server at {url}"
+                ) from exc
+
+            try:
+                with response:
+                    for raw_line in response:
+                        try:
+                            line = raw_line.decode("utf-8").rstrip("\r\n")
+                        except UnicodeDecodeError as exc:
+                            raise PyAgentClientError(
+                                f"PyAgent server returned invalid SSE text from {url}"
+                            ) from exc
+                        if not line:
+                            decoded = decode_event()
+                            if decoded is not None:
+                                yield decoded
+                            event_name = None
+                            event_id = None
+                            data_lines.clear()
+                            continue
+                        if line.startswith(":"):
+                            continue
+                        field, separator, value = line.partition(":")
+                        if separator and value.startswith(" "):
+                            value = value[1:]
+                        if field == "event":
+                            event_name = value
+                        elif field == "id":
+                            event_id = value
+                        elif field == "data":
+                            data_lines.append(value)
+                    decoded = decode_event()
+                    if decoded is not None:
+                        yield decoded
+            except PyAgentClientError:
+                raise
+            except error.URLError as exc:
+                raise PyAgentClientError(
+                    "Connection to PyAgent server failed while streaming "
+                    f"from {url}: {exc.reason}"
+                ) from exc
+            except (TimeoutError, socket.timeout) as exc:
+                raise PyAgentClientError(
+                    f"Timed out while streaming from PyAgent server at {url}"
+                ) from exc
+            except OSError as exc:
+                raise PyAgentClientError(
+                    "Connection to PyAgent server failed while streaming "
+                    f"from {url}: {exc}"
+                ) from exc
+
+        return events()
 
     def _install_resource(
         self,
