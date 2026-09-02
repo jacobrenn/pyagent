@@ -52,6 +52,14 @@ class RunResponse:
     api_mode: str = "chat_completions"
 
 
+@dataclass(slots=True)
+class AgentRunResponse(RunResponse):
+    """Result of running a stored agent-definition revision."""
+
+    agent: str = ""
+    revision: int = 1
+
+
 class PyAgentClient:
     """Small synchronous client for the PyAgent HTTP API.
 
@@ -218,6 +226,115 @@ class PyAgentClient:
         except KeyError as exc:
             raise PyAgentClientError(
                 f"PyAgent server response is missing required field: {exc.args[0]}"
+            ) from exc
+
+    # Agent definitions ---------------------------------------------------
+
+    def list_agents(self) -> dict[str, Any]:
+        """List stored reusable agent definitions."""
+        return self._expect_dict(
+            self._request_json("GET", "/agents"), "agents list"
+        )
+
+    def create_agent(self, definition: dict[str, Any]) -> dict[str, Any]:
+        """Create an agent definition from a JSON-compatible dictionary."""
+        return self._expect_dict(
+            self._request_json("POST", "/agents", definition), "agent create"
+        )
+
+    def show_agent(self, name: str, *, revision: int | None = None) -> dict[str, Any]:
+        """Return the current or requested revision of an agent definition."""
+        path = self._path_with_name("/agents", name)
+        if revision is not None:
+            path += "?" + parse.urlencode({"revision": revision})
+        return self._expect_dict(self._request_json("GET", path), "agent")
+
+    def list_agent_revisions(self, name: str) -> dict[str, Any]:
+        """List immutable revisions stored for an agent definition."""
+        return self._expect_dict(
+            self._request_json(
+                "GET", self._path_with_name("/agents", name, "/revisions")
+            ),
+            "agent revisions",
+        )
+
+    def update_agent(self, name: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Create a new revision containing the supplied field changes."""
+        return self._expect_dict(
+            self._request_json(
+                "PUT", self._path_with_name("/agents", name), changes
+            ),
+            "agent update",
+        )
+
+    def validate_agent(
+        self,
+        name: str,
+        *,
+        revision: int | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve an agent definition against currently installed resources."""
+        query = {
+            key: value
+            for key, value in {"revision": revision, "cwd": cwd}.items()
+            if value is not None
+        }
+        path = self._path_with_name("/agents", name, "/validate")
+        if query:
+            path += "?" + parse.urlencode(query)
+        return self._expect_dict(
+            self._request_json("POST", path, {}), "agent validation"
+        )
+
+    def remove_agent(self, name: str) -> dict[str, Any]:
+        """Remove an agent definition and its local revision history."""
+        return self._expect_dict(
+            self._request_json(
+                "DELETE", self._path_with_name("/agents", name)
+            ),
+            "agent remove",
+        )
+
+    def run_agent(
+        self,
+        name: str,
+        message: str,
+        *,
+        messages: list[dict] | None = None,
+        revision: int | None = None,
+        cwd: str | None = None,
+    ) -> AgentRunResponse:
+        """Run one turn using a stored agent-definition revision."""
+        payload = {
+            "message": message,
+            "messages": list(messages or []),
+            "revision": revision,
+            "cwd": cwd,
+        }
+        data = self._request_json(
+            "POST", self._path_with_name("/agents", name, "/run"), payload
+        )
+        if not isinstance(data, dict):
+            raise PyAgentClientError(
+                "PyAgent server returned an invalid agent run response"
+            )
+        try:
+            return AgentRunResponse(
+                response=str(data["response"]),
+                profile=str(data["profile"]),
+                provider=str(data["provider"]),
+                api_mode=str(data.get("api_mode", "chat_completions")),
+                model=str(data["model"]),
+                messages=data["messages"],
+                context_files=[str(item)
+                               for item in data.get("context_files", [])],
+                agent=str(data["agent"]),
+                revision=int(data["revision"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PyAgentClientError(
+                f"PyAgent server returned an invalid agent run response: {exc}"
             ) from exc
 
     # Prompts -------------------------------------------------------------

@@ -31,8 +31,15 @@ class Agent:
         project_context: str = "",
         project_context_files: list[str] | None = None,
         external_tool_discovery: DiscoveryResult | None = None,
+        allowed_tools: list[str] | tuple[str, ...] | None = None,
+        workspace: str | Path | None = None,
+        restrict_workspace: bool = False,
     ):
         self.config = config or AppConfig.from_env()
+        self.workspace = Path(workspace or os.getcwd()).expanduser().resolve()
+        self.restrict_workspace = restrict_workspace
+        self.allowed_tools = frozenset(
+            allowed_tools) if allowed_tools is not None else None
         self.profile_store: ProfileStore = load_profile_store(
             self.config.model_profiles_path
         )
@@ -45,13 +52,16 @@ class Agent:
                 if external_tool_discovery is not None
                 else self._discover_external_tools()
             )
-            self.tool_registry = create_default_tool_registry(
+            registry = create_default_tool_registry(
                 self.config,
                 external_specs=self._external_specs_from_discovery(
                     self.external_tool_discovery),
+                workspace=self.workspace,
+                restrict_workspace=self.restrict_workspace,
             )
         else:
-            self.tool_registry = tool_registry
+            registry = tool_registry
+        self.tool_registry = self._apply_tool_policy(registry)
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.project_context = project_context.strip()
         self.project_context_files = list(project_context_files or [])
@@ -110,7 +120,13 @@ class Agent:
             discovery,
             invoke_timeout=self.config.user_tool_timeout,
             runner_command=default_runner_command(discovery.runner),
+            cwd=self.workspace,
         )
+
+    def _apply_tool_policy(self, registry: ToolRegistry) -> ToolRegistry:
+        if self.allowed_tools is None:
+            return registry
+        return registry.restricted(self.allowed_tools)
 
     def reload_external_tools(self) -> DiscoveryResult | None:
         """Re-scan ``~/.pyagent/tools/`` and loaded extensions' tool dirs.
@@ -369,10 +385,13 @@ class Agent:
         """
         discovery = self._discover_external_tools()
         self.external_tool_discovery = discovery
-        self.tool_registry = create_default_tool_registry(
+        registry = create_default_tool_registry(
             self.config,
             external_specs=self._external_specs_from_discovery(discovery),
+            workspace=self.workspace,
+            restrict_workspace=self.restrict_workspace,
         )
+        self.tool_registry = self._apply_tool_policy(registry)
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         return discovery
 
@@ -408,6 +427,13 @@ class Agent:
             return
         self._session_started = False
         self.bus.emit("session_shutdown", {"reason": reason}, self._ext_ctx)
+
+    def close(self, reason: str = "shutdown") -> None:
+        """End the extension session and close the active model client."""
+        self.shutdown_session(reason=reason)
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
 
     def _emit_model_select(self, source: str) -> None:
         try:

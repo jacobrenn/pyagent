@@ -62,6 +62,80 @@ class ChatResponse(BaseModel):
     context_files: list[str] = Field(default_factory=list)
 
 
+class StrictRequestModel(BaseModel):
+    class Config:
+        extra = "forbid"
+
+
+class AgentDefinitionFields(StrictRequestModel):
+    description: str = ""
+    profile: str | None = None
+    model: str | None = None
+    prompt: str | None = None
+    skills: list[str] = Field(default_factory=list)
+    tools: list[str] | None = None
+    workspace: str | None = None
+    max_iterations: int | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class AgentDefinitionCreateRequest(AgentDefinitionFields):
+    name: str = Field(..., min_length=1)
+
+
+class AgentDefinitionUpdateRequest(StrictRequestModel):
+    description: str | None = None
+    profile: str | None = None
+    model: str | None = None
+    prompt: str | None = None
+    skills: list[str] | None = None
+    tools: list[str] | None = None
+    workspace: str | None = None
+    max_iterations: int | None = None
+    labels: dict[str, str] | None = None
+    capabilities: list[str] | None = None
+
+
+class AgentDefinitionResponse(AgentDefinitionFields):
+    schema_version: int
+    name: str
+    revision: int
+    created_at: str
+    updated_at: str
+
+
+class AgentDefinitionListResponse(BaseModel):
+    root: str
+    agents: list[AgentDefinitionResponse]
+
+
+class AgentDefinitionRevisionsResponse(BaseModel):
+    name: str
+    revisions: list[AgentDefinitionResponse]
+
+
+class AgentDefinitionValidationResponse(BaseModel):
+    name: str
+    revision: int
+    valid: bool
+    errors: list[str]
+    warnings: list[str]
+    resolved: dict[str, Any]
+
+
+class AgentDefinitionRunRequest(StrictRequestModel):
+    message: str = Field(..., min_length=1)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    revision: int | None = None
+    cwd: str | None = None
+
+
+class AgentDefinitionRunResponse(ChatResponse):
+    agent: str
+    revision: int
+
+
 class VersionResponse(BaseModel):
     version: str
 
@@ -235,32 +309,206 @@ def run(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     agent.load_extensions()
-    final_response = ""
-    for event in agent.run(request.message):
-        if event.get("type") == "error":
-            message = str(event.get("message") or "Agent run failed")
-            raise HTTPException(status_code=502, detail=message)
-        if event.get("type") == "assistant_done":
-            final_response = event.get("content", "")
-            break
-    else:
-        raise HTTPException(
-            status_code=500,
-            detail="Agent run finished without a final assistant response.",
+    try:
+        final_response = ""
+        for event in agent.run(request.message):
+            if event.get("type") == "error":
+                message = str(event.get("message") or "Agent run failed")
+                raise HTTPException(status_code=502, detail=message)
+            if event.get("type") == "assistant_done":
+                final_response = event.get("content", "")
+                break
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Agent run finished without a final assistant response.",
+            )
+
+        profile = agent.current_profile()
+        resolve_api_mode = getattr(profile, "resolved_api_mode", None)
+        api_mode = (
+            resolve_api_mode()
+            if callable(resolve_api_mode)
+            else str(getattr(profile, "api_mode", "chat_completions"))
         )
+        return ChatResponse(
+            response=final_response,
+            profile=profile.name,
+            provider=profile.provider,
+            api_mode=api_mode,
+            model=profile.model,
+            messages=agent.messages,
+            context_files=list(agent.project_context_files),
+        )
+    finally:
+        agent.close(reason="api_request_complete")
+
+
+@app.get("/agents", response_model=AgentDefinitionListResponse)
+def list_agent_definitions() -> AgentDefinitionListResponse:
+    from .agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+    store = AgentDefinitionStore()
+    try:
+        definitions = store.list()
+    except AgentDefinitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AgentDefinitionListResponse(
+        root=str(store.root),
+        agents=[AgentDefinitionResponse(**item.to_dict())
+                for item in definitions],
+    )
+
+
+@app.post("/agents", response_model=AgentDefinitionResponse, status_code=201)
+def create_agent_definition(
+    request: AgentDefinitionCreateRequest,
+) -> AgentDefinitionResponse:
+    from .agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+    store = AgentDefinitionStore()
+    try:
+        definition = store.create(_model_payload(request))
+    except AgentDefinitionError as exc:
+        status = 409 if "already exists" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return AgentDefinitionResponse(**definition.to_dict())
+
+
+@app.get("/agents/{name}", response_model=AgentDefinitionResponse)
+def get_agent_definition(
+    name: str,
+    revision: int | None = None,
+) -> AgentDefinitionResponse:
+    from .agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+    try:
+        definition = AgentDefinitionStore().get(name, revision=revision)
+    except AgentDefinitionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return AgentDefinitionResponse(**definition.to_dict())
+
+
+@app.get(
+    "/agents/{name}/revisions",
+    response_model=AgentDefinitionRevisionsResponse,
+)
+def list_agent_definition_revisions(name: str) -> AgentDefinitionRevisionsResponse:
+    from .agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+    try:
+        revisions = AgentDefinitionStore().revisions(name)
+    except AgentDefinitionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return AgentDefinitionRevisionsResponse(
+        name=name,
+        revisions=[AgentDefinitionResponse(
+            **item.to_dict()) for item in revisions],
+    )
+
+
+@app.put("/agents/{name}", response_model=AgentDefinitionResponse)
+def update_agent_definition(
+    name: str,
+    request: AgentDefinitionUpdateRequest,
+) -> AgentDefinitionResponse:
+    from .agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+    changes = _model_payload(request, exclude_unset=True)
+    try:
+        definition = AgentDefinitionStore().update(name, changes)
+    except AgentDefinitionError as exc:
+        status = 404 if "No agent definition" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return AgentDefinitionResponse(**definition.to_dict())
+
+
+@app.delete("/agents/{name}", response_model=ResourceActionResponse)
+def delete_agent_definition(name: str) -> ResourceActionResponse:
+    from .agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+    try:
+        removed = AgentDefinitionStore().delete(name)
+    except AgentDefinitionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ResourceActionResponse(
+        message=f"Removed agent definition {removed}", path=str(removed)
+    )
+
+
+@app.post(
+    "/agents/{name}/validate",
+    response_model=AgentDefinitionValidationResponse,
+)
+def validate_stored_agent_definition(
+    name: str,
+    revision: int | None = None,
+    cwd: str | None = None,
+) -> AgentDefinitionValidationResponse:
+    from .agent_definitions import (
+        AgentDefinitionError,
+        AgentDefinitionStore,
+        validate_agent_definition,
+    )
+
+    try:
+        definition = AgentDefinitionStore().get(name, revision=revision)
+    except AgentDefinitionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    result = validate_agent_definition(definition, cwd=cwd)
+    return AgentDefinitionValidationResponse(
+        name=definition.name,
+        revision=definition.revision,
+        **result.to_dict(),
+    )
+
+
+@app.post("/agents/{name}/run", response_model=AgentDefinitionRunResponse)
+def run_agent_definition(
+    name: str,
+    request: AgentDefinitionRunRequest,
+) -> AgentDefinitionRunResponse:
+    from .agent_definitions import AgentDefinitionError, build_agent_from_definition
+
+    try:
+        agent, definition, _ = build_agent_from_definition(
+            name,
+            revision=request.revision,
+            cwd=request.cwd,
+        )
+        agent.load_messages(request.messages)
+    except AgentDefinitionError as exc:
+        status = 404 if "No agent definition" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    agent.load_extensions()
+    final_response = ""
+    try:
+        for event in agent.run(request.message):
+            if event.get("type") == "error":
+                message = str(event.get("message") or "Agent run failed")
+                raise HTTPException(status_code=502, detail=message)
+            if event.get("type") == "assistant_done":
+                final_response = str(event.get("content", ""))
+                break
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Agent run finished without a final assistant response.",
+            )
+    finally:
+        agent.close(reason="api_request_complete")
 
     profile = agent.current_profile()
-    resolve_api_mode = getattr(profile, "resolved_api_mode", None)
-    api_mode = (
-        resolve_api_mode()
-        if callable(resolve_api_mode)
-        else str(getattr(profile, "api_mode", "chat_completions"))
-    )
-    return ChatResponse(
+    return AgentDefinitionRunResponse(
+        agent=definition.name,
+        revision=definition.revision,
         response=final_response,
         profile=profile.name,
         provider=profile.provider,
-        api_mode=api_mode,
+        api_mode=profile.resolved_api_mode(),
         model=profile.model,
         messages=agent.messages,
         context_files=list(agent.project_context_files),
@@ -548,6 +796,13 @@ def delete_extension(name: str) -> ResourceActionResponse:
 
     message = _run_extension_action(lambda agent: _cmd_remove(agent, name))
     return ResourceActionResponse(message=message)
+
+
+def _model_payload(model: BaseModel, *, exclude_unset: bool = False) -> dict[str, Any]:
+    model_dump = getattr(model, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(exclude_unset=exclude_unset)
+    return model.dict(exclude_unset=exclude_unset)
 
 
 def _resource_item(resource: ManagedResource) -> ResourceItem:

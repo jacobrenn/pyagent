@@ -27,6 +27,7 @@ Core files:
 - `pyagent/user_runtime.py` — single source of truth for `~/.pyagent/` paths and runner availability
 - `pyagent/config.py` — environment-driven runtime config and system prompt
 - `pyagent/model_profiles.py` — loads saved model profiles from JSON and env fallback
+- `pyagent/agent_definitions.py` — versioned reusable agent definitions, resource validation, and workspace-bound agent construction
 - `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
 - `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`

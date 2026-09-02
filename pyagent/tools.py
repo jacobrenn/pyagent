@@ -5,6 +5,7 @@ import fnmatch
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any, Callable
 
 from .config import AppConfig
@@ -97,6 +98,24 @@ class ToolRegistry:
     def collisions(self) -> list[CollisionInfo]:
         return list(self._collisions)
 
+    def restricted(self, allowed_names: list[str] | tuple[str, ...] | set[str]) -> "ToolRegistry":
+        """Return a registry containing only explicitly allowed tool names."""
+        allowed = set(allowed_names)
+        restricted = ToolRegistry(builtin_specs=[])
+        restricted._specs = {
+            name: spec for name, spec in self._specs.items() if name in allowed
+        }
+        restricted._origins = {
+            name: origin for name, origin in self._origins.items() if name in allowed
+        }
+        restricted._sources = {
+            name: source for name, source in self._sources.items() if name in allowed
+        }
+        restricted._collisions = [
+            collision for collision in self._collisions if collision.name in allowed
+        ]
+        return restricted
+
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
         if name not in self._specs:
             return f"Error: tool '{name}' not found."
@@ -144,7 +163,12 @@ def _validate_bash_command(command: str, config: AppConfig) -> str | None:
     return None
 
 
-def bash(command: str, timeout: int | None = None, config: AppConfig | None = None) -> str:
+def bash(
+    command: str,
+    timeout: int | None = None,
+    config: AppConfig | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+) -> str:
     """Execute a bash command and return exit code, stdout, and stderr."""
     runtime_config = config or AppConfig.from_env()
     if not runtime_config.bash_enabled:
@@ -163,7 +187,8 @@ def bash(command: str, timeout: int | None = None, config: AppConfig | None = No
             capture_output=True,
             text=True,
             timeout=effective_timeout,
-            cwd=os.getcwd(),
+            cwd=str(Path(cwd).expanduser().resolve()
+                    ) if cwd is not None else os.getcwd(),
         )
     except subprocess.TimeoutExpired:
         return f"Command timed out after {effective_timeout} seconds."
@@ -415,9 +440,104 @@ def edit_file(
     return f"Successfully edited {path} with {count} replacement{'s' if count != 1 else ''}"
 
 
-def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
+def _resolve_bound_path(
+    path: str,
+    *,
+    workspace: Path | None,
+    restrict_workspace: bool,
+) -> tuple[str | None, str | None]:
+    if workspace is None:
+        return path, None
+    try:
+        candidate = Path(path).expanduser()
+        resolved = candidate.resolve() if candidate.is_absolute() else (
+            workspace / candidate).resolve()
+    except (OSError, RuntimeError) as exc:
+        return None, f"Error: could not resolve path {path!r}: {exc}"
+    if restrict_workspace and not resolved.is_relative_to(workspace):
+        return None, f"Error: path is outside the agent workspace: {path}"
+    return str(resolved), None
+
+
+def _default_builtin_specs(
+    config: AppConfig,
+    *,
+    workspace: str | os.PathLike[str] | None = None,
+    restrict_workspace: bool = False,
+) -> list[ToolSpec]:
+    workspace_path = Path(workspace).expanduser(
+    ).resolve() if workspace is not None else None
+
+    def bound(path: str) -> tuple[str | None, str | None]:
+        return _resolve_bound_path(
+            path,
+            workspace=workspace_path,
+            restrict_workspace=restrict_workspace,
+        )
+
     def bash_handler(command: str, timeout: int | None = None) -> str:
-        return bash(command=command, timeout=timeout, config=config)
+        return bash(
+            command=command,
+            timeout=timeout,
+            config=config,
+            cwd=workspace_path,
+        )
+
+    def list_files_handler(path: str = ".", max_depth: int = 2) -> str:
+        resolved, error = bound(path)
+        return error or list_files(path=resolved or path, max_depth=max_depth)
+
+    def find_files_handler(query: str, path: str = ".", max_results: int = 100) -> str:
+        resolved, error = bound(path)
+        return error or find_files(query=query, path=resolved or path, max_results=max_results)
+
+    def search_text_handler(
+        query: str,
+        path: str = ".",
+        glob: str = "*",
+        max_results: int = 50,
+    ) -> str:
+        resolved, error = bound(path)
+        return error or search_text(
+            query=query,
+            path=resolved or path,
+            glob=glob,
+            max_results=max_results,
+        )
+
+    def read_file_handler(
+        path: str,
+        start_line: int = 1,
+        end_line: int | None = None,
+    ) -> str:
+        resolved, error = bound(path)
+        return error or read_file(
+            path=resolved or path,
+            start_line=start_line,
+            end_line=end_line,
+        )
+
+    def write_file_handler(path: str, content: str) -> str:
+        resolved, error = bound(path)
+        return error or write_file(path=resolved or path, content=content)
+
+    def append_file_handler(path: str, content: str) -> str:
+        resolved, error = bound(path)
+        return error or append_file(path=resolved or path, content=content)
+
+    def edit_file_handler(
+        path: str,
+        edits: list[dict[str, str]] | None = None,
+        old_text: str | None = None,
+        new_text: str | None = None,
+    ) -> str:
+        resolved, error = bound(path)
+        return error or edit_file(
+            path=resolved or path,
+            edits=edits,
+            old_text=old_text,
+            new_text=new_text,
+        )
 
     return [
         ToolSpec(
@@ -454,7 +574,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                     },
                 },
             },
-            handler=list_files,
+            handler=list_files_handler,
         ),
         ToolSpec(
             name="find_files",
@@ -472,7 +592,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 },
                 "required": ["query"],
             },
-            handler=find_files,
+            handler=find_files_handler,
         ),
         ToolSpec(
             name="search_text",
@@ -495,7 +615,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 },
                 "required": ["query"],
             },
-            handler=search_text,
+            handler=search_text_handler,
         ),
         ToolSpec(
             name="read_file",
@@ -517,7 +637,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 },
                 "required": ["path"],
             },
-            handler=read_file,
+            handler=read_file_handler,
         ),
         ToolSpec(
             name="write_file",
@@ -530,7 +650,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 },
                 "required": ["path", "content"],
             },
-            handler=write_file,
+            handler=write_file_handler,
         ),
         ToolSpec(
             name="append_file",
@@ -543,7 +663,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 },
                 "required": ["path", "content"],
             },
-            handler=append_file,
+            handler=append_file_handler,
         ),
         ToolSpec(
             name="edit_file",
@@ -584,7 +704,7 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
                 },
                 "required": ["path"],
             },
-            handler=edit_file,
+            handler=edit_file_handler,
         )
     ]
 
@@ -592,10 +712,17 @@ def _default_builtin_specs(config: AppConfig) -> list[ToolSpec]:
 def create_default_tool_registry(
     config: AppConfig | None = None,
     external_specs: list[ToolSpec] | None = None,
+    *,
+    workspace: str | os.PathLike[str] | None = None,
+    restrict_workspace: bool = False,
 ) -> ToolRegistry:
     runtime_config = config or AppConfig.from_env()
     builtin_specs = (
-        _default_builtin_specs(runtime_config)
+        _default_builtin_specs(
+            runtime_config,
+            workspace=workspace,
+            restrict_workspace=restrict_workspace,
+        )
         if runtime_config.builtin_tools_enabled
         else []
     )

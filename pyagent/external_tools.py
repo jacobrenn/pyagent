@@ -398,11 +398,14 @@ class ExternalToolHandler:
         runner_command: Sequence[str],
         invoke_timeout: float = DEFAULT_INVOKE_TIMEOUT_SECONDS,
         max_output_chars: int = MAX_TOOL_OUTPUT_CHARS,
+        cwd: str | os.PathLike[str] | None = None,
     ):
         self.script_path = Path(script_path)
         self.runner_command = list(runner_command)
         self.invoke_timeout = invoke_timeout
         self.max_output_chars = max_output_chars
+        self.cwd = str(Path(cwd).expanduser().resolve()
+                       ) if cwd is not None else None
 
     def __call__(self, **arguments: Any) -> str:
         try:
@@ -417,7 +420,7 @@ class ExternalToolHandler:
             ["--args", payload],
         )
         returncode, stdout, stderr, timed_out = _run_subprocess(
-            command, timeout=self.invoke_timeout
+            command, timeout=self.invoke_timeout, cwd=self.cwd
         )
 
         if timed_out:
@@ -442,6 +445,7 @@ def build_external_tool_specs(
     *,
     invoke_timeout: float = DEFAULT_INVOKE_TIMEOUT_SECONDS,
     runner_command: Sequence[str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> list[ToolSpec]:
     """Convert successfully-discovered manifests into :class:`ToolSpec`s."""
     command_prefix = list(
@@ -455,6 +459,7 @@ def build_external_tool_specs(
             entry.script_path,
             runner_command=command_prefix,
             invoke_timeout=invoke_timeout,
+            cwd=cwd,
         )
         specs.append(
             ToolSpec(

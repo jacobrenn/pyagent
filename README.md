@@ -77,6 +77,7 @@ pyagent --prompt "Summarize this repository"
 - Supports **text-only mode** by disabling model tool calling for a session.
 - Uses **Markdown rendering** for assistant and tool messages, with a plain-text fallback for fenced code blocks containing very long lines so transcript content does not get clipped.
 - Loads **named model profiles** from JSON for easy switching between local and remote endpoints.
+- Stores **versioned agent definitions** that compose profiles, prompts, skills, tool allowlists, workspaces, and run limits.
 - Supports **Ollama** natively and **OpenAI-compatible** providers through the OpenAI Python SDK.
 - Loads layered always-on instructions from user-global and project-local `AGENTS.md` files, with `.md` / `.skill` skills available for explicit loading.
 - Supports persistent **custom tools and skills** under `~/.pyagent/`, safe from package upgrades.
@@ -259,6 +260,93 @@ If the profile file does not exist, PyAgent creates an implicit `default` profil
 - `PYAGENT_API_KEY`
 - `PYAGENT_API_KEY_ENV`
 
+## Reusable agent definitions
+
+Agent definitions are versioned JSON resources under:
+
+```text
+~/.pyagent/agents/
+```
+
+They compose existing PyAgent resources into a reusable role. A definition may select a model profile and override, an installed prompt, explicit skills, a tool allowlist, a workspace, an iteration limit, labels, and capability metadata.
+
+Create and inspect a definition:
+
+```bash
+pyagent agents create reviewer \
+  --description "Reviews Python changes" \
+  --profile openai-mini \
+  --prompt-resource reviewer.md \
+  --skill code-review.md \
+  --tool read_file \
+  --tool find_files \
+  --tool search_text \
+  --workspace /work/project-a \
+  --max-iterations 5 \
+  --label team=engineering \
+  --capability code-review
+
+pyagent agents list
+pyagent agents show reviewer
+pyagent agents validate reviewer
+```
+
+Updates create immutable numbered revisions. The current revision is stored as `agents/<name>.json`; historical snapshots are stored under `agents/.revisions/<name>/`.
+
+```bash
+pyagent agents update reviewer --model gpt-4.1 --max-iterations 7
+pyagent agents revisions reviewer
+pyagent agents show reviewer --revision 1
+```
+
+### Agent-definition CLI update semantics
+
+`pyagent agents update` is a partial update that always creates a new revision:
+
+- Omitted fields keep their values from the current revision.
+- Scalar options such as `--profile`, `--model`, `--prompt-resource`, `--workspace`, and `--max-iterations` replace only that field.
+- Repeated `--skill` values replace the complete skill list; they do not append to the existing list.
+- Repeated `--tool` values replace the complete tool allowlist; they do not append to it.
+- Repeated `--capability` values and `--label KEY=VALUE` values replace their complete collections when supplied.
+- `--no-tools` stores an empty allowlist and disables model tool calling for that agent. Do not combine it with `--tool`; `--no-tools` takes precedence.
+- The agent name and existing revision metadata are immutable.
+
+Changing a profile does not clear an existing model override. Supply both values when moving an overridden agent to a different profile:
+
+```bash
+pyagent agents update reviewer \
+  --profile hf-inference-providers \
+  --model google/gemma-4-31B-it:fastest
+```
+
+The CLI currently has no `--clear-model`, `--clear-profile`, `--clear-prompt`, `--clear-workspace`, or `--inherit-max-iterations` option. Use the REST API or Python client to set those optional fields to JSON `null`. Use empty arrays or objects to clear skills, tools, capabilities, or labels.
+
+Create and update perform structural validation before writing. Run `pyagent agents validate <name>` afterward to resolve profiles, credentials, prompts, skills, external tools, and the workspace against the current environment.
+
+Run one prompt using the current or a pinned revision:
+
+```bash
+pyagent agents run reviewer "Review the current diff"
+pyagent agents run reviewer "Review the current diff" --revision 1 --cwd /work
+```
+
+Definition fields:
+
+- `profile` — saved model profile; omitted means the configured default.
+- `model` — optional model override for that profile.
+- `prompt` — installed prompt name under `~/.pyagent/system_prompts/`; omitted means the active system prompt.
+- `skills` — user or project skill references loaded into context.
+- `tools` — explicit tool allowlist. `null` inherits all enabled tools; an empty list disables tool calling.
+- `workspace` — absolute path, or a path relative to the run's `cwd`.
+- `max_iterations` — positive integer or `-1` for unlimited iterations.
+- `labels` / `capabilities` — orchestration metadata reserved for routing and discovery.
+
+Validation resolves the profile, prompt, skills, tools, workspace, and effective iteration limit without calling the model. Definitions run with workspace-bound tools: relative built-in paths, bash startup, and external-tool subprocesses use the resolved workspace. File tools reject paths that resolve outside it. Bash safety policy still applies, but bash is not a sandbox; omit `bash` from an untrusted agent's allowlist.
+
+Enabled extensions continue to auto-load using the existing global extension lifecycle; per-definition extension selection is not part of this first slice. Extension-provided tools may still be included in a definition's tool allowlist.
+
+This is the local orchestration foundation, not yet a durable deployment scheduler: `/agents/{name}/run` constructs the pinned agent revision for one request. Persistent deployments, sessions, queues, and coordinator delegation can build on these definitions without changing their schema contract.
+
 ## Running PyAgent
 
 ### Interactive TUI
@@ -348,6 +436,11 @@ Endpoints:
 - `GET /health` — basic health check
 - `GET /version` — installed PyAgent package version
 - `POST /run` — run a single non-streaming agent turn
+- `GET /agents` / `POST /agents` — list or create versioned agent definitions
+- `GET /agents/{name}?revision=<n>` / `GET /agents/{name}/revisions` — read or list definition revisions
+- `PUT /agents/{name}` / `DELETE /agents/{name}` — create a new revision or remove a definition
+- `POST /agents/{name}/validate?revision=<n>&cwd=<path>` — resolve and validate a definition
+- `POST /agents/{name}/run` — run one non-streaming turn using a current or pinned definition revision
 - `GET /prompts` — list installed reusable system prompts
 - `POST /prompts/install` — install a prompt from a multipart file upload (`file`) or JSON HTTP(S) URL (`{"url": "..."}`)
 - `GET /prompts/{name}` — read an installed prompt
@@ -403,6 +496,92 @@ The API uses the same profile selection, model override, context loading, and op
 
 If FastAPI or Uvicorn are missing, `pyagent serve` exits with a clear error. If an agent turn yields an internal error event, `POST /run` returns an HTTP error instead of an empty successful response.
 
+### Agent-definition API examples
+
+Create a structurally valid definition:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agents \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "reviewer",
+    "description": "Reviews Python changes",
+    "profile": "hf-inference-providers",
+    "model": null,
+    "prompt": "reviewer.md",
+    "skills": ["user:code-review.md"],
+    "tools": ["read_file", "find_files", "search_text"],
+    "workspace": "/work/project-a",
+    "max_iterations": 5,
+    "labels": {"team": "engineering"},
+    "capabilities": ["code-review"]
+  }'
+```
+
+Creation validates the definition's structure but does not require every referenced resource to be available. Resolve it against the server's current profiles, credentials, prompts, skills, tools (including enabled extension tool directories), and filesystem before deployment or execution:
+
+```bash
+curl -X POST \
+  'http://127.0.0.1:8000/agents/reviewer/validate?revision=1&cwd=/work'
+```
+
+Validation returns `valid`, `errors`, `warnings`, and a `resolved` object containing the effective profile/model, prompt path, skill IDs, tool names, workspace, and iteration limit. It does not call the model.
+
+Update only selected fields and create a new immutable revision:
+
+```bash
+curl -X PUT http://127.0.0.1:8000/agents/reviewer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "google/gemma-4-31B-it:fastest",
+    "tools": ["read_file", "search_text"]
+  }'
+```
+
+`PUT /agents/{name}` has partial-update semantics: omitted fields are preserved, supplied arrays and objects replace their entire values, and JSON `null` restores inheritance for optional fields such as `profile`, `model`, `prompt`, `workspace`, and `max_iterations`. An empty `tools` array disables tool calling; `tools: null` inherits all tools enabled by server configuration. The name and stored revision metadata cannot be updated.
+
+Run the current or a pinned revision. Conversation history remains caller-managed unless a future persistent-session layer is used:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agents/reviewer/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "Review the current changes",
+    "messages": [
+      {"role": "user", "content": "Focus on correctness."},
+      {"role": "assistant", "content": "Understood."}
+    ],
+    "revision": 1,
+    "cwd": "/work"
+  }'
+```
+
+Example response:
+
+```json
+{
+  "agent": "reviewer",
+  "revision": 1,
+  "response": "...",
+  "profile": "hf-inference-providers",
+  "provider": "openai_compatible",
+  "api_mode": "chat_completions",
+  "model": "google/gemma-4-31B-it:fastest",
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "Focus on correctness."},
+    {"role": "assistant", "content": "Understood."},
+    {"role": "user", "content": "Review the current changes"},
+    {"role": "assistant", "content": "..."}
+  ],
+  "context_files": ["~/.pyagent/AGENTS.md", "AGENTS.md"]
+}
+```
+
+`revision` belongs in the run request body; validation and definition lookup accept it as a query parameter. Incoming `system` history is ignored. Deleting an agent definition also deletes its local revision history.
+
+Agent-definition endpoints return `404` for missing definitions or revisions, `409` when creation conflicts with an existing name, and `400` for invalid create/update/run configuration or message history. Request-schema errors return FastAPI's `422`. A validation result with unresolved resources is a successful `200` response with `valid: false`; model-stream failures during `/agents/{name}/run` return `502`, while a run that ends without a final assistant response returns `500`.
+
 Resource install examples:
 
 ```bash
@@ -446,12 +625,53 @@ print(result.profile, result.provider, result.api_mode, result.model)
 print(result.context_files)
 ```
 
+Manage and run reusable agent definitions with the same client:
+
+```python
+from pyagent.client import AgentRunResponse, PyAgentClient
+
+client = PyAgentClient("http://127.0.0.1:8000")
+
+created = client.create_agent({
+    "name": "researcher",
+    "description": "Researches current information",
+    "profile": "hf-inference-providers",
+    "tools": ["searxng"],
+    "workspace": ".",
+    "max_iterations": 5,
+    "labels": {"team": "research"},
+    "capabilities": ["web-search"],
+})
+print(created["name"], created["revision"])
+
+validation = client.validate_agent("researcher", cwd="/work/project-a")
+if not validation["valid"]:
+    raise RuntimeError(validation["errors"])
+
+# Changes are partial and create a new revision. None is encoded as JSON null,
+# so this clears an existing model override and inherits the profile's model.
+updated = client.update_agent("researcher", {"model": None, "max_iterations": 7})
+print(updated["revision"])
+
+result: AgentRunResponse = client.run_agent(
+    "researcher",
+    "Find the official Textual documentation URL.",
+    messages=[],
+    revision=updated["revision"],
+    cwd="/work/project-a",
+)
+print(result.agent, result.revision, result.response)
+```
+
+Agent-definition management methods return decoded dictionaries. `run_agent()` returns `AgentRunResponse`, which includes all `RunResponse` fields plus `agent` and `revision`. Pass `RunResponse.messages` or `AgentRunResponse.messages` back through `messages` to continue caller-managed history. `update_agent()` sends the supplied change dictionary unchanged: omitted keys are preserved by the server, `None` clears optional scalar overrides, and arrays/objects replace their complete stored values.
+
 Client details:
 
 - `PyAgentClient.health()` returns the decoded `/health` JSON payload.
 - `PyAgentClient.is_healthy()` returns `True` or `False` without raising on connection failures.
 - `PyAgentClient.version()` returns the decoded `/version` JSON payload.
 - `PyAgentClient.run(...)` returns a typed `RunResponse` object.
+- Agent-definition helpers include `list_agents()`, `create_agent()`, `show_agent()`, `list_agent_revisions()`, `update_agent()`, `validate_agent()`, `remove_agent()`, and `run_agent()`; `run_agent()` returns a typed `AgentRunResponse`.
 - Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_extensions()`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, upload-file read failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
@@ -734,6 +954,8 @@ Recommended user directory layout:
 ├── system_prompt.txt                # active base system prompt
 ├── system_prompts/                  # reusable system prompts (*.txt, *.md)
 ├── AGENTS.md                        # optional user-global agent instructions
+├── agents/                          # versioned reusable agent definitions
+│   └── .revisions/                  # immutable historical definition revisions
 ├── skills/                          # user-global skills (*.md, *.skill)
 └── tools/                           # user tools, one UV script per tool
     ├── <my_tool>.py
@@ -825,7 +1047,7 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 - `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
 - `PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS` — maximum characters to send for older tool-result messages; the current trailing tool-result block is kept intact, and `0` or `-1` disables masking
 - `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
-- `PYAGENT_USER_DIR` — root for user-managed prompts, tools, skills, logs, and user-global `AGENTS.md`; default `~/.pyagent`. Model profiles use `PYAGENT_MODEL_PROFILES_PATH`.
+- `PYAGENT_USER_DIR` — root for reusable prompts, versioned agent definitions and revision history, tools, skills, extensions, logs, and user-global `AGENTS.md`; default `~/.pyagent`. It does not relocate model profiles or the active system prompt: use `PYAGENT_MODEL_PROFILES_PATH` and `PYAGENT_SYSTEM_PROMPT_PATH` for those files.
 
 ### Tool environment variables
 

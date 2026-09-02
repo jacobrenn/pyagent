@@ -85,6 +85,173 @@ from urllib import error
 # ... (all existing test classes) ...
 
 
+class AgentDefinitionStoreTests(unittest.TestCase):
+    def test_create_update_and_read_revision_history(self) -> None:
+        from pyagent.agent_definitions import AgentDefinitionStore
+
+        with tempfile.TemporaryDirectory() as td:
+            store = AgentDefinitionStore(td)
+            created = store.create(
+                {
+                    "name": "reviewer",
+                    "description": "Reviews code",
+                    "skills": ["review.md", "review.md"],
+                    "tools": ["read_file", "search_text"],
+                    "labels": {"team": "engineering"},
+                }
+            )
+            updated = store.update(
+                "reviewer", {"description": "Reviews Python code"}
+            )
+
+            self.assertEqual(created.revision, 1)
+            self.assertEqual(created.skills, ("review.md",))
+            self.assertEqual(updated.revision, 2)
+            self.assertEqual(store.get("reviewer").description,
+                             "Reviews Python code")
+            self.assertEqual(
+                store.get("reviewer", revision=1).description, "Reviews code")
+            self.assertEqual(
+                [item.revision for item in store.revisions("reviewer")], [1, 2]
+            )
+            self.assertTrue(
+                (Path(td) / "agents" / ".revisions" /
+                 "reviewer" / "00000002.json").is_file()
+            )
+
+            removed = store.delete("reviewer")
+            self.assertEqual(removed.name, "reviewer.json")
+            self.assertFalse(
+                (Path(td) / "agents" / ".revisions" / "reviewer").exists())
+
+    def test_rejects_bad_names_unknown_fields_and_invalid_iteration_limits(self) -> None:
+        from pyagent.agent_definitions import AgentDefinitionError, AgentDefinitionStore
+
+        with tempfile.TemporaryDirectory() as td:
+            store = AgentDefinitionStore(td)
+            with self.assertRaisesRegex(AgentDefinitionError, "Agent name"):
+                store.create({"name": "../bad"})
+            with self.assertRaisesRegex(AgentDefinitionError, "Unknown agent"):
+                store.create({"name": "valid", "mystery": True})
+            with self.assertRaisesRegex(AgentDefinitionError, "max_iterations"):
+                store.create({"name": "valid", "max_iterations": 0})
+
+    def test_validation_resolves_profile_skills_tools_and_workspace(self) -> None:
+        from pyagent.agent_definitions import AgentDefinitionStore, validate_agent_definition
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            user_dir = base / "user"
+            project = base / "project"
+            project.mkdir()
+            (user_dir / "skills").mkdir(parents=True)
+            (user_dir / "skills" / "review.md").write_text(
+                "Review carefully.", encoding="utf-8"
+            )
+            profiles = base / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "base_url": "http://localhost:11434",
+                                "model": "test-model",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            definition = AgentDefinitionStore(user_dir).create(
+                {
+                    "name": "reviewer",
+                    "profile": "local",
+                    "skills": ["review.md"],
+                    "tools": ["read_file"],
+                    "workspace": str(project),
+                    "max_iterations": 3,
+                }
+            )
+            config = AppConfig(
+                model_profiles_path=str(profiles),
+                system_prompt_path=str(base / "system_prompt.txt"),
+                user_dir=str(user_dir),
+                user_tools_enabled=False,
+            )
+
+            result = validate_agent_definition(definition, config=config)
+
+            self.assertTrue(result.valid, result.errors)
+            self.assertEqual(result.resolved["profile"]["model"], "test-model")
+            self.assertEqual(result.resolved["skills"], ["user:review.md"])
+            self.assertEqual(result.resolved["tools"], ["read_file"])
+            self.assertEqual(
+                result.resolved["workspace"], str(project.resolve()))
+            self.assertEqual(result.resolved["max_iterations"], 3)
+
+    def test_build_agent_enforces_tool_allowlist_and_workspace_boundary(self) -> None:
+        from pyagent.agent_definitions import AgentDefinitionStore, build_agent_from_definition
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            user_dir = base / "user"
+            project = base / "project"
+            project.mkdir()
+            profiles = base / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "base_url": "http://localhost:11434",
+                                "model": "test-model",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            AgentDefinitionStore(user_dir).create(
+                {
+                    "name": "writer",
+                    "profile": "local",
+                    "tools": ["read_file", "write_file"],
+                    "workspace": str(project),
+                }
+            )
+            env = {
+                "PYAGENT_USER_DIR": str(user_dir),
+                "PYAGENT_MODEL_PROFILES_PATH": str(profiles),
+                "PYAGENT_SYSTEM_PROMPT_PATH": str(base / "system_prompt.txt"),
+                "PYAGENT_USER_TOOLS_ENABLED": "false",
+            }
+            with mock.patch.dict(os.environ, env):
+                agent, definition, _ = build_agent_from_definition("writer")
+
+            try:
+                self.assertEqual(definition.revision, 1)
+                self.assertEqual(set(agent.tool_registry.names()), {
+                                 "read_file", "write_file"})
+                result = agent.tool_registry.execute(
+                    "write_file", {"path": "notes.txt", "content": "hello"}
+                )
+                self.assertIn("Successfully wrote", result)
+                self.assertEqual(
+                    (project / "notes.txt").read_text(encoding="utf-8"), "hello"
+                )
+                escaped = agent.tool_registry.execute(
+                    "write_file", {"path": "../outside.txt", "content": "nope"}
+                )
+                self.assertIn("outside the agent workspace", escaped)
+                self.assertFalse((base / "outside.txt").exists())
+            finally:
+                agent.client.close()
+
+
 class ApiTests(unittest.TestCase):
     def test_health_endpoint_returns_ok(self) -> None:
         from pyagent.api import create_app
@@ -105,6 +272,103 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("version", response.json())
+
+    def test_agent_definition_api_crud_and_revision_lookup(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": td}):
+                client = TestClient(create_app())
+
+                created = client.post(
+                    "/agents",
+                    json={
+                        "name": "reviewer",
+                        "description": "Reviews code",
+                        "tools": ["read_file"],
+                        "labels": {"team": "engineering"},
+                    },
+                )
+                self.assertEqual(created.status_code, 201)
+                self.assertEqual(created.json()["revision"], 1)
+
+                updated = client.put(
+                    "/agents/reviewer",
+                    json={"description": "Reviews Python code"},
+                )
+                self.assertEqual(updated.status_code, 200)
+                self.assertEqual(updated.json()["revision"], 2)
+
+                original = client.get("/agents/reviewer",
+                                      params={"revision": 1})
+                self.assertEqual(original.status_code, 200)
+                self.assertEqual(
+                    original.json()["description"], "Reviews code")
+
+                revisions = client.get("/agents/reviewer/revisions")
+                self.assertEqual(revisions.status_code, 200)
+                self.assertEqual(
+                    [item["revision"]
+                        for item in revisions.json()["revisions"]],
+                    [1, 2],
+                )
+
+                listed = client.get("/agents")
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(
+                    [item["name"] for item in listed.json()["agents"]],
+                    ["reviewer"],
+                )
+
+                removed = client.delete("/agents/reviewer")
+                self.assertEqual(removed.status_code, 200)
+                self.assertEqual(client.get(
+                    "/agents/reviewer").status_code, 404)
+
+    def test_agent_definition_run_endpoint_uses_resolved_agent(self) -> None:
+        from pyagent.api import create_app
+
+        mock_agent = mock.Mock()
+        mock_agent.run.return_value = [
+            {"type": "assistant_done", "content": "Reviewed"}
+        ]
+        mock_agent.current_profile.return_value = SimpleNamespace(
+            name="local",
+            provider="ollama",
+            model="test-model",
+            resolved_api_mode=lambda: "chat_completions",
+        )
+        mock_agent.messages = [{"role": "assistant", "content": "Reviewed"}]
+        mock_agent.project_context_files = ["AGENTS.md"]
+        definition = SimpleNamespace(name="reviewer", revision=3)
+
+        client = TestClient(create_app())
+        with mock.patch(
+            "pyagent.agent_definitions.build_agent_from_definition",
+            return_value=(mock_agent, definition, mock.Mock()),
+        ) as mock_build:
+            response = client.post(
+                "/agents/reviewer/run",
+                json={
+                    "message": "Review this",
+                    "messages": [{"role": "user", "content": "Earlier"}],
+                    "revision": 3,
+                    "cwd": "/tmp/project",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["agent"], "reviewer")
+        self.assertEqual(response.json()["revision"], 3)
+        self.assertEqual(response.json()["response"], "Reviewed")
+        mock_build.assert_called_once_with(
+            "reviewer", revision=3, cwd="/tmp/project"
+        )
+        mock_agent.load_extensions.assert_called_once_with()
+        mock_agent.load_messages.assert_called_once_with(
+            [{"role": "user", "content": "Earlier"}]
+        )
+        mock_agent.close.assert_called_once_with(reason="api_request_complete")
 
     def test_run_endpoint_returns_agent_response_payload(self) -> None:
         from pyagent.api import create_app
@@ -438,6 +702,55 @@ class PyAgentClientTests(unittest.TestCase):
             {"name": "demo", "url": "https://example.test/repo.git"},
         )
 
+    def test_agent_definition_helpers_call_expected_endpoints(self) -> None:
+        from pyagent.client import PyAgentClient
+
+        client = PyAgentClient()
+        with mock.patch.object(
+            client, "_request_json", return_value={"name": "reviewer"}
+        ) as mock_request:
+            result = client.create_agent(
+                {"name": "reviewer", "tools": ["read_file"]}
+            )
+        self.assertEqual(result, {"name": "reviewer"})
+        mock_request.assert_called_once_with(
+            "POST", "/agents", {"name": "reviewer", "tools": ["read_file"]}
+        )
+
+        run_payload = {
+            "agent": "reviewer",
+            "revision": 2,
+            "response": "Done",
+            "profile": "local",
+            "provider": "ollama",
+            "api_mode": "chat_completions",
+            "model": "test-model",
+            "messages": [{"role": "assistant", "content": "Done"}],
+            "context_files": [],
+        }
+        with mock.patch.object(
+            client, "_request_json", return_value=run_payload
+        ) as mock_request:
+            result = client.run_agent(
+                "reviewer",
+                "Review",
+                revision=2,
+                cwd="/tmp/project",
+            )
+        self.assertEqual(result.agent, "reviewer")
+        self.assertEqual(result.revision, 2)
+        self.assertEqual(result.response, "Done")
+        mock_request.assert_called_once_with(
+            "POST",
+            "/agents/reviewer/run",
+            {
+                "message": "Review",
+                "messages": [],
+                "revision": 2,
+                "cwd": "/tmp/project",
+            },
+        )
+
     def test_install_helper_supports_url_and_file_uploads(self) -> None:
         from pyagent.client import PyAgentClient
 
@@ -567,6 +880,7 @@ class MainCliTests(unittest.TestCase):
                         model="my-model",
                         project_context="ctx",
                         project_context_files=["~/.pyagent/AGENTS.md"],
+                        workspace=os.getcwd(),
                     )
 
     def test_single_shot_mode_loads_requested_skills(self) -> None:
@@ -662,6 +976,7 @@ class MainCliTests(unittest.TestCase):
             model="mod",
             project_context="ctx",
             project_context_files=["~/.pyagent/AGENTS.md"],
+            workspace="/tmp",
         )
 
     def test_serve_subcommand_runs_uvicorn(self) -> None:
@@ -768,6 +1083,56 @@ class MainCliTests(unittest.TestCase):
         profile = store.get("responses")
         self.assertEqual(profile.api_mode, "responses")
         self.assertEqual(profile.base_url, "https://api.openai.com/v1")
+
+    def test_agents_subcommands_manage_versioned_definitions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": temp_dir}):
+                with mock.patch("sys.stdout"):
+                    main_entry(
+                        [
+                            "agents",
+                            "create",
+                            "reviewer",
+                            "--description",
+                            "Reviews code",
+                            "--tool",
+                            "read_file",
+                            "--label",
+                            "team=engineering",
+                        ]
+                    )
+                    main_entry(
+                        [
+                            "agents",
+                            "update",
+                            "reviewer",
+                            "--description",
+                            "Reviews Python code",
+                        ]
+                    )
+
+                with mock.patch("sys.stdout") as mock_stdout:
+                    main_entry(
+                        ["agents", "show", "reviewer", "--revision", "1"])
+                shown = "".join(
+                    str(call.args[0]) for call in mock_stdout.write.call_args_list
+                )
+                self.assertIn('"revision": 1', shown)
+                self.assertIn("Reviews code", shown)
+
+                with mock.patch("sys.stdout") as mock_stdout:
+                    main_entry(["agents", "list"])
+                listed = "".join(
+                    str(call.args[0]) for call in mock_stdout.write.call_args_list
+                )
+                self.assertIn("reviewer", listed)
+                self.assertIn("2", listed)
+
+                with mock.patch("sys.stdout"):
+                    main_entry(["agents", "remove", "reviewer"])
+                self.assertFalse(
+                    (Path(temp_dir) / "agents" / "reviewer.json").exists()
+                )
 
     def test_prompts_subcommands_manage_system_prompt_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

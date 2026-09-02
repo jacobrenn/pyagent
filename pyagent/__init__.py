@@ -1,3 +1,4 @@
-from .client import PyAgentClient, PyAgentClientError, RunResponse
+from .client import AgentRunResponse, PyAgentClient, PyAgentClientError, RunResponse
 
-__all__ = ["PyAgentClient", "PyAgentClientError", "RunResponse"]
+__all__ = ["AgentRunResponse", "PyAgentClient",
+           "PyAgentClientError", "RunResponse"]

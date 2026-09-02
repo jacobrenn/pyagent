@@ -2,6 +2,7 @@
 from importlib.metadata import version
 from tabulate import tabulate
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -77,6 +78,7 @@ def build_agent_for_request(
         model=model,
         project_context=project_context,
         project_context_files=project_context_files,
+        workspace=base_cwd,
     )
 
 
@@ -94,11 +96,170 @@ def run_single_shot(
     )
     agent.load_extensions()
     response = ""
-    for event in agent.run(prompt):
-        if event.get("type") == "assistant_done":
-            response = event["content"]
-            break
+    try:
+        for event in agent.run(prompt):
+            if event.get("type") == "assistant_done":
+                response = event["content"]
+                break
+    finally:
+        agent.close(reason="single_shot_complete")
     return response
+
+
+def run_agent_definition(
+    *,
+    name: str,
+    prompt: str,
+    revision: int | None = None,
+    cwd: str | None = None,
+) -> str:
+    from .agent_definitions import build_agent_from_definition
+
+    agent, _, _ = build_agent_from_definition(name, revision=revision, cwd=cwd)
+    agent.load_extensions()
+    response = ""
+    completed = False
+    try:
+        for event in agent.run(prompt):
+            if event.get("type") == "error":
+                raise ValueError(
+                    str(event.get("message") or "Agent run failed"))
+            if event.get("type") == "assistant_done":
+                response = str(event.get("content", ""))
+                completed = True
+                break
+        if not completed:
+            raise ValueError(
+                "Agent run finished without a final assistant response.")
+    finally:
+        agent.close(reason="single_shot_complete")
+    return response
+
+
+def _parse_agent_labels(values: list[str] | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for value in values or []:
+        if "=" not in value:
+            raise ValueError(f"Invalid label {value!r}; expected KEY=VALUE.")
+        key, item = value.split("=", 1)
+        if not key.strip():
+            raise ValueError("Agent label keys must not be empty.")
+        labels[key.strip()] = item
+    return labels
+
+
+def _agent_changes_from_args(args: argparse.Namespace, *, creating: bool) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    fields = (
+        "description",
+        "profile",
+        "model",
+        "prompt_resource",
+        "workspace",
+        "max_iterations",
+    )
+    for field_name in fields:
+        value = getattr(args, field_name, None)
+        if value is not None:
+            target = "prompt" if field_name == "prompt_resource" else field_name
+            changes[target] = value
+    if creating and "description" not in changes:
+        changes["description"] = ""
+    if getattr(args, "skill", None) is not None:
+        changes["skills"] = args.skill
+    if getattr(args, "no_tools", False):
+        changes["tools"] = []
+    elif getattr(args, "tool", None) is not None:
+        changes["tools"] = args.tool
+    if getattr(args, "capability", None) is not None:
+        changes["capabilities"] = args.capability
+    if getattr(args, "label", None) is not None:
+        changes["labels"] = _parse_agent_labels(args.label)
+    return changes
+
+
+def _handle_agents_command(args: argparse.Namespace) -> None:
+    from .agent_definitions import (
+        AgentDefinitionError,
+        AgentDefinitionStore,
+        validate_agent_definition,
+    )
+
+    store = AgentDefinitionStore()
+    try:
+        if args.agent_action == "list":
+            definitions = store.list()
+            if not definitions:
+                print(f"No agent definitions found in {store.root}.")
+                return
+            rows = [
+                [
+                    item.name,
+                    item.revision,
+                    item.profile or "<default>",
+                    item.model or "<profile>",
+                    item.workspace or ".",
+                ]
+                for item in definitions
+            ]
+            print(tabulate(rows, headers=[
+                  "Name", "Revision", "Profile", "Model", "Workspace"]))
+            return
+        if args.agent_action == "show":
+            definition = store.get(args.name, revision=args.revision)
+            print(json.dumps(definition.to_dict(), indent=2, sort_keys=True))
+            return
+        if args.agent_action == "revisions":
+            revisions = store.revisions(args.name)
+            rows = [
+                [item.revision, item.updated_at,
+                    item.profile or "<default>", item.model or "<profile>"]
+                for item in revisions
+            ]
+            print(tabulate(rows, headers=[
+                  "Revision", "Updated", "Profile", "Model"]))
+            return
+        if args.agent_action == "create":
+            payload = {"name": args.name, **
+                       _agent_changes_from_args(args, creating=True)}
+            definition = store.create(payload)
+            print(
+                f"Created agent `{definition.name}` revision {definition.revision} at {store.root}.")
+            return
+        if args.agent_action == "update":
+            definition = store.update(
+                args.name, _agent_changes_from_args(args, creating=False)
+            )
+            print(
+                f"Updated agent `{definition.name}` to revision {definition.revision}.")
+            return
+        if args.agent_action == "validate":
+            definition = store.get(args.name, revision=args.revision)
+            result = validate_agent_definition(definition, cwd=args.cwd)
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+            if not result.valid:
+                raise SystemExit(2)
+            return
+        if args.agent_action == "remove":
+            removed = store.delete(args.name)
+            print(f"Removed agent definition {removed}.")
+            return
+        if args.agent_action == "run":
+            response = run_agent_definition(
+                name=args.name,
+                prompt=args.message,
+                revision=args.revision,
+                cwd=args.cwd,
+            )
+            sys.stdout.write(response)
+            sys.stdout.flush()
+            return
+    except (AgentDefinitionError, ValueError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        sys.stderr.flush()
+        raise SystemExit(2) from exc
+
+    raise SystemExit(f"Unknown agents action: {args.agent_action}")
 
 
 def _print_resource_list(kind_name: str) -> None:
@@ -438,6 +599,67 @@ def main(argv: list[str] | None = None) -> None:
     add_resource_parser("tools", "tool")
     add_resource_parser("prompts", "prompt", show=True, use=True)
 
+    agents_parser = subparsers.add_parser(
+        "agents", help="Manage reusable agent definitions"
+    )
+    agents_subparsers = agents_parser.add_subparsers(
+        dest="agent_action", required=True
+    )
+    agents_subparsers.add_parser("list", help="List agent definitions")
+
+    agent_show = agents_subparsers.add_parser(
+        "show", help="Show an agent definition")
+    agent_show.add_argument("name")
+    agent_show.add_argument("--revision", type=int)
+
+    agent_revisions = agents_subparsers.add_parser(
+        "revisions", help="List immutable revisions for an agent definition"
+    )
+    agent_revisions.add_argument("name")
+
+    def add_agent_definition_fields(agent_parser: argparse.ArgumentParser) -> None:
+        agent_parser.add_argument("--description")
+        agent_parser.add_argument("--profile")
+        agent_parser.add_argument("--model")
+        agent_parser.add_argument("--prompt-resource", dest="prompt_resource")
+        agent_parser.add_argument("--skill", action="append")
+        agent_parser.add_argument("--tool", action="append")
+        agent_parser.add_argument(
+            "--no-tools", action="store_true", help="Disable tool calling for this agent"
+        )
+        agent_parser.add_argument("--workspace")
+        agent_parser.add_argument("--max-iterations", type=int)
+        agent_parser.add_argument(
+            "--label", action="append", metavar="KEY=VALUE")
+        agent_parser.add_argument("--capability", action="append")
+
+    agent_create = agents_subparsers.add_parser(
+        "create", help="Create an agent definition")
+    agent_create.add_argument("name")
+    add_agent_definition_fields(agent_create)
+
+    agent_update = agents_subparsers.add_parser(
+        "update", help="Create a new agent revision")
+    agent_update.add_argument("name")
+    add_agent_definition_fields(agent_update)
+
+    agent_validate = agents_subparsers.add_parser(
+        "validate", help="Resolve and validate an agent definition")
+    agent_validate.add_argument("name")
+    agent_validate.add_argument("--revision", type=int)
+    agent_validate.add_argument("--cwd")
+
+    agent_remove = agents_subparsers.add_parser(
+        "remove", help="Remove an agent definition and revision history")
+    agent_remove.add_argument("name")
+
+    agent_run = agents_subparsers.add_parser(
+        "run", help="Run one prompt with an agent definition")
+    agent_run.add_argument("name")
+    agent_run.add_argument("message")
+    agent_run.add_argument("--revision", type=int)
+    agent_run.add_argument("--cwd")
+
     extensions_parser = subparsers.add_parser(
         "extensions",
         help="Manage installed extensions on disk",
@@ -470,6 +692,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command in {"skills", "tools", "prompts"}:
         _handle_resource_command(args)
+        return
+
+    if args.command == "agents":
+        _handle_agents_command(args)
         return
 
     if args.command == "extensions":
