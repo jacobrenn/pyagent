@@ -10,6 +10,11 @@ from typing import Any
 from urllib import parse
 
 from .config import AppConfig
+from .extension_resources import (
+    install_extension_bytes,
+    install_extension_url,
+    normalize_extension_name,
+)
 from .external_tools import (
     build_external_tool_specs,
     default_runner_command,
@@ -34,10 +39,18 @@ from .resources import (
 from .scaffold import ScaffoldError, create_user_tool
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN, create_default_tool_registry
 from .user_runtime import resolve_user_dir, user_extensions_dir
+from .webui import ASSETS_DIR as _WEB_UI_ASSETS_DIR
+from .webui import INDEX_FILE as _WEB_UI_INDEX_FILE
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import (
+        FileResponse,
+        HTMLResponse,
+        RedirectResponse,
+        StreamingResponse,
+    )
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - exercised via CLI guard
     raise RuntimeError(
@@ -340,6 +353,48 @@ class _ParsedInstallRequest:
 
 app = FastAPI(title="PyAgent API")
 _PROFILE_STORE_LOCK = threading.RLock()
+
+if _WEB_UI_ASSETS_DIR.is_dir():
+    app.mount(
+        "/ui/assets",
+        StaticFiles(directory=str(_WEB_UI_ASSETS_DIR)),
+        name="webui-assets",
+    )
+
+
+@app.get("/", include_in_schema=False)
+def web_ui_root() -> RedirectResponse:
+    return RedirectResponse(url="/ui/")
+
+
+@app.get("/ui", include_in_schema=False)
+def web_ui_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/ui/")
+
+
+@app.get("/ui/", include_in_schema=False)
+def web_ui_index():
+    if not _WEB_UI_INDEX_FILE.is_file():
+        return HTMLResponse(
+            status_code=503,
+            content=(
+                "<h1>PyAgent UI is not built</h1>"
+                "<p>Run <code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code> "
+                "and restart <code>pyagent serve</code>.</p>"
+            ),
+        )
+    return FileResponse(
+        str(_WEB_UI_INDEX_FILE),
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/ui/{path:path}", include_in_schema=False)
+def web_ui_fallback(path: str):
+    if path == "assets" or path.startswith("assets/"):
+        raise HTTPException(status_code=404, detail="UI asset not found")
+    return web_ui_index()
 
 
 @app.get("/health")
@@ -926,10 +981,18 @@ def list_tools() -> ToolsResponse:
     discovery_error: str | None = None
     if config.user_tools_enabled:
         try:
+            from .extensions.loader import _discover, loaded_extension_tool_dirs
+
+            resolved_user_dir = resolve_user_dir(config.user_dir)
+            extension_dir = user_extensions_dir(resolved_user_dir)
+            extension_tool_dirs = loaded_extension_tool_dirs(
+                extension_dir, _discover(extension_dir)
+            )
             discovery = discover_external_tools(
                 user_dir=config.user_dir,
                 runner=config.tool_runner,
                 describe_timeout=config.user_tool_describe_timeout,
+                extra_tool_dirs=extension_tool_dirs,
             )
         except Exception as exc:  # pragma: no cover - defensive fallback
             discovery_error = str(exc)
@@ -1091,10 +1154,73 @@ def list_extensions() -> ExtensionsResponse:
 def new_extension(request: ExtensionNewRequest) -> ResourceActionResponse:
     from .extensions.manager import _cmd_new
 
+    try:
+        name = normalize_extension_name(request.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if request.url and not _is_http_url(request.url):
+        raise HTTPException(
+            status_code=400,
+            detail="Extension repository URLs must use HTTP or HTTPS.",
+        )
     message = _run_extension_action(
-        lambda agent: _cmd_new(agent, request.name, request.url)
+        lambda agent: _cmd_new(agent, name, request.url)
     )
     return ResourceActionResponse(message=message)
+
+
+@app.post("/extensions/install", response_model=ResourceActionResponse)
+async def install_extension(request: Request) -> ResourceActionResponse:
+    parsed = await _parse_install_request(request)
+    config = AppConfig.from_env()
+    try:
+        if parsed.source_url is not None:
+            suffix = Path(parse.urlparse(
+                parsed.source_url).path).suffix.lower()
+            if suffix in {".py", ".zip"}:
+                result = install_extension_url(
+                    parsed.source_url,
+                    name=parsed.name,
+                    force=parsed.force,
+                    user_dir=config.user_dir,
+                )
+            else:
+                if parsed.force:
+                    raise ValueError(
+                        "Force replacement is supported for direct .py/.zip URLs and "
+                        "uploads, not Git repository installs."
+                    )
+                if not parsed.name:
+                    raise ValueError(
+                        "Git repository extension installs require an explicit name."
+                    )
+                from .extensions.manager import _cmd_new
+
+                repository_name = normalize_extension_name(parsed.name)
+                message = _run_extension_action(
+                    lambda agent: _cmd_new(
+                        agent, repository_name, parsed.source_url
+                    )
+                )
+                return ResourceActionResponse(message=message)
+        else:
+            result = install_extension_bytes(
+                parsed.upload_bytes or b"",
+                source_name=parsed.upload_name or "",
+                name=parsed.name,
+                force=parsed.force,
+                user_dir=config.user_dir,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ResourceActionResponse(
+        message=(
+            f"Installed extension `{result.name}` to {result.destination} "
+            f"({result.bytes_written} bytes)"
+        ),
+        path=str(result.destination),
+    )
 
 
 @app.post("/extensions/{name}/enable", response_model=ResourceActionResponse)
@@ -1192,7 +1318,8 @@ def _agent_streaming_response(
 def _normalize_profile_api_name(value: str) -> str:
     name = value.strip()
     if not name:
-        raise HTTPException(status_code=400, detail="Profile name must not be empty.")
+        raise HTTPException(
+            status_code=400, detail="Profile name must not be empty.")
     if "/" in name or "\\" in name:
         raise HTTPException(
             status_code=400,

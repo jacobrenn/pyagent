@@ -240,9 +240,11 @@ def validate_model_profile(profile: ModelProfile) -> None:
     if not profile.name.strip():
         raise ValueError("Profile name must not be empty.")
     if not profile.model.strip():
-        raise ValueError(f"Profile '{profile.name}' must define a non-empty model.")
+        raise ValueError(
+            f"Profile '{profile.name}' must define a non-empty model.")
     if not profile.base_url.strip():
-        raise ValueError(f"Profile '{profile.name}' must define a non-empty base URL.")
+        raise ValueError(
+            f"Profile '{profile.name}' must define a non-empty base URL.")
     profile.resolved_provider()
     profile.resolved_api_mode()
 
@@ -258,7 +260,8 @@ def normalize_model_profile(profile: ModelProfile) -> ModelProfile:
         api_mode=profile.resolved_api_mode(),
         api_key=profile.api_key.strip() if profile.api_key else None,
         api_key_env=profile.api_key_env.strip() if profile.api_key_env else None,
-        headers={str(key): str(value) for key, value in profile.headers.items()},
+        headers={str(key): str(value)
+                 for key, value in profile.headers.items()},
         httpx_kwargs=dict(profile.httpx_kwargs),
     )
 

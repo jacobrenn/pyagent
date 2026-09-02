@@ -11,6 +11,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+import zipfile
 
 from typing import Any
 
@@ -276,6 +277,41 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_serve_exposes_packaged_web_ui(self) -> None:
+        from pyagent.api import create_app
+        from pyagent.webui import ASSETS_DIR
+
+        client = TestClient(create_app())
+        root = client.get("/", follow_redirects=False)
+        ui = client.get("/ui/")
+        assets = sorted(path for path in ASSETS_DIR.iterdir()
+                        if path.is_file())
+
+        self.assertEqual(root.status_code, 307)
+        self.assertEqual(root.headers["location"], "/ui/")
+        self.assertEqual(ui.status_code, 200)
+        self.assertIn('id="app"', ui.text)
+        self.assertIn('id="app"', client.get("/ui/conversations/local").text)
+        self.assertTrue(assets)
+        asset_response = client.get(f"/ui/assets/{assets[0].name}")
+        self.assertEqual(asset_response.status_code, 200)
+        self.assertEqual(client.get(
+            "/ui/assets/does-not-exist.js").status_code, 404)
+        self.assertEqual(client.get("/health").json(), {"status": "ok"})
+        self.assertEqual(client.get("/docs").status_code, 200)
+
+    def test_web_ui_returns_build_instructions_when_index_is_missing(self) -> None:
+        from pyagent.api import create_app
+
+        with mock.patch(
+            "pyagent.api._WEB_UI_INDEX_FILE",
+            Path("/definitely/missing/pyagent-webui-index.html"),
+        ):
+            response = TestClient(create_app()).get("/ui/")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("npm run build", response.text)
 
     def test_version_endpoint_returns_version(self) -> None:
         from pyagent.api import create_app
@@ -898,8 +934,10 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(error_events[-1]["code"], "agent_error")
         self.assertEqual(error_events[-1]["message"], "API Error: boom")
-        debug_agent.close.assert_called_once_with(reason="api_request_complete")
-        error_agent.close.assert_called_once_with(reason="api_request_complete")
+        debug_agent.close.assert_called_once_with(
+            reason="api_request_complete")
+        error_agent.close.assert_called_once_with(
+            reason="api_request_complete")
 
     def test_run_stream_normalizes_incomplete_and_internal_failures(self) -> None:
         from pyagent.api import create_app
@@ -1139,6 +1177,97 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(removed.status_code, 200)
                 self.assertFalse((user_dir / "extensions" / "demo").exists())
 
+    def test_extension_api_installs_python_files_and_zip_packages(self) -> None:
+        from pyagent.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            user_dir = Path(td) / "user"
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": str(user_dir)}):
+                client = TestClient(create_app())
+
+                single = client.post(
+                    "/extensions/install",
+                    files={
+                        "file": (
+                            "guard.py",
+                            b"def register(bus, name):\n    pass\n",
+                            "text/x-python",
+                        )
+                    },
+                )
+                self.assertEqual(single.status_code, 200)
+                self.assertTrue(
+                    (user_dir / "extensions" / "guard.py").is_file()
+                )
+
+                archive_bytes = io.BytesIO()
+                with zipfile.ZipFile(archive_bytes, "w") as archive:
+                    archive.writestr(
+                        "source-package/__init__.py",
+                        "def register(bus, name):\n    pass\n",
+                    )
+                    archive.writestr(
+                        "source-package/skills/review.md", "# Review\n"
+                    )
+                package = client.post(
+                    "/extensions/install",
+                    data={"name": "review_pack"},
+                    files={
+                        "file": (
+                            "source-package.zip",
+                            archive_bytes.getvalue(),
+                            "application/zip",
+                        )
+                    },
+                )
+                self.assertEqual(package.status_code, 200)
+                self.assertTrue(
+                    (user_dir / "extensions" /
+                     "review_pack" / "__init__.py").is_file()
+                )
+                self.assertTrue(
+                    (
+                        user_dir
+                        / "extensions"
+                        / "review_pack"
+                        / "skills"
+                        / "review.md"
+                    ).is_file()
+                )
+
+                listed = client.get("/extensions").json()
+                self.assertEqual(
+                    [item["name"] for item in listed["enabled"]],
+                    ["guard", "review_pack"],
+                )
+
+    def test_extension_zip_install_rejects_path_traversal(self) -> None:
+        from pyagent.api import create_app
+
+        archive_bytes = io.BytesIO()
+        with zipfile.ZipFile(archive_bytes, "w") as archive:
+            archive.writestr("package/__init__.py", "")
+            archive.writestr("package/../../escaped.py", "bad")
+
+        with tempfile.TemporaryDirectory() as td:
+            user_dir = Path(td) / "user"
+            with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": str(user_dir)}):
+                response = TestClient(create_app()).post(
+                    "/extensions/install",
+                    data={"name": "unsafe"},
+                    files={
+                        "file": (
+                            "unsafe.zip",
+                            archive_bytes.getvalue(),
+                            "application/zip",
+                        )
+                    },
+                )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("Unsafe path", response.json()["detail"])
+            self.assertFalse((Path(td) / "escaped.py").exists())
+
 
 class PyAgentClientTests(unittest.TestCase):
     def test_run_includes_messages_payload(self) -> None:
@@ -1313,7 +1442,8 @@ class PyAgentClientTests(unittest.TestCase):
             if payload is None:
                 mock_request.assert_called_once_with(http_method, path)
             else:
-                mock_request.assert_called_once_with(http_method, path, payload)
+                mock_request.assert_called_once_with(
+                    http_method, path, payload)
 
     def test_agent_definition_helpers_call_expected_endpoints(self) -> None:
         from pyagent.client import PyAgentClient
@@ -1389,6 +1519,28 @@ class PyAgentClientTests(unittest.TestCase):
                     {"label": "tool.py"},
                 )
         mock_upload.assert_called_once()
+
+        with mock.patch.object(
+            client,
+            "_request_json",
+            return_value={"message": "installed"},
+        ) as mock_extension_request:
+            self.assertEqual(
+                client.install_extension(
+                    url="https://example.test/guard.zip",
+                    name="guard",
+                ),
+                {"message": "installed"},
+            )
+        mock_extension_request.assert_called_once_with(
+            "POST",
+            "/extensions/install",
+            {
+                "url": "https://example.test/guard.zip",
+                "force": False,
+                "name": "guard",
+            },
+        )
 
 
 class AgentMessageLoadingTests(unittest.TestCase):
@@ -3742,6 +3894,10 @@ class PackagingTests(unittest.TestCase):
     def test_pyproject_includes_pyagent_subpackages(self) -> None:
         pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('include = ["pyagent*"]', pyproject)
+        self.assertIn(
+            '"pyagent.webui" = ["dist/*", "dist/assets/*"]', pyproject)
+        self.assertTrue((Path("pyagent/webui/dist") / "index.html").is_file())
+        self.assertTrue(any((Path("pyagent/webui/dist") / "assets").iterdir()))
 
 
 class ScaffoldTests(unittest.TestCase):

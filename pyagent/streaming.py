@@ -105,10 +105,12 @@ async def stream_agent_sse(
                 if cancelled.is_set():
                     break
                 if not isinstance(raw_event, dict):
-                    raise TypeError("Agent emitted a non-object streaming event.")
+                    raise TypeError(
+                        "Agent emitted a non-object streaming event.")
                 event_type = raw_event.get("type")
                 if not isinstance(event_type, str) or not event_type:
-                    raise ValueError("Agent emitted a streaming event without a type.")
+                    raise ValueError(
+                        "Agent emitted a streaming event without a type.")
                 if terminal_event is not None:
                     continue
                 if event_type == "debug" and not include_debug:

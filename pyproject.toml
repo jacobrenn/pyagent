@@ -47,3 +47,6 @@ pyagent = "pyagent.main:main"
 
 [tool.setuptools.packages.find]
 include = ["pyagent*"]
+
+[tool.setuptools.package-data]
+"pyagent.webui" = ["dist/*", "dist/assets/*"]

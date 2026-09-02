@@ -716,6 +716,23 @@ class PyAgentClient:
         """
         return self._expect_dict(self._request_json("GET", "/extensions"), "extensions list")
 
+    def install_extension(
+        self,
+        *,
+        url: str | None = None,
+        file_path: str | Path | None = None,
+        name: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Install an extension from a Git/direct URL, Python file, or zip package."""
+        return self._install_resource(
+            "/extensions/install",
+            url=url,
+            file_path=file_path,
+            name=name,
+            force=force,
+        )
+
     def new_extension(self, name: str, *, url: str | None = None) -> dict[str, Any]:
         """Create a new user extension scaffold.
 
@@ -903,7 +920,7 @@ class PyAgentClient:
         name: str | None,
         force: bool,
     ) -> dict[str, Any]:
-        """Install a prompt, skill, or tool using the shared install contract.
+        """Install a managed resource using the shared install contract.
 
         Exactly one of ``url`` and ``file_path`` must be supplied.  URL installs
         are sent as JSON so the server can fetch the resource.  File installs

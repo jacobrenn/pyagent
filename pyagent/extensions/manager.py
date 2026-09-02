@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib import parse
 
+from ..extension_resources import normalize_extension_name
 from ..scaffold import ScaffoldError, create_user_extension
 from ..user_runtime import resolve_user_dir, user_extensions_dir
 from .loader import _discover, load_all, load_one, unload_one
@@ -86,9 +88,18 @@ def _cmd_reload(agent: Any) -> str:
 
 def _cmd_new(agent: Any, name: str, url: str | None = None) -> str:
     if url:
+        try:
+            name = normalize_extension_name(name)
+        except ValueError as exc:
+            return str(exc)
+
         import subprocess
         import shutil
+
+        if parse.urlparse(url).scheme.lower() not in {"http", "https"}:
+            return "Extension repository URLs must use HTTP or HTTPS."
         ext_dir = _ext_dir(agent)
+        ext_dir.mkdir(parents=True, exist_ok=True)
         dest = ext_dir / name
         if dest.exists():
             return f"Extension `{name}` already exists at `{dest}`. Remove it first."
@@ -107,7 +118,7 @@ def _cmd_new(agent: Any, name: str, url: str | None = None) -> str:
                 shutil.rmtree(tmp_dir)
 
             subprocess.run(
-                ["git", "clone", repo_url, str(tmp_dir)],
+                ["git", "clone", "--", repo_url, str(tmp_dir)],
                 check=True,
                 capture_output=True,
                 text=True

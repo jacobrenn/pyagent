@@ -330,6 +330,8 @@ pyagent agents run reviewer "Review the current diff"
 pyagent agents run reviewer "Review the current diff" --revision 1 --cwd /work
 ```
 
+The `pyagent serve` browser UI also has an **Agents** page for creating, editing, validating, deleting, and inspecting revisions. Choose **Run in chat** to open a browser-local conversation pinned to the selected revision, or select any current agent definition from the chat runtime menu.
+
 Definition fields:
 
 - `profile` — saved model profile; omitted means the configured default.
@@ -425,6 +427,33 @@ Then start the server:
 pyagent serve
 ```
 
+Open <http://127.0.0.1:8000/ui/> (or the server root) for the bundled browser UI. The first release includes:
+
+- streaming chat with visible tool calls/results and a Stop control
+- per-conversation profile, model, working-directory, skill, and debug controls
+- browser-local conversation history stored in IndexedDB, with a local-storage fallback
+- profile creation, editing, deletion, default selection, and endpoint model discovery
+- a resource manager for uploading, installing, enabling/disabling, and deleting tools, skills, and extensions
+- a versioned agent editor with resource selection, validation, revision history, and **Run in chat**
+- ad hoc and stored-agent conversations using the same streaming transcript and Stop control
+- secret-preserving profile updates: blank credentials preserve existing values, while explicit clear controls send `null`
+
+The compiled UI ships inside the Python wheel; Node is not needed to run it. Frontend contributors can run a development server separately:
+
+```bash
+# terminal 1
+pyagent serve
+
+# terminal 2
+cd web
+npm install
+npm run dev
+```
+
+Vite proxies API requests to `http://127.0.0.1:8000`. Production assets are generated with `npm run build` into `pyagent/webui/dist/` and must be rebuilt when frontend sources change.
+
+> **Security:** `pyagent serve` and its browser UI are intended for trusted localhost use. They do not currently provide authentication, workspace-root confinement for arbitrary API runs, or a security boundary around every executable tool/extension. Do not expose the server to an untrusted network or users.
+
 Optional bind overrides:
 
 ```bash
@@ -433,6 +462,7 @@ pyagent serve --host 0.0.0.0 --port 8000
 
 Endpoints:
 
+- `GET /` / `GET /ui/` — redirect to or serve the bundled browser UI; `/ui/assets/*` serves compiled static assets
 - `GET /health` — basic health check
 - `GET /version` — installed PyAgent package version
 - `GET /profiles` / `POST /profiles` — list or create model profiles
@@ -462,11 +492,12 @@ Endpoints:
 - `POST /tools/{name}/enable` / `POST /tools/{name}/disable` — move a user tool in or out of `tools/disabled/`
 - `DELETE /tools/{name}` — remove a user-managed tool
 - `GET /extensions` — list enabled and disabled extensions on disk
+- `POST /extensions/install` — upload a single `.py` extension or zipped package, install a direct `.py`/`.zip` URL, or clone an HTTP(S) Git repository URL
 - `POST /extensions/new` — scaffold an extension (`{"name": "demo"}`) or install one from a GitHub URL (`{"name": "demo", "url": "..."}`)
 - `POST /extensions/{name}/enable` / `POST /extensions/{name}/disable` — move an extension in or out of `extensions/disabled/`
 - `DELETE /extensions/{name}` — remove an extension from disk
 
-Install endpoints intentionally accept uploaded files or HTTP(S) URLs, not arbitrary server-local source paths. `GET /tools` performs the same external-tool discovery used by PyAgent, so user tool scripts may be run with `uv run <script> describe`.
+Install endpoints intentionally accept uploaded files or HTTP(S) URLs, not arbitrary server-local source paths. Extension uploads accept a single `.py` file or a `.zip` containing one package root with `__init__.py`; archive paths and expansion size are checked before installation. Git repository installs require an explicit extension name. `GET /tools` performs the same external-tool discovery used by PyAgent, so user tool scripts may be run with `uv run <script> describe`.
 
 Example request:
 
@@ -784,7 +815,7 @@ Client details:
 - `PyAgentClient.run(...)` returns a typed `RunResponse` object; `stream_run(...)` yields decoded SSE events.
 - Profile helpers include `list_profiles()`, `show_profile()`, `create_profile()`, `update_profile()`, `set_default_profile()`, `remove_profile()`, and `list_profile_models()`.
 - Agent-definition helpers include `list_agents()`, `create_agent()`, `show_agent()`, `list_agent_revisions()`, `update_agent()`, `validate_agent()`, `remove_agent()`, `run_agent()`, and `stream_agent()`; `run_agent()` returns a typed `AgentRunResponse`.
-- Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_extensions()`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
+- Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_extensions()`, `install_extension(url=... | file_path=...)`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, upload-file read failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 

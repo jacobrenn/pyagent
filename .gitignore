@@ -17,9 +17,16 @@ __pypackages__/
 # --- Packaging / build artifacts ---
 build/
 dist/
+!pyagent/webui/dist/
+!pyagent/webui/dist/**
 .eggs/
 *.egg-info/
 pip-wheel-metadata/
+
+# --- JavaScript dependencies / frontend output ---
+node_modules/
+web/node_modules/
+web/coverage/
 
 # --- Test, coverage, and type-checker caches ---
 .pytest_cache/

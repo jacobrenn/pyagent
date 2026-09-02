@@ -29,6 +29,7 @@ Core files:
 - `pyagent/model_profiles.py` — loads, validates, atomically saves, and mutates saved model profiles with env fallback
 - `pyagent/api.py` + `pyagent/client.py` — FastAPI server and dependency-free synchronous client for regular and SSE-streaming runs, profiles, agent definitions, and managed resources
 - `pyagent/streaming.py` — SSE framing, background agent iteration, heartbeat delivery, backpressure, and disconnect cleanup
+- `web/` + `pyagent/webui/` — Preact/Vite browser UI source and packaged static build served under `/ui/`
 - `pyagent/agent_definitions.py` — versioned reusable agent definitions, resource validation, and workspace-bound agent construction
 - `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
@@ -83,6 +84,15 @@ In `pyagent/ui.py`:
 - Be careful with Textual layout defaults; `height: auto` matters for expanding message widgets.
 
 If touching scroll behavior, test manually in the running TUI.
+
+For the browser UI:
+
+- Keep Node/Vite as development-only tooling; runtime wheels must contain `pyagent/webui/dist/` and must not require Node.
+- Keep API documentation available at `/docs`; browser routes and SPA fallback stay scoped to `/ui/`.
+- Consume streaming runs with POST `fetch()` and the incremental SSE parser, not `EventSource`.
+- Preserve secret-safe profile edits: blank secrets are omitted, explicit clears are `null`, and redacted mappings are not replaced implicitly.
+- Keep conversation history browser-local (IndexedDB with the current fallback) unless server-side persistence is explicitly designed.
+- Run `cd web && npm run typecheck && npm test && npm run build` after frontend changes and commit the refreshed `pyagent/webui/dist/` assets.
 
 ## Agent loop conventions
 
