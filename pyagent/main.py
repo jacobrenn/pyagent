@@ -347,10 +347,17 @@ def main(argv: list[str] | None = None) -> None:
     create_parser.add_argument(
         "--provider", required=True, help="Model provider")
     create_parser.add_argument(
-        "--base_url", required=True, help="Base URL for the provider")
+        "--base-url", "--base_url", dest="base_url",
+        help="Base URL for the provider (defaults from provider)")
     create_parser.add_argument("--model", required=True, help="Model name")
     create_parser.add_argument(
-        "--api_key_env", help="Environment variable for API key")
+        "--api-mode", "--api_mode", dest="api_mode",
+        default="chat_completions",
+        help="OpenAI API mode: chat_completions (default) or responses",
+    )
+    create_parser.add_argument(
+        "--api-key-env", "--api_key_env", dest="api_key_env",
+        help="Environment variable for API key")
 
     def add_resource_parser(
         name: str,
@@ -482,11 +489,17 @@ def main(argv: list[str] | None = None) -> None:
                     name = profile.name
                     if name == default_profile_name:
                         name = f"* {name}"
-                    row = [name, profile.model, profile.base_url]
+                    row = [
+                        name,
+                        profile.provider,
+                        profile.resolved_api_mode(),
+                        profile.model,
+                        profile.base_url,
+                    ]
                     rows.append(row)
                 table = tabulate(
                     rows,
-                    headers=["Name", "Model", "Base URL"]
+                    headers=["Name", "Provider", "API Mode", "Model", "Base URL"]
                 )
                 response = f"Default Profile: {default_profile_name}\n\nAll Profiles:\n{table}\n"
                 sys.stdout.write(response)
@@ -494,14 +507,17 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(0)
 
             if args.profile_action == "create":
-                from .model_profiles import ModelProfile, update_profile_store, save_profile_store
+                from .model_profiles import ModelProfile, default_base_url_for_provider, update_profile_store, save_profile_store
                 new_profile = ModelProfile(
                     name=args.name,
                     provider=args.provider,
                     model=args.model,
-                    base_url=args.base_url or "",
+                    base_url=args.base_url or default_base_url_for_provider(args.provider),
+                    api_mode=args.api_mode,
                     api_key_env=args.api_key_env,
                 )
+                new_profile.resolved_provider()
+                new_profile.resolved_api_mode()
                 update_profile_store(profile_store, new_profile)
                 save_profile_store(profile_store)
                 sys.stdout.write(f"Created profile `{args.name}`\n")

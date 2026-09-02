@@ -36,6 +36,7 @@ class RunResponse:
         profile: Name of the model profile used by the server.
         provider: Provider backing the selected profile, such as ``ollama`` or
             an OpenAI-compatible backend.
+        api_mode: OpenAI API mode selected by the profile.
         model: Concrete model name used for the request.
         messages: Updated conversation history after the run, suitable for
             passing back into a subsequent :meth:`PyAgentClient.run` call.
@@ -48,6 +49,7 @@ class RunResponse:
     model: str
     messages: list[dict]
     context_files: list[str] = field(default_factory=list)
+    api_mode: str = "chat_completions"
 
 
 class PyAgentClient:
@@ -207,6 +209,7 @@ class PyAgentClient:
                 response=str(data["response"]),
                 profile=str(data["profile"]),
                 provider=str(data["provider"]),
+                api_mode=str(data.get("api_mode", "chat_completions")),
                 model=str(data["model"]),
                 messages=data["messages"],
                 context_files=[str(item)

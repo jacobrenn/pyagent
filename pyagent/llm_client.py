@@ -331,13 +331,454 @@ class OpenAICompatibleClient(BaseChatClient):
             yield {"error": str(exc)}
 
 
+class OpenAIResponsesClient(OpenAICompatibleClient):
+    """OpenAI-compatible client backed by the Responses API.
+
+    PyAgent keeps provider-neutral, chat-shaped history internally. This client
+    translates that history to Responses input items and translates streamed
+    Responses events back to PyAgent's ``content`` / ``tool_calls`` contract.
+    """
+
+    def __init__(self, profile: ModelProfile, timeout: int = 300):
+        super().__init__(profile=profile, timeout=timeout)
+        self._last_response_output: list[dict[str, Any]] = []
+        self._last_response_tool_call_ids: set[str] = set()
+
+    def _cached_continuation_index(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> int | None:
+        """Locate an immediate tool continuation matching the last response.
+
+        Reusing raw Responses output items preserves reasoning items during a
+        function-call loop without handing conversation ownership to
+        ``previous_response_id``. That keeps local history masking and context
+        extension behavior effective on every request.
+        """
+        if not self._last_response_output or not messages:
+            return None
+
+        index = len(messages) - 1
+        if messages[index].get("role") != "tool":
+            return None
+        while index >= 0 and messages[index].get("role") == "tool":
+            index -= 1
+        if index < 0:
+            return None
+
+        assistant = messages[index]
+        if assistant.get("role") != "assistant" or not assistant.get("tool_calls"):
+            return None
+        call_ids = {
+            str(tool_call.get("id"))
+            for tool_call in assistant["tool_calls"]
+            if tool_call.get("id")
+        }
+        if call_ids != self._last_response_tool_call_ids:
+            return None
+        if _tool_call_signatures(assistant["tool_calls"]) != _tool_call_signatures(
+            _tool_calls_from_response_output(self._last_response_output)
+        ):
+            return None
+        if str(assistant.get("content", "")) != _text_from_response_output(
+            self._last_response_output
+        ):
+            return None
+
+        output_ids = {
+            str(message.get("tool_call_id"))
+            for message in messages[index + 1:]
+            if message.get("role") == "tool" and message.get("tool_call_id")
+        }
+        return index if output_ids == call_ids else None
+
+    def _prepare_input(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        instructions: list[str] = []
+        input_items: list[dict[str, Any]] = []
+        cached_index = self._cached_continuation_index(messages)
+
+        pending_items: list[dict[str, Any]] = []
+        pending_call_ids: set[str] = set()
+        pending_output_ids: set[str] = set()
+
+        def flush_pending() -> None:
+            nonlocal pending_items, pending_call_ids, pending_output_ids
+            if pending_call_ids and pending_call_ids.issubset(pending_output_ids):
+                input_items.extend(pending_items)
+            pending_items = []
+            pending_call_ids = set()
+            pending_output_ids = set()
+
+        for index, message in enumerate(messages):
+            role = message.get("role")
+            content = str(message.get("content", ""))
+
+            if role == "system":
+                flush_pending()
+                if content:
+                    instructions.append(content)
+                continue
+
+            if role == "assistant" and message.get("tool_calls"):
+                flush_pending()
+                if index == cached_index:
+                    pending_items = [dict(item) for item in self._last_response_output]
+                    pending_call_ids = set(self._last_response_tool_call_ids)
+                    continue
+
+                if content:
+                    pending_items.append(
+                        {"role": "assistant", "content": content})
+                for tool_index, tool_call in enumerate(message["tool_calls"]):
+                    function = tool_call.get("function") or {}
+                    name = str(function.get("name") or "")
+                    if not name:
+                        continue
+                    call_id = str(
+                        tool_call.get("id") or f"call_{index}_{tool_index}")
+                    pending_call_ids.add(call_id)
+                    pending_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call_id,
+                            "name": name,
+                            "arguments": _stringify_function_arguments(
+                                function.get("arguments", "{}")),
+                        }
+                    )
+                if not pending_call_ids and pending_items:
+                    input_items.extend(pending_items)
+                    pending_items = []
+                continue
+
+            if role == "tool":
+                call_id = str(message.get("tool_call_id") or "")
+                if not pending_call_ids or call_id not in pending_call_ids:
+                    continue
+                pending_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": content,
+                    }
+                )
+                pending_output_ids.add(call_id)
+                continue
+
+            flush_pending()
+            if role in {"user", "assistant"}:
+                input_items.append({"role": role, "content": content})
+
+        flush_pending()
+        instruction_text = "\n\n".join(instructions) or None
+        return instruction_text, input_items
+
+    def _prepare_tools(
+        self,
+        tools: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for tool in tools or []:
+            if tool.get("type") != "function":
+                continue
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                function = tool
+            name = function.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            item: dict[str, Any] = {
+                "type": "function",
+                "name": name,
+                "parameters": function.get("parameters") or {},
+                "strict": bool(function.get("strict", False)),
+            }
+            description = function.get("description")
+            if isinstance(description, str) and description:
+                item["description"] = description
+            prepared.append(item)
+        return prepared
+
+    def _remember_response_output(self, output: list[Any]) -> None:
+        serialized = [
+            item
+            for raw_item in output
+            if (item := _response_item_to_dict(raw_item)) is not None
+        ]
+        call_ids = {
+            str(item.get("call_id"))
+            for item in serialized
+            if item.get("type") == "function_call" and item.get("call_id")
+        }
+        if call_ids:
+            self._last_response_output = serialized
+            self._last_response_tool_call_ids = call_ids
+        else:
+            self._last_response_output = []
+            self._last_response_tool_call_ids = set()
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Iterable[dict[str, Any]]:
+        instructions, input_items = self._prepare_input(messages)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "input": input_items,
+            "stream": True,
+            "store": False,
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        prepared_tools = self._prepare_tools(tools)
+        if prepared_tools:
+            payload["tools"] = prepared_tools
+
+        self._last_response_output = []
+        self._last_response_tool_call_ids = set()
+        output_items: dict[int, Any] = {}
+        completed_output: list[Any] | None = None
+        tool_call_fragments: dict[int, dict[str, Any]] = {}
+
+        try:
+            stream = self._get_client().responses.create(**payload)
+            for event in stream:
+                event_type = getattr(event, "type", "")
+
+                if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                    delta = getattr(event, "delta", None)
+                    if isinstance(delta, str) and delta:
+                        yield {"content": delta}
+                    continue
+
+                if event_type in {
+                    "response.output_item.added",
+                    "response.output_item.done",
+                }:
+                    output_index = int(getattr(event, "output_index", 0) or 0)
+                    item = getattr(event, "item", None)
+                    if event_type == "response.output_item.done":
+                        output_items[output_index] = item
+                    item_payload = _response_item_to_dict(item)
+                    if item_payload and item_payload.get("type") == "function_call":
+                        tool_call_fragments[output_index] = {
+                            "id": str(
+                                item_payload.get("call_id")
+                                or f"call_{output_index}"),
+                            "type": "function",
+                            "function": {
+                                "name": str(item_payload.get("name") or ""),
+                                "arguments": str(
+                                    item_payload.get("arguments") or ""),
+                            },
+                        }
+                    continue
+
+                if event_type == "response.function_call_arguments.delta":
+                    output_index = int(getattr(event, "output_index", 0) or 0)
+                    current = tool_call_fragments.setdefault(
+                        output_index,
+                        {
+                            "id": f"call_{output_index}",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        current["function"]["arguments"] += str(delta)
+                    continue
+
+                if event_type == "response.function_call_arguments.done":
+                    output_index = int(getattr(event, "output_index", 0) or 0)
+                    current = tool_call_fragments.setdefault(
+                        output_index,
+                        {
+                            "id": f"call_{output_index}",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    name = getattr(event, "name", None)
+                    arguments = getattr(event, "arguments", None)
+                    if name:
+                        current["function"]["name"] = str(name)
+                    if arguments is not None:
+                        current["function"]["arguments"] = str(arguments)
+                    continue
+
+                if event_type == "response.completed":
+                    response = getattr(event, "response", None)
+                    completed_output = list(getattr(response, "output", None) or [])
+                    continue
+
+                if event_type == "error":
+                    message = getattr(event, "message", None) or "Responses API stream error"
+                    yield {"error": str(message)}
+                    return
+
+                if event_type in {"response.failed", "response.incomplete"}:
+                    response = getattr(event, "response", None)
+                    yield {
+                        "error": _format_responses_terminal_error(
+                            response,
+                            incomplete=event_type == "response.incomplete",
+                        )
+                    }
+                    return
+
+            final_output = completed_output
+            if final_output is None:
+                final_output = [output_items[index] for index in sorted(output_items)]
+            self._remember_response_output(final_output)
+
+            calls_from_output = _tool_calls_from_response_output(final_output)
+            tool_calls = calls_from_output or [
+                tool_call_fragments[index]
+                for index in sorted(tool_call_fragments)
+                if tool_call_fragments[index]["function"]["name"]
+            ]
+            if tool_calls:
+                yield {"tool_calls": tool_calls}
+        except ValueError as exc:
+            yield {"error": str(exc)}
+        except openai.APIError as exc:
+            yield {"error": _format_openai_error(exc)}
+        except Exception as exc:
+            yield {"error": str(exc)}
+
+
 def build_chat_client(profile: ModelProfile, timeout: int = 300) -> BaseChatClient:
     provider = profile.resolved_provider()
+    api_mode = profile.resolved_api_mode()
     if provider == "ollama":
+        if api_mode != "chat_completions":
+            raise ValueError(
+                f"API mode '{api_mode}' cannot be used with provider 'ollama'."
+            )
         return OllamaClient(profile=profile, timeout=timeout)
     if provider == "openai_compatible":
+        if api_mode == "responses":
+            return OpenAIResponsesClient(profile=profile, timeout=timeout)
         return OpenAICompatibleClient(profile=profile, timeout=timeout)
     raise ValueError(f"Unsupported provider '{profile.provider}'")
+
+
+def _stringify_function_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    try:
+        return json.dumps(arguments if arguments is not None else {})
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def _response_item_to_dict(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, dict):
+        return dict(item)
+    model_dump = getattr(item, "model_dump", None)
+    if callable(model_dump):
+        payload = model_dump(mode="json", exclude_none=True)
+        return payload if isinstance(payload, dict) else None
+    if item is None:
+        return None
+
+    item_type = getattr(item, "type", None)
+    if not isinstance(item_type, str):
+        return None
+    payload: dict[str, Any] = {"type": item_type}
+    for field_name in (
+        "id",
+        "call_id",
+        "name",
+        "arguments",
+        "status",
+        "role",
+        "content",
+    ):
+        value = getattr(item, field_name, None)
+        if value is not None:
+            payload[field_name] = value
+    return payload
+
+
+def _tool_calls_from_response_output(output: list[Any]) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for index, raw_item in enumerate(output):
+        item = _response_item_to_dict(raw_item)
+        if not item or item.get("type") != "function_call":
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        tool_calls.append(
+            {
+                "id": str(item.get("call_id") or f"call_{index}"),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": _stringify_function_arguments(
+                        item.get("arguments", "{}")),
+                },
+            }
+        )
+    return tool_calls
+
+
+def _tool_call_signatures(
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, tuple[str, str]]:
+    signatures: dict[str, tuple[str, str]] = {}
+    for tool_call in tool_calls:
+        call_id = tool_call.get("id")
+        function = tool_call.get("function") or {}
+        if not call_id or not isinstance(function, dict):
+            continue
+        signatures[str(call_id)] = (
+            str(function.get("name") or ""),
+            _stringify_function_arguments(function.get("arguments", "{}")),
+        )
+    return signatures
+
+
+def _text_from_response_output(output: list[Any]) -> str:
+    parts: list[str] = []
+    for raw_item in output:
+        item = _response_item_to_dict(raw_item)
+        if not item or item.get("type") != "message":
+            continue
+        content = item.get("content") or []
+        if isinstance(content, str):
+            parts.append(content)
+            continue
+        for part in content:
+            part_payload = _response_item_to_dict(part)
+            if not part_payload:
+                continue
+            text = part_payload.get("text") or part_payload.get("refusal")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def _format_responses_terminal_error(response: Any, *, incomplete: bool) -> str:
+    prefix = "Responses API returned an incomplete response" if incomplete else "Responses API request failed"
+    if response is None:
+        return prefix
+
+    error = getattr(response, "error", None)
+    message = getattr(error, "message", None)
+    code = getattr(error, "code", None)
+    if message:
+        return f"{prefix}: {code}: {message}" if code else f"{prefix}: {message}"
+
+    details = getattr(response, "incomplete_details", None)
+    reason = getattr(details, "reason", None)
+    return f"{prefix}: {reason}" if reason else prefix
 
 
 def _format_openai_error(exc: openai.APIError) -> str:

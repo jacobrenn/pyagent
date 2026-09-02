@@ -9,7 +9,8 @@ This repo implements **PyAgent**, a lightweight coding agent built with:
 - **Textual** for the TUI
 - a Python agent loop that streams model output, executes tools, and feeds tool results back to the model
 - **multiple model backends**, including native Ollama and OpenAI-compatible endpoints such as OpenAI and vLLM
-- **named model profiles** stored in JSON so endpoints and models can be switched easily
+- both OpenAI-compatible **Chat Completions** and **Responses** API modes
+- **named model profiles** stored in JSON so endpoints, API modes, and models can be switched easily
 
 The project is intentionally lightweight. Prefer small, compatible changes over heavy abstractions unless a refactor clearly improves maintainability.
 
@@ -26,7 +27,7 @@ Core files:
 - `pyagent/user_runtime.py` — single source of truth for `~/.pyagent/` paths and runner availability
 - `pyagent/config.py` — environment-driven runtime config and system prompt
 - `pyagent/model_profiles.py` — loads saved model profiles from JSON and env fallback
-- `pyagent/llm_client.py` — provider-specific clients and streaming normalization
+- `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
 - `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`
 - `test_agent.py` — unit tests
@@ -92,6 +93,7 @@ In `pyagent/agent.py`:
 ## Model/profile conventions
 
 - Keep profile storage simple and file-based.
+- OpenAI-compatible profiles select `chat_completions` (default) or `responses` with `api_mode`; native Ollama only accepts the default mode.
 - Prefer JSON over new dependencies.
 - Prefer `api_key_env` over inline secrets in examples and docs.
 - Make profile switching explicit in the UI rather than relying on hidden env-only state.

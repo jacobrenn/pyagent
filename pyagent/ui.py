@@ -320,6 +320,7 @@ class PyAgentApp(App):
                 "Welcome to **PyAgent**. Responses stream as plain text for speed and render as Markdown when complete.\n\n"
                 f"Active profile: `{profile.name}`  \n"
                 f"Provider: `{profile.provider}`  \n"
+                f"API mode: `{profile.resolved_api_mode()}`  \n"
                 f"Model: `{profile.model}`"
             ),
             finalized=True,
@@ -354,7 +355,8 @@ class PyAgentApp(App):
         profile = self.agent.current_profile()
         context_count = len(self.agent.project_context_files)
         return (
-            f"Profile: {profile.name} • Provider: {profile.provider} • Model: {profile.model}"
+            f"Profile: {profile.name} • Provider: {profile.provider}"
+            f" • API: {profile.resolved_api_mode()} • Model: {profile.model}"
             f" • Tools: {'on' if self.agent.config.tools_enabled else 'off'}"
             f" • Context: {context_count}"
             f" • Debug: {'on' if self.debug_visible else 'off'}"
@@ -407,6 +409,7 @@ class PyAgentApp(App):
         return {
             "profile": profile.name,
             "provider": profile.provider,
+            "api_mode": profile.resolved_api_mode(),
             "model": profile.model,
             "base_url": profile.base_url,
             "tools_enabled": self.agent.config.tools_enabled,
@@ -460,7 +463,7 @@ class PyAgentApp(App):
             "- `/profiles reload` — reload profiles from disk\n"
             "- `/profile` — show the current profile\n"
             "- `/profile <name>` — switch to another saved profile\n"
-            "- `/profile add <name> provider=<provider> model=<model> ...` — create or update a profile\n"
+            "- `/profile add <name> provider=<provider> model=<model> [api_mode=chat_completions|responses] ...` — create or update a profile\n"
             "- `/model` — show the current model and usage\n"
             "- `/model list` — list models from the current endpoint, if supported\n"
             "- `/model <name>` — override the current profile's model for this session\n"
@@ -623,7 +626,7 @@ class PyAgentApp(App):
         if not args:
             return (
                 {},
-                "Usage: `/profile add <name> provider=<provider> model=<model> [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]`",
+                "Usage: `/profile add <name> provider=<provider> model=<model> [api_mode=chat_completions|responses] [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]`",
             )
 
         name = args[0].strip()
@@ -1004,6 +1007,10 @@ class PyAgentApp(App):
         command = parts[0].lower()
         args = parts[1:]
 
+        handler = COMMAND_REGISTRY.get(command)
+        if handler is not None:
+            return handler(self, args)
+
         if command == "/help":
             self._add_system_note(self._command_help_text())
             return True
@@ -1045,7 +1052,7 @@ class PyAgentApp(App):
                     else ("inline api key" if profile.api_key else "no api key")
                 )
                 lines.append(
-                    f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}` • {auth}"
+                    f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.resolved_api_mode()}` • `{profile.model}` • `{profile.base_url}` • {auth}"
                 )
             self._add_system_note(
                 "Saved profiles:\n"
@@ -1061,6 +1068,7 @@ class PyAgentApp(App):
                     "Current profile:\n"
                     f"- Name: `{profile.name}`\n"
                     f"- Provider: `{profile.provider}`\n"
+                    f"- API mode: `{profile.resolved_api_mode()}`\n"
                     f"- Model: `{profile.model}`\n"
                     f"- Base URL: `{profile.base_url}`\n"
                     f"- API key env: `{profile.api_key_env or '<none>'}`"
@@ -1090,6 +1098,8 @@ class PyAgentApp(App):
                         provider=provider,
                         model=model,
                         base_url=base_url,
+                        api_mode=str(options.get(
+                            "api_mode", "chat_completions")),
                         api_key=str(options.get("api_key", "")
                                     ).strip() or None,
                         api_key_env=str(options.get(
@@ -1108,6 +1118,7 @@ class PyAgentApp(App):
                 details = [
                     f"Saved profile `{profile.name}`.",
                     f"Provider: `{profile.provider}`",
+                    f"API mode: `{profile.resolved_api_mode()}`",
                     f"Model: `{profile.model}`",
                     f"Base URL: `{profile.base_url}`",
                     f"Profile file: `{self.agent.profile_store.path}`",
@@ -1141,6 +1152,7 @@ class PyAgentApp(App):
                     "Current model:\n"
                     f"- Profile: `{profile.name}`\n"
                     f"- Provider: `{profile.provider}`\n"
+                    f"- API mode: `{profile.resolved_api_mode()}`\n"
                     f"- Model: `{profile.model}`\n"
                     "Usage:\n"
                     "- `/model list` — list models from the current endpoint\n"

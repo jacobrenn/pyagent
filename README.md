@@ -2,7 +2,7 @@
 
 PyAgent is a lightweight coding agent with a terminal UI, streaming model responses, tool use, layered project instructions, and switchable model profiles.
 
-It is built with [Textual](https://textual.textualize.io/) and supports both native Ollama chat endpoints and OpenAI-compatible `/v1/chat/completions` servers such as OpenAI and vLLM.
+It is built with [Textual](https://textual.textualize.io/) and supports native Ollama chat endpoints plus both the OpenAI-compatible Chat Completions and Responses APIs.
 
 ## Quickstart
 
@@ -49,6 +49,7 @@ Or a minimal OpenAI profile:
   "profiles": {
     "openai-mini": {
       "provider": "openai",
+      "api_mode": "responses",
       "base_url": "https://api.openai.com/v1",
       "model": "gpt-4.1-mini",
       "api_key_env": "OPENAI_API_KEY"
@@ -156,12 +157,14 @@ A sample profile file is included as [`models.example.json`](models.example.json
     },
     "openai-gpt4": {
       "provider": "openai_compatible",
+      "api_mode": "responses",
       "base_url": "https://api.openai.com/v1",
       "model": "gpt-4.1",
       "api_key_env": "OPENAI_API_KEY"
     },
     "vllm-local": {
       "provider": "vllm",
+      "api_mode": "chat_completions",
       "base_url": "http://localhost:8000/v1",
       "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
       "api_key_env": "VLLM_API_KEY"
@@ -179,7 +182,16 @@ Supported provider values:
 
 `openai` and `vllm` are treated as OpenAI-compatible providers.
 
-OpenAI-compatible profiles use the OpenAI Python SDK with the Chat Completions API. PyAgent intentionally stays on `/v1/chat/completions`, not the newer Responses API, so it remains compatible with OpenAI-style servers such as OpenAI and vLLM.
+### OpenAI API modes
+
+OpenAI-compatible profiles accept an `api_mode` field:
+
+- `chat_completions` — use `/v1/chat/completions`; this is the default when the field is omitted
+- `responses` — use `/v1/responses`
+
+Both modes support streaming text and PyAgent function tools. The Responses adapter translates PyAgent's chat-shaped history and tool schemas into Responses input items, and preserves raw response output during immediate tool continuations so reasoning items are not discarded. Conversation history remains locally controlled rather than relying on `previous_response_id`. Every Responses request sets `store=false`; this is always enforced and is not profile-configurable.
+
+Use `responses` only with an endpoint that implements the Responses API. OpenAI supports it, while support in vLLM and other OpenAI-compatible servers depends on the server and version. There is intentionally no automatic fallback to Chat Completions when a Responses request fails.
 
 ### API keys
 
@@ -225,13 +237,15 @@ Example:
 You can now manage your model profiles directly from the CLI without editing the JSON file:
 
 ```bash
-pyagent profiles list                             # show all profiles and the current default
-pyagent profiles create --name my-model --provider ollama --model gemma4:latest [options] # creates a new profile with the given parameters
+pyagent profiles list
+pyagent profiles create --name my-model --provider ollama --model gemma4:latest
+pyagent profiles create --name openai-responses --provider openai --model gpt-4.1-mini --api-mode responses --api-key-env OPENAI_API_KEY
 ```
 
 Options for `profiles create`:
-- `--base_url` — endpoint base URL
-- `--api_key_env` — environment variable containing the API key
+- `--base-url` / `--base_url` — endpoint base URL; defaults to the provider's standard URL
+- `--api-mode` / `--api_mode` — `chat_completions` (default) or `responses`
+- `--api-key-env` / `--api_key_env` — environment variable containing the API key
 
 ### Fallback profile from environment
 
@@ -241,6 +255,7 @@ If the profile file does not exist, PyAgent creates an implicit `default` profil
 - `PYAGENT_PROVIDER`
 - `PYAGENT_MODEL`
 - `PYAGENT_BASE_URL`
+- `PYAGENT_API_MODE` (`chat_completions` or `responses`)
 - `PYAGENT_API_KEY`
 - `PYAGENT_API_KEY_ENV`
 
@@ -378,6 +393,7 @@ Example response:
   "response": "...",
   "profile": "local-qwen",
   "provider": "ollama",
+  "api_mode": "chat_completions",
   "model": "qwen2.5-coder:7b",
   "context_files": ["~/.pyagent/AGENTS.md", "AGENTS.md"]
 }
@@ -426,7 +442,7 @@ result = client.run(
 )
 
 print(result.response)
-print(result.profile, result.provider, result.model)
+print(result.profile, result.provider, result.api_mode, result.model)
 print(result.context_files)
 ```
 
@@ -744,7 +760,7 @@ Recommended user directory layout:
 - `/reload_profiles` — reload profiles from disk
 - `/profile` — show the active profile
 - `/profile <name>` — switch to a saved profile
-- `/profile add <name> provider=<provider> model=<model> [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]` — create or update a profile from the TUI
+- `/profile add <name> provider=<provider> model=<model> [api_mode=chat_completions|responses] [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]` — create or update a profile from the TUI
 - `/model` — show the active model
 - `/model list` — ask the current endpoint for available models, if supported
 - `/model <name>` — override the current profile's model for this session
@@ -781,8 +797,8 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 
 ```text
 /profile add local-14b provider=ollama model=qwen2.5-coder:14b switch=true
-/profile add openai-mini provider=openai model=gpt-4.1-mini api_key_env=OPENAI_API_KEY default=true
-/profile add vllm-qwen provider=vllm model="Qwen/Qwen2.5-Coder-32B-Instruct" base_url=http://localhost:8000/v1 api_key_env=VLLM_API_KEY header.X-Project=PyAgent
+/profile add openai-mini provider=openai model=gpt-4.1-mini api_mode=responses api_key_env=OPENAI_API_KEY default=true
+/profile add vllm-qwen provider=vllm model="Qwen/Qwen2.5-Coder-32B-Instruct" api_mode=chat_completions base_url=http://localhost:8000/v1 api_key_env=VLLM_API_KEY header.X-Project=PyAgent
 ```
 
 ### Keyboard shortcuts
@@ -834,6 +850,7 @@ Used when no profile file exists:
 - `PYAGENT_PROVIDER`
 - `PYAGENT_MODEL`
 - `PYAGENT_BASE_URL`
+- `PYAGENT_API_MODE` — `chat_completions` (default) or `responses`
 - `PYAGENT_API_KEY`
 - `PYAGENT_API_KEY_ENV`
 
@@ -842,6 +859,7 @@ Used when no profile file exists:
 - `provider` — provider type: `ollama`, `openai_compatible`, `openai`, or `vllm`
 - `base_url` — endpoint base URL
 - `model` — model name
+- `api_mode` — OpenAI API mode: `chat_completions` (default) or `responses`; only `chat_completions` is valid for native Ollama profiles
 - `api_key` — inline API key, if needed
 - `api_key_env` — environment variable containing the API key
 - `headers` — optional object of extra HTTP headers

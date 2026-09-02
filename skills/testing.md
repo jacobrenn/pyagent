@@ -17,11 +17,12 @@ python -m unittest -v
 
 Add or update tests for:
 
-- profile file loading
-- provider selection
+- profile file loading and `api_mode` default/round-trip validation
+- provider and API-mode client selection
 - API key env handling where relevant
 - model listing behavior
-- streamed content/tool-call normalization
+- streamed content/tool-call/error normalization
+- Responses history/tool-schema adaptation and reasoning-item preservation across tool continuations
 
 ### Tool changes
 

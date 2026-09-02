@@ -38,7 +38,12 @@ from pyagent.external_tools import (
     build_external_tool_specs,
     discover_external_tools,
 )
-from pyagent.llm_client import OpenAICompatibleClient, OllamaClient, build_chat_client
+from pyagent.llm_client import (
+    OpenAICompatibleClient,
+    OpenAIResponsesClient,
+    OllamaClient,
+    build_chat_client,
+)
 from pyagent.main import main as pyagent_main
 from pyagent.model_profiles import (
     ModelProfile,
@@ -141,6 +146,7 @@ class ApiTests(unittest.TestCase):
                 "response": "Hello World!",
                 "profile": "p1",
                 "provider": "ollama",
+                "api_mode": "chat_completions",
                 "model": "m1",
                 "messages": mock_agent.messages,
                 "context_files": ["AGENTS.md", "skills/testing.md"],
@@ -731,6 +737,38 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
         mock_stderr.write.assert_called()
 
+    def test_profiles_create_supports_api_mode_and_default_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = Path(temp_dir) / "profiles.json"
+            with mock.patch.dict(
+                os.environ,
+                {"PYAGENT_MODEL_PROFILES_PATH": str(profile_path)},
+            ):
+                with mock.patch("sys.stdout"):
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(
+                            [
+                                "profiles",
+                                "create",
+                                "--name",
+                                "responses",
+                                "--provider",
+                                "openai",
+                                "--model",
+                                "gpt-4.1-mini",
+                                "--api-mode",
+                                "responses",
+                                "--api-key-env",
+                                "OPENAI_API_KEY",
+                            ]
+                        )
+                store = load_profile_store(str(profile_path))
+
+        self.assertEqual(cm.exception.code, 0)
+        profile = store.get("responses")
+        self.assertEqual(profile.api_mode, "responses")
+        self.assertEqual(profile.base_url, "https://api.openai.com/v1")
+
     def test_prompts_subcommands_manage_system_prompt_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -824,6 +862,21 @@ class FakeOpenAICompletions:
         return self.stream
 
 
+class FakeOpenAIResponses:
+    def __init__(self, streams=None):
+        self.streams = list(streams or [[]])
+        self.create_calls: list[dict[str, Any]] = []
+
+    @property
+    def last_create(self):
+        return self.create_calls[-1] if self.create_calls else None
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        index = min(len(self.create_calls) - 1, len(self.streams) - 1)
+        return self.streams[index]
+
+
 class FakeOpenAIModels:
     def __init__(self, response=None):
         self.response = response or SimpleNamespace(data=[])
@@ -833,9 +886,10 @@ class FakeOpenAIModels:
 
 
 class FakeOpenAIClient:
-    def __init__(self, stream=None, models_response=None):
+    def __init__(self, stream=None, models_response=None, response_streams=None):
         self.chat = SimpleNamespace(
             completions=FakeOpenAICompletions(stream=stream))
+        self.responses = FakeOpenAIResponses(streams=response_streams)
         self.models = FakeOpenAIModels(response=models_response)
         self.closed = False
 
@@ -863,6 +917,10 @@ def make_tool_call_delta(index: int, id: str | None = None, name: str | None = N
         type="function",
         function=SimpleNamespace(name=name, arguments=arguments),
     )
+
+
+def make_response_event(event_type: str, **kwargs):
+    return SimpleNamespace(type=event_type, **kwargs)
 
 
 class PyAgentUiContextTests(unittest.TestCase):
@@ -1201,6 +1259,38 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(agent.current_profile().model, "new-model")
         self.assertEqual(agent.client.model, "new-model")
 
+    def test_model_override_preserves_api_mode_and_http_transport_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = os.path.join(temp_dir, "profiles.json")
+            with open(profile_path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "default_profile": "remote",
+                        "profiles": {
+                            "remote": {
+                                "provider": "openai",
+                                "api_mode": "responses",
+                                "model": "gpt-4.1-mini",
+                                "base_url": "https://example.com/v1",
+                                "httpx_kwargs": {"verify": False},
+                            }
+                        },
+                    },
+                    file,
+                )
+            config = AppConfig(model_profiles_path=profile_path)
+            agent = Agent(
+                config=config,
+                tool_registry=create_default_tool_registry(config),
+            )
+
+            agent.set_model("gpt-4.1")
+
+        self.assertIsInstance(agent.client, OpenAIResponsesClient)
+        self.assertEqual(agent.current_profile().api_mode, "responses")
+        self.assertEqual(
+            agent.current_profile().httpx_kwargs, {"verify": False})
+
     def test_set_profile_rebuilds_client(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             profile_path = os.path.join(temp_dir, "profiles.json")
@@ -1366,6 +1456,44 @@ class UiCommandTests(unittest.TestCase):
         self.assertNotIn("Tool calling is disabled",
                          app.agent.messages[0]["content"])
         self.assertIn("Tools enabled for this session", notes[-1])
+
+    def test_profile_add_command_saves_responses_api_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = Path(temp_dir) / "profiles.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "default_profile": "local",
+                        "profiles": {
+                            "local": {
+                                "provider": "ollama",
+                                "model": "qwen",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"PYAGENT_MODEL_PROFILES_PATH": str(profile_path)},
+            ):
+                app = PyAgentApp()
+                notes: list[str] = []
+                app._add_system_note = notes.append
+                app._set_status = lambda _text: None
+
+                handled = app._handle_slash_command(
+                    "/profile add remote provider=openai model=gpt-4.1-mini "
+                    "api_mode=responses switch=true"
+                )
+
+                store = load_profile_store(str(profile_path))
+
+        self.assertTrue(handled)
+        self.assertEqual(store.get("remote").api_mode, "responses")
+        self.assertIsInstance(app.agent.client, OpenAIResponsesClient)
+        self.assertIn("API mode: `responses`", notes[-1])
 
     def test_status_command_reports_agent_tool_loop_max_iterations(self) -> None:
         app = PyAgentApp()
@@ -1550,7 +1678,7 @@ class ExtensionCliTests(unittest.TestCase):
             self.assertFalse((tools_dir / "disabled" / "echo.py").exists())
 
 
-class ClientTests(unittest.TestCase):
+class LlmClientTests(unittest.TestCase):
     def test_build_chat_client_chooses_provider_implementation(self) -> None:
         ollama_profile = ModelProfile(
             name="local",
@@ -1565,10 +1693,22 @@ class ClientTests(unittest.TestCase):
             base_url="https://example.com/v1",
             api_key="secret",
         )
+        responses_profile = ModelProfile(
+            name="responses",
+            provider="openai",
+            model="gpt-4.1-mini",
+            base_url="https://api.openai.com/v1",
+            api_mode="responses",
+            api_key="secret",
+        )
 
         self.assertIsInstance(build_chat_client(ollama_profile), OllamaClient)
         self.assertIsInstance(build_chat_client(
             openai_profile), OpenAICompatibleClient)
+        self.assertNotIsInstance(build_chat_client(
+            openai_profile), OpenAIResponsesClient)
+        self.assertIsInstance(build_chat_client(
+            responses_profile), OpenAIResponsesClient)
 
     def test_openai_compatible_stream_assembles_tool_calls(self) -> None:
         profile = ModelProfile(
@@ -1617,6 +1757,224 @@ class ClientTests(unittest.TestCase):
             fake_sdk_client.chat.completions.last_create["model"], "gpt-4.1-mini")
         self.assertEqual(
             fake_sdk_client.chat.completions.last_create["messages"], [])
+
+    def test_responses_stream_adapts_messages_tools_text_and_function_calls(self) -> None:
+        profile = ModelProfile(
+            name="responses",
+            provider="openai",
+            model="gpt-4.1-mini",
+            base_url="https://api.openai.com/v1",
+            api_mode="responses",
+            api_key="secret",
+        )
+        response_output = [
+            {"type": "reasoning", "id": "rs_1", "summary": []},
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "search_text",
+                "arguments": '{"query":"PyAgent"}',
+                "status": "completed",
+            },
+        ]
+        fake_sdk_client = FakeOpenAIClient(
+            response_streams=[
+                [
+                    make_response_event(
+                        "response.output_text.delta", delta="Hello"),
+                    make_response_event(
+                        "response.output_item.done",
+                        output_index=1,
+                        item=response_output[1],
+                    ),
+                    make_response_event(
+                        "response.completed",
+                        response=SimpleNamespace(output=response_output),
+                    ),
+                ]
+            ]
+        )
+        client = OpenAIResponsesClient(profile)
+        client._client_factory = lambda **kwargs: fake_sdk_client
+        messages = [
+            {"role": "system", "content": "Be precise."},
+            {"role": "user", "content": "Find PyAgent"},
+        ]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_text",
+                    "description": "Search files",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+
+        chunks = list(client.chat_stream(messages, tools))
+
+        self.assertEqual(chunks[0], {"content": "Hello"})
+        self.assertEqual(
+            chunks[1],
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_text",
+                            "arguments": '{"query":"PyAgent"}',
+                        },
+                    }
+                ]
+            },
+        )
+        request = fake_sdk_client.responses.last_create
+        self.assertEqual(request["model"], "gpt-4.1-mini")
+        self.assertIs(request["store"], False)
+        self.assertEqual(request["instructions"], "Be precise.")
+        self.assertEqual(
+            request["input"], [{"role": "user", "content": "Find PyAgent"}])
+        self.assertEqual(
+            request["tools"],
+            [
+                {
+                    "type": "function",
+                    "name": "search_text",
+                    "description": "Search files",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                    "strict": False,
+                }
+            ],
+        )
+
+    def test_responses_client_preserves_reasoning_for_tool_continuation(self) -> None:
+        profile = ModelProfile(
+            name="responses",
+            provider="openai",
+            model="gpt-4.1-mini",
+            base_url="https://api.openai.com/v1",
+            api_mode="responses",
+            api_key="secret",
+        )
+        first_output = [
+            {"type": "reasoning", "id": "rs_1", "summary": []},
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "search_text",
+                "arguments": '{"query":"PyAgent"}',
+                "status": "completed",
+            },
+        ]
+        fake_sdk_client = FakeOpenAIClient(
+            response_streams=[
+                [
+                    make_response_event(
+                        "response.completed",
+                        response=SimpleNamespace(output=first_output),
+                    )
+                ],
+                [
+                    make_response_event(
+                        "response.output_text.delta", delta="Found it."),
+                    make_response_event(
+                        "response.completed",
+                        response=SimpleNamespace(output=[]),
+                    ),
+                ],
+            ]
+        )
+        client = OpenAIResponsesClient(profile)
+        client._client_factory = lambda **kwargs: fake_sdk_client
+
+        first_chunks = list(
+            client.chat_stream(
+                [
+                    {"role": "system", "content": "Be precise."},
+                    {"role": "user", "content": "Find PyAgent"},
+                ]
+            )
+        )
+        second_chunks = list(
+            client.chat_stream(
+                [
+                    {"role": "system", "content": "Be precise."},
+                    {"role": "user", "content": "Find PyAgent"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_text",
+                                    "arguments": '{"query":"PyAgent"}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "name": "search_text",
+                        "tool_call_id": "call_1",
+                        "content": "README.md:1:PyAgent",
+                    },
+                ]
+            )
+        )
+
+        self.assertEqual(first_chunks[0]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(second_chunks, [{"content": "Found it."}])
+        continuation_input = fake_sdk_client.responses.create_calls[1]["input"]
+        self.assertIn(first_output[0], continuation_input)
+        self.assertIn(first_output[1], continuation_input)
+        self.assertEqual(
+            continuation_input[-1],
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "README.md:1:PyAgent",
+            },
+        )
+        self.assertNotIn(
+            "previous_response_id", fake_sdk_client.responses.create_calls[1])
+        self.assertTrue(
+            all(
+                request["store"] is False
+                for request in fake_sdk_client.responses.create_calls
+            )
+        )
+
+    def test_responses_client_normalizes_stream_errors(self) -> None:
+        profile = ModelProfile(
+            name="responses",
+            provider="openai",
+            model="gpt-4.1-mini",
+            base_url="https://api.openai.com/v1",
+            api_mode="responses",
+            api_key="secret",
+        )
+        fake_sdk_client = FakeOpenAIClient(
+            response_streams=[
+                [make_response_event("error", message="request failed")]
+            ]
+        )
+        client = OpenAIResponsesClient(profile)
+        client._client_factory = lambda **kwargs: fake_sdk_client
+
+        chunks = list(client.chat_stream([], []))
+
+        self.assertEqual(chunks, [{"error": "request failed"}])
 
     def test_openai_compatible_list_models_parses_response(self) -> None:
         profile = ModelProfile(
@@ -1758,6 +2116,72 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertEqual(store.default_profile, "vllm-local")
         self.assertEqual(store.get().provider, "openai_compatible")
         self.assertEqual(store.get().api_key_env, "VLLM_API_KEY")
+        self.assertEqual(store.get().resolved_api_mode(), "chat_completions")
+
+    def test_profile_store_loads_responses_mode_and_chat_is_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "profiles.json")
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "default_profile": "responses",
+                        "profiles": {
+                            "responses": {
+                                "provider": "openai",
+                                "api_mode": "responses",
+                                "model": "gpt-4.1-mini",
+                                "base_url": "https://api.openai.com/v1",
+                            },
+                            "chat": {
+                                "provider": "openai",
+                                "model": "gpt-4.1-mini",
+                                "base_url": "https://api.openai.com/v1",
+                            },
+                        },
+                    },
+                    file,
+                )
+
+            store = load_profile_store(path)
+
+        self.assertEqual(store.get("responses").api_mode, "responses")
+        self.assertEqual(store.get("chat").api_mode, "chat_completions")
+
+    def test_profile_store_rejects_responses_mode_for_ollama(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "profiles.json")
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "default_profile": "bad",
+                        "profiles": {
+                            "bad": {
+                                "provider": "ollama",
+                                "api_mode": "responses",
+                                "model": "qwen",
+                            }
+                        },
+                    },
+                    file,
+                )
+
+            with self.assertRaisesRegex(ValueError, "cannot use API mode"):
+                load_profile_store(path)
+
+    def test_environment_fallback_reads_api_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "profiles.json")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PYAGENT_PROVIDER": "openai",
+                    "PYAGENT_MODEL": "gpt-4.1-mini",
+                    "PYAGENT_API_MODE": "responses",
+                },
+            ):
+                store = load_profile_store(path)
+
+        self.assertEqual(store.get().api_mode, "responses")
 
     def test_update_and_save_profile_store_round_trips_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1768,6 +2192,7 @@ class ProfileStoreTests(unittest.TestCase):
                 provider="openai_compatible",
                 model="gpt-4.1-mini",
                 base_url="https://example.com/v1",
+                api_mode="responses",
                 api_key_env="OPENAI_API_KEY",
                 headers={"X-Test": "1"},
             )
@@ -1778,6 +2203,7 @@ class ProfileStoreTests(unittest.TestCase):
 
         self.assertEqual(reloaded.default_profile, "openai-test")
         self.assertEqual(reloaded.get().provider, "openai_compatible")
+        self.assertEqual(reloaded.get().api_mode, "responses")
         self.assertEqual(reloaded.get().headers, {"X-Test": "1"})
 
 

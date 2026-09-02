@@ -11,6 +11,13 @@ from .config import AppConfig
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_API_MODE = "chat_completions"
+API_MODE_ALIASES = {
+    "chat.completions": DEFAULT_API_MODE,
+    "chat-completions": DEFAULT_API_MODE,
+    "chat_completions": DEFAULT_API_MODE,
+    "responses": "responses",
+}
 PROVIDER_ALIASES = {
     "ollama": "ollama",
     "openai": "openai_compatible",
@@ -30,9 +37,18 @@ class ModelProfile:
     api_key_env: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     httpx_kwargs: dict[str, Any] = field(default_factory=dict)
+    api_mode: str = DEFAULT_API_MODE
 
     def resolved_provider(self) -> str:
         return normalize_provider(self.provider)
+
+    def resolved_api_mode(self) -> str:
+        api_mode = normalize_api_mode(self.api_mode)
+        if self.resolved_provider() == "ollama" and api_mode != DEFAULT_API_MODE:
+            raise ValueError(
+                f"API mode '{api_mode}' cannot be used with provider 'ollama'."
+            )
+        return api_mode
 
     def resolved_api_key(self) -> str | None:
         if self.api_key:
@@ -76,6 +92,16 @@ def normalize_provider(provider: str) -> str:
     return normalized
 
 
+def normalize_api_mode(api_mode: str) -> str:
+    normalized = API_MODE_ALIASES.get(api_mode.strip().lower())
+    if normalized is None:
+        supported = ", ".join(sorted(set(API_MODE_ALIASES.values())))
+        raise ValueError(
+            f"Unsupported API mode '{api_mode}'. Supported values: {supported}"
+        )
+    return normalized
+
+
 def default_base_url_for_provider(provider: str) -> str:
     normalized = normalize_provider(provider)
     return DEFAULT_OLLAMA_BASE_URL if normalized == "ollama" else DEFAULT_OPENAI_BASE_URL
@@ -101,6 +127,12 @@ def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
 
     base_url = str(data.get("base_url")
                    or default_base_url_for_provider(provider)).strip()
+    api_mode = normalize_api_mode(
+        str(data.get("api_mode", DEFAULT_API_MODE)))
+    if provider == "ollama" and api_mode != DEFAULT_API_MODE:
+        raise ValueError(
+            f"Profile '{name}' cannot use API mode '{api_mode}' with provider 'ollama'."
+        )
     headers = _read_optional_object_field(data, "headers")
     httpx_kwargs = _read_optional_object_field(
         data, "httpx_kwargs", "http_kwargs")
@@ -110,6 +142,7 @@ def _profile_from_dict(name: str, data: dict[str, Any]) -> ModelProfile:
         provider=provider,
         model=model,
         base_url=base_url,
+        api_mode=api_mode,
         api_key=str(data.get("api_key", "")).strip() or None,
         api_key_env=str(data.get("api_key_env", "")).strip() or None,
         headers={str(key): str(value) for key, value in headers.items()},
@@ -145,6 +178,12 @@ def _store_from_json(path: str, payload: dict[str, Any]) -> ProfileStore:
 
 def _env_profile() -> ModelProfile:
     provider = normalize_provider(os.getenv("PYAGENT_PROVIDER", "ollama"))
+    api_mode = normalize_api_mode(
+        os.getenv("PYAGENT_API_MODE", DEFAULT_API_MODE))
+    if provider == "ollama" and api_mode != DEFAULT_API_MODE:
+        raise ValueError(
+            f"API mode '{api_mode}' cannot be used with provider 'ollama'."
+        )
     model = os.getenv(
         "PYAGENT_MODEL", "gemma4:latest").strip() or "gemma4:latest"
     default_base_url = default_base_url_for_provider(provider)
@@ -154,6 +193,7 @@ def _env_profile() -> ModelProfile:
         model=model,
         base_url=os.getenv("PYAGENT_BASE_URL",
                            default_base_url).strip() or default_base_url,
+        api_mode=api_mode,
         api_key=os.getenv("PYAGENT_API_KEY", "").strip() or None,
         api_key_env=os.getenv("PYAGENT_API_KEY_ENV", "").strip() or None,
         headers={},
@@ -178,6 +218,8 @@ def update_profile_store(
     profile: ModelProfile,
     make_default: bool = False,
 ) -> ProfileStore:
+    profile.resolved_provider()
+    profile.resolved_api_mode()
     store.profiles[profile.name] = profile
     if make_default or not store.default_profile:
         store.default_profile = profile.name
@@ -192,6 +234,8 @@ def _profile_to_dict(profile: ModelProfile) -> dict[str, Any]:
         "model": profile.model,
         "base_url": profile.base_url,
     }
+    if profile.resolved_provider() == "openai_compatible":
+        payload["api_mode"] = profile.resolved_api_mode()
     if profile.api_key:
         payload["api_key"] = profile.api_key
     if profile.api_key_env:

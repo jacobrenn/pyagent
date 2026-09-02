@@ -42,7 +42,7 @@ def _parse_max_iterations(value: str) -> tuple[int | None, str | None]:
 
 def _parse_profile_add_options(app: PyAgentApp, args: list[str]) -> tuple[dict[str, Any], str | None]:
     if not args:
-        return {}, "Usage: `/profile add <name> provider=<provider> model=<model> [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]`"
+        return {}, "Usage: `/profile add <name> provider=<provider> model=<model> [api_mode=chat_completions|responses] [base_url=<url>] [api_key_env=<ENV>] [api_key=<KEY>] [default=true|false] [switch=true|false] [header.<Name>=<Value>]`"
     name = args[0].strip()
     if not name:
         return {}, "Profile name must not be empty."
@@ -180,7 +180,7 @@ def handle_profiles(app: PyAgentApp, args: list[str]) -> bool:
         auth = f"api_key_env={profile.api_key_env}" if profile.api_key_env else (
             "inline api key" if profile.api_key else "no api key")
         lines.append(
-            f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.model}` • `{profile.base_url}` • {auth}")
+            f"- `{name}`{marker_text} — `{profile.provider}` • `{profile.resolved_api_mode()}` • `{profile.model}` • `{profile.base_url}` • {auth}")
     app._add_system_note("Saved profiles:\n" + ("\n".join(lines) if lines else "<no profiles>") +
                          f"\n\nProfile file: `{app.agent.profile_store.path}`")
     return True
@@ -190,7 +190,7 @@ def handle_profile(app: PyAgentApp, args: list[str]) -> bool:
     if not args:
         profile = app.agent.current_profile()
         app._add_system_note(
-            f"Current profile:\n- Name: `{profile.name}`\n- Provider: `{profile.provider}`\n- Model: `{profile.model}`\n- Base URL: `{profile.base_url}`\n- API key env: `{profile.api_key_env or '<none>'}`")
+            f"Current profile:\n- Name: `{profile.name}`\n- Provider: `{profile.provider}`\n- API mode: `{profile.resolved_api_mode()}`\n- Model: `{profile.model}`\n- Base URL: `{profile.base_url}`\n- API key env: `{profile.api_key_env or '<none>'}`")
         return True
     if args[0].lower() == "add":
         options, error = _parse_profile_add_options(app, args[1:])
@@ -208,6 +208,7 @@ def handle_profile(app: PyAgentApp, args: list[str]) -> bool:
                            or default_base_url_for_provider(provider)).strip()
             profile = ModelProfile(
                 name=profile_name, provider=provider, model=model, base_url=base_url,
+                api_mode=str(options.get("api_mode", "chat_completions")),
                 api_key=str(options.get("api_key", "")).strip() or None,
                 api_key_env=str(options.get(
                     "api_key_env", "")).strip() or None,
@@ -219,7 +220,7 @@ def handle_profile(app: PyAgentApp, args: list[str]) -> bool:
         except ValueError as exc:
             app._add_system_note(f"Could not save profile: `{exc}`")
             return True
-        details = [f"Saved profile `{profile.name}`.", f"Provider: `{profile.provider}`", f"Model: `{profile.model}`",
+        details = [f"Saved profile `{profile.name}`.", f"Provider: `{profile.provider}`", f"API mode: `{profile.resolved_api_mode()}`", f"Model: `{profile.model}`",
                    f"Base URL: `{profile.base_url}`", f"Profile file: `{app.agent.profile_store.path}`"]
         if make_default:
             details.append("Set as default profile.")
@@ -245,7 +246,7 @@ def handle_model(app: PyAgentApp, args: list[str]) -> bool:
     profile = app.agent.current_profile()
     if not args:
         app._add_system_note(
-            f"Current model:\n- Profile: `{profile.name}`\n- Provider: `{profile.provider}`\n- Model: `{profile.model}`\nUsage:\n- `/model list` — list models from the current endpoint\n- `/model <name>` — override the active profile's model")
+            f"Current model:\n- Profile: `{profile.name}`\n- Provider: `{profile.provider}`\n- API mode: `{profile.resolved_api_mode()}`\n- Model: `{profile.model}`\nUsage:\n- `/model list` — list models from the current endpoint\n- `/model <name>` — override the active profile's model")
         return True
     if len(args) == 1 and args[0].lower() == "list":
         model_names, error = app.agent.available_models()

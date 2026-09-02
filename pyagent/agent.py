@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -226,15 +227,7 @@ class Agent:
 
         profile = self.profile_store.get(self.active_profile_name)
         if self.model_override:
-            profile = ModelProfile(
-                name=profile.name,
-                provider=profile.provider,
-                model=self.model_override,
-                base_url=profile.base_url,
-                api_key=profile.api_key,
-                api_key_env=profile.api_key_env,
-                headers=dict(profile.headers),
-            )
+            profile = replace(profile, model=self.model_override)
         self.client = build_chat_client(
             profile, timeout=self.config.request_timeout)
 

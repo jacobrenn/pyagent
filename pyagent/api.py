@@ -56,6 +56,7 @@ class ChatResponse(BaseModel):
     response: str
     profile: str
     provider: str
+    api_mode: str
     model: str
     messages: list[dict]
     context_files: list[str] = Field(default_factory=list)
@@ -249,10 +250,17 @@ def run(request: ChatRequest) -> ChatResponse:
         )
 
     profile = agent.current_profile()
+    resolve_api_mode = getattr(profile, "resolved_api_mode", None)
+    api_mode = (
+        resolve_api_mode()
+        if callable(resolve_api_mode)
+        else str(getattr(profile, "api_mode", "chat_completions"))
+    )
     return ChatResponse(
         response=final_response,
         profile=profile.name,
         provider=profile.provider,
+        api_mode=api_mode,
         model=profile.model,
         messages=agent.messages,
         context_files=list(agent.project_context_files),

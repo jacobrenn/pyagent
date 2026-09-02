@@ -18,7 +18,7 @@ Use this skill when changing the Textual interface in `pyagent/ui.py`.
 - `/history search <text>` searches saved prompt history.
 - `↑` / `↓` and paging keys scroll the transcript.
 - Tool messages are intentionally compact.
-- Profile/model switching is exposed through slash commands.
+- Profile/API-mode/model switching is exposed through slash commands.
 - `/context` shows loaded project instruction files and context size.
 - Unknown slash commands may suggest a close match.
 - Auto-follow logic is sensitive to Textual layout timing.
@@ -53,8 +53,8 @@ If you change the prompt input:
 If you change slash commands or status text:
 
 - keep `/help` accurate
-- keep profile/model switching discoverable
-- keep profile reload / creation syntax discoverable
+- keep profile/API-mode/model switching discoverable
+- keep profile reload / creation syntax discoverable, including `api_mode` when relevant
 - keep `/context` and `/reload_context` discoverable when project context is relevant
 - keep typo suggestions helpful but compact
 - keep status bar text short
