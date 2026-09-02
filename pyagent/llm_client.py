@@ -425,7 +425,8 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
             if role == "assistant" and message.get("tool_calls"):
                 flush_pending()
                 if index == cached_index:
-                    pending_items = [dict(item) for item in self._last_response_output]
+                    pending_items = [dict(item)
+                                     for item in self._last_response_output]
                     pending_call_ids = set(self._last_response_tool_call_ids)
                     continue
 
@@ -613,11 +614,13 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
 
                 if event_type == "response.completed":
                     response = getattr(event, "response", None)
-                    completed_output = list(getattr(response, "output", None) or [])
+                    completed_output = list(
+                        getattr(response, "output", None) or [])
                     continue
 
                 if event_type == "error":
-                    message = getattr(event, "message", None) or "Responses API stream error"
+                    message = getattr(event, "message",
+                                      None) or "Responses API stream error"
                     yield {"error": str(message)}
                     return
 
@@ -633,7 +636,8 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
 
             final_output = completed_output
             if final_output is None:
-                final_output = [output_items[index] for index in sorted(output_items)]
+                final_output = [output_items[index]
+                                for index in sorted(output_items)]
             self._remember_response_output(final_output)
 
             calls_from_output = _tool_calls_from_response_output(final_output)

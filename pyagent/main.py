@@ -499,7 +499,8 @@ def main(argv: list[str] | None = None) -> None:
                     rows.append(row)
                 table = tabulate(
                     rows,
-                    headers=["Name", "Provider", "API Mode", "Model", "Base URL"]
+                    headers=["Name", "Provider",
+                             "API Mode", "Model", "Base URL"]
                 )
                 response = f"Default Profile: {default_profile_name}\n\nAll Profiles:\n{table}\n"
                 sys.stdout.write(response)
@@ -512,7 +513,8 @@ def main(argv: list[str] | None = None) -> None:
                     name=args.name,
                     provider=args.provider,
                     model=args.model,
-                    base_url=args.base_url or default_base_url_for_provider(args.provider),
+                    base_url=args.base_url or default_base_url_for_provider(
+                        args.provider),
                     api_mode=args.api_mode,
                     api_key_env=args.api_key_env,
                 )
