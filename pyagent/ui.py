@@ -7,7 +7,7 @@ import re
 import shlex
 from datetime import datetime
 from difflib import get_close_matches
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -31,6 +31,9 @@ from .scaffold import ScaffoldError, create_user_tool
 from .session_logger import SessionLogger
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
 from .extensions.manager import handle_extension_command
+
+if TYPE_CHECKING:
+    from .agent_definitions import AgentDefinition, AgentDefinitionValidation
 
 PROMPT_INPUT_MIN_HEIGHT = 8
 PROMPT_INPUT_MAX_HEIGHT = 20
@@ -264,21 +267,47 @@ class PyAgentApp(App):
     }
     """
 
-    def __init__(self, profile: str | None = None, model: str | None = None):
+    def __init__(
+        self,
+        profile: str | None = None,
+        model: str | None = None,
+        *,
+        agent: Agent | None = None,
+        agent_definition: "AgentDefinition | None" = None,
+        agent_validation: "AgentDefinitionValidation | None" = None,
+    ):
         super().__init__()
-        self.loaded_user_skills: list[str] = []
-        self.project_context, self.context_sources = load_full_context(
-            os.getcwd(),
-            loaded_user_skills=self.loaded_user_skills,
-        )
-        self.project_context_files = [
-            source.label for source in self.context_sources]
-        self.agent = Agent(
-            model=model,
-            profile=profile,
-            project_context=self.project_context,
-            project_context_files=self.project_context_files,
-        )
+        self.agent_definition = agent_definition
+        self.agent_validation = agent_validation
+
+        if agent is None:
+            self.loaded_user_skills: list[str] = []
+            self.project_context, self.context_sources = load_full_context(
+                os.getcwd(),
+                loaded_user_skills=self.loaded_user_skills,
+            )
+            self.project_context_files = [
+                source.label for source in self.context_sources]
+            self.agent = Agent(
+                model=model,
+                profile=profile,
+                project_context=self.project_context,
+                project_context_files=self.project_context_files,
+            )
+        else:
+            self.agent = agent
+            resolved = agent_validation.resolved if agent_validation else {}
+            self.loaded_user_skills = [
+                str(item) for item in resolved.get("skills", [])
+            ]
+            _, self.context_sources = load_full_context(
+                self.agent.workspace,
+                user_dir=self.agent.config.user_dir,
+                loaded_user_skills=self.loaded_user_skills,
+            )
+            self.project_context = self.agent.project_context
+            self.project_context_files = list(self.agent.project_context_files)
+
         # Extensions load after the agent exists.
         self.agent.load_extensions()
         self._initial_status_note = self._extensions_summary_note()
@@ -314,15 +343,29 @@ class PyAgentApp(App):
         )
         self._set_status(self._ready_status())
         profile = self.agent.current_profile()
+        welcome_lines = [
+            "Welcome to **PyAgent**. Responses stream as plain text for speed and render as Markdown when complete.",
+            "",
+        ]
+        if self.agent_definition is not None:
+            welcome_lines.extend(
+                [
+                    f"Active agent: `{self.agent_definition.name}`  ",
+                    f"Revision: `{self.agent_definition.revision}`  ",
+                    f"Workspace: `{self._runtime_workspace()}`  ",
+                ]
+            )
+        welcome_lines.extend(
+            [
+                f"Active profile: `{profile.name}`  ",
+                f"Provider: `{profile.provider}`  ",
+                f"API mode: `{profile.resolved_api_mode()}`  ",
+                f"Model: `{profile.model}`",
+            ]
+        )
         self._add_message(
             "system",
-            (
-                "Welcome to **PyAgent**. Responses stream as plain text for speed and render as Markdown when complete.\n\n"
-                f"Active profile: `{profile.name}`  \n"
-                f"Provider: `{profile.provider}`  \n"
-                f"API mode: `{profile.resolved_api_mode()}`  \n"
-                f"Model: `{profile.model}`"
-            ),
+            "\n".join(welcome_lines),
             finalized=True,
         )
         if self.agent.prompt_file_created:
@@ -334,6 +377,9 @@ class PyAgentApp(App):
         if self._initial_status_note:
             self._add_message(
                 "system", self._initial_status_note, finalized=True)
+        definition_note = self._definition_startup_note()
+        if definition_note:
+            self._add_message("system", definition_note, finalized=True)
         if self.project_context_files:
             loaded_files = "\n".join(
                 f"- `{path}`" for path in self.project_context_files
@@ -351,11 +397,34 @@ class PyAgentApp(App):
         self._resize_prompt_input()
         self._log_debug("Debug log initialized.")
 
+    def _runtime_workspace(self) -> str:
+        return str(self.agent.workspace)
+
+    def _definition_startup_note(self) -> str | None:
+        definition = getattr(self, "agent_definition", None)
+        if definition is None:
+            return None
+        lines = [
+            f"Agent `{definition.name}` revision `{definition.revision}` is pinned for this TUI session.",
+            "Its profile, model, prompt, skills, tool mode, workspace, and iteration limit cannot be overridden with slash commands.",
+        ]
+        warnings = getattr(
+            getattr(self, "agent_validation", None), "warnings", ()
+        )
+        if warnings:
+            lines.append("Validation warnings:")
+            lines.extend(f"- {warning}" for warning in warnings)
+        return "\n".join(lines)
+
     def _status_summary(self) -> str:
         profile = self.agent.current_profile()
         context_count = len(self.agent.project_context_files)
+        agent_prefix = ""
+        definition = getattr(self, "agent_definition", None)
+        if definition is not None:
+            agent_prefix = f"Agent: {definition.name} r{definition.revision} • "
         return (
-            f"Profile: {profile.name} • Provider: {profile.provider}"
+            f"{agent_prefix}Profile: {profile.name} • Provider: {profile.provider}"
             f" • API: {profile.resolved_api_mode()} • Model: {profile.model}"
             f" • Tools: {'on' if self.agent.config.tools_enabled else 'off'}"
             f" • Context: {context_count}"
@@ -406,6 +475,7 @@ class PyAgentApp(App):
     def _session_meta_attributes(self) -> dict[str, Any]:
         """Build a dict of session metadata for log entries."""
         profile = self.agent.current_profile()
+        definition = getattr(self, "agent_definition", None)
         return {
             "profile": profile.name,
             "provider": profile.provider,
@@ -417,7 +487,11 @@ class PyAgentApp(App):
             "user_tools_enabled": self.agent.config.user_tools_enabled,
             "bash_enabled": self.agent.config.bash_enabled,
             "bash_readonly_mode": self.agent.config.bash_readonly_mode,
-            "cwd": os.getcwd(),
+            "cwd": self._runtime_workspace(),
+            "agent": definition.name if definition is not None else None,
+            "agent_revision": (
+                definition.revision if definition is not None else None
+            ),
             "extensions": self.agent.bus.loaded_extensions(),
         }
 
@@ -443,7 +517,7 @@ class PyAgentApp(App):
         self._add_message("system", content, finalized=True)
 
     def _command_help_text(self) -> str:
-        return (
+        text = (
             "Available commands and keys:\n"
             "\n"
             "Prompt and navigation\n"
@@ -493,6 +567,14 @@ class PyAgentApp(App):
             "- `/debug on|off` — show or hide the debug pane"
             "- `logging on|off` - enable or disable logging (logs saved to `~/.pyagent/logs/`)"
         )
+        definition = getattr(self, "agent_definition", None)
+        if definition is not None:
+            text += (
+                "\n\nDefined agent mode\n"
+                f"- Agent `{definition.name}` revision `{definition.revision}` is pinned for this session.\n"
+                "- Profile, model, prompt, skills, tool mode, workspace, and max iterations are read-only."
+            )
+        return text
 
     def _context_status_text(self) -> str:
         files = self.agent.project_context_files
@@ -549,6 +631,39 @@ class PyAgentApp(App):
             lines.append("- Sources:")
             lines.extend(f"  - `{path}`" for path in files)
         return "\n".join(lines)
+
+    def _definition_command_lock_message(
+        self, command: str, args: list[str]
+    ) -> str | None:
+        definition = getattr(self, "agent_definition", None)
+        if definition is None:
+            return None
+
+        blocked = False
+        if command == "/profile":
+            blocked = bool(args)
+        elif command == "/model":
+            blocked = bool(args) and not (
+                len(args) == 1 and args[0].lower() == "list"
+            )
+        elif command == "/max_iterations":
+            blocked = True
+        elif command == "/skills":
+            blocked = bool(args) and args[0].lower() in {"load", "unload"}
+        elif command == "/tools":
+            blocked = bool(args) and args[0].lower() in {"on", "off"}
+        elif command == "/profiles":
+            blocked = bool(args) and args[0].lower() == "reload"
+        elif command == "/reload_profiles":
+            blocked = True
+
+        if not blocked:
+            return None
+        return (
+            f"Agent `{definition.name}` revision "
+            f"`{definition.revision}` controls this setting. "
+            "Start an ad hoc TUI session to override it, or update the stored agent definition and start a new session."
+        )
 
     def _unknown_command_message(self, command: str) -> str:
         known_commands = [
@@ -687,7 +802,7 @@ class PyAgentApp(App):
     def _reload_context_details(self) -> str:
         previous_files = set(self.agent.project_context_files)
         self.project_context, self.context_sources = load_full_context(
-            os.getcwd(),
+            self.agent.workspace,
             user_dir=self.agent.config.user_dir,
             loaded_user_skills=self.loaded_user_skills,
         )
@@ -714,7 +829,7 @@ class PyAgentApp(App):
     def _handle_skills_command(self, args: list[str]) -> bool:
         if not args or args[0].lower() == "list":
             available = list_available_skills(
-                os.getcwd(), user_dir=self.agent.config.user_dir
+                self.agent.workspace, user_dir=self.agent.config.user_dir
             )
             loaded = set(self.loaded_user_skills)
             lines = [
@@ -746,7 +861,7 @@ class PyAgentApp(App):
         requested = args[1]
         resolved = resolve_available_skill(
             requested,
-            os.getcwd(),
+            self.agent.workspace,
             user_dir=self.agent.config.user_dir,
         )
         if resolved is None:
@@ -1007,6 +1122,11 @@ class PyAgentApp(App):
         command = parts[0].lower()
         args = parts[1:]
 
+        lock_message = self._definition_command_lock_message(command, args)
+        if lock_message is not None:
+            self._add_system_note(lock_message)
+            return True
+
         handler = COMMAND_REGISTRY.get(command)
         if handler is not None:
             return handler(self, args)
@@ -1227,13 +1347,13 @@ class PyAgentApp(App):
                 f"- Bash enabled: `{self.agent.config.bash_enabled}`\n"
                 f"- Bash read-only: `{self.agent.config.bash_readonly_mode}`\n"
                 f"- Instruction context files loaded: `{context_count}`\n"
-                f"- Working directory: `{os.getcwd()}`"
+                f"- Working directory: `{self._runtime_workspace()}`"
             )
             return True
 
         if command == "/cwd":
             self._add_system_note(
-                f"Current working directory: `{os.getcwd()}`")
+                f"Current agent workspace: `{self._runtime_workspace()}`")
             return True
 
         if command == "/history":

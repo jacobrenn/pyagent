@@ -254,6 +254,25 @@ def _handle_agents_command(args: argparse.Namespace) -> None:
             sys.stdout.write(response)
             sys.stdout.flush()
             return
+        if args.agent_action == "chat":
+            from .agent_definitions import build_agent_from_definition
+            from .ui import PyAgentApp
+
+            agent, definition, validation = build_agent_from_definition(
+                args.name,
+                revision=args.revision,
+                cwd=args.cwd,
+            )
+            try:
+                app = PyAgentApp(
+                    agent=agent,
+                    agent_definition=definition,
+                    agent_validation=validation,
+                )
+                app.run()
+            finally:
+                agent.close(reason="tui_exit")
+            return
     except (AgentDefinitionError, ValueError) as exc:
         sys.stderr.write(f"{exc}\n")
         sys.stderr.flush()
@@ -660,6 +679,15 @@ def main(argv: list[str] | None = None) -> None:
     agent_run.add_argument("--revision", type=int)
     agent_run.add_argument("--cwd")
 
+    agent_chat = agents_subparsers.add_parser(
+        "chat", help="Open an interactive TUI with an agent definition")
+    agent_chat.add_argument("name")
+    agent_chat.add_argument("--revision", type=int)
+    agent_chat.add_argument(
+        "--cwd",
+        help="Base directory used to resolve a relative agent workspace",
+    )
+
     extensions_parser = subparsers.add_parser(
         "extensions",
         help="Manage installed extensions on disk",
@@ -819,7 +847,10 @@ def main(argv: list[str] | None = None) -> None:
     from .ui import PyAgentApp
 
     app = PyAgentApp(profile=args.profile, model=args.model)
-    app.run()
+    try:
+        app.run()
+    finally:
+        app.agent.close(reason="tui_exit")
 
 
 if __name__ == "__main__":

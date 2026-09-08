@@ -1710,6 +1710,56 @@ class MainCliTests(unittest.TestCase):
 
         fake_ui_module.PyAgentApp.assert_called_once()
         mock_app_instance.run.assert_called_once()
+        mock_app_instance.agent.close.assert_called_once_with(reason="tui_exit")
+
+    def test_agent_chat_launches_tui_with_pinned_definition(self) -> None:
+        fake_agent = mock.Mock()
+        definition = SimpleNamespace(name="reviewer", revision=3)
+        validation = SimpleNamespace(resolved={"skills": []}, warnings=())
+        fake_ui_module = SimpleNamespace(PyAgentApp=mock.Mock())
+        mock_app = fake_ui_module.PyAgentApp.return_value
+
+        with mock.patch(
+            "pyagent.agent_definitions.build_agent_from_definition",
+            return_value=(fake_agent, definition, validation),
+        ) as mock_build, mock.patch.dict(
+            sys.modules, {"pyagent.ui": fake_ui_module}, clear=False
+        ):
+            main_entry(
+                [
+                    "agents",
+                    "chat",
+                    "reviewer",
+                    "--revision",
+                    "3",
+                    "--cwd",
+                    "/tmp/project",
+                ]
+            )
+
+        mock_build.assert_called_once_with(
+            "reviewer", revision=3, cwd="/tmp/project"
+        )
+        fake_ui_module.PyAgentApp.assert_called_once_with(
+            agent=fake_agent,
+            agent_definition=definition,
+            agent_validation=validation,
+        )
+        mock_app.run.assert_called_once_with()
+        fake_agent.close.assert_called_once_with(reason="tui_exit")
+
+    def test_agent_chat_reports_invalid_definition_before_opening_tui(self) -> None:
+        from pyagent.agent_definitions import AgentDefinitionError
+
+        with mock.patch(
+            "pyagent.agent_definitions.build_agent_from_definition",
+            side_effect=AgentDefinitionError("Agent definition is invalid"),
+        ), mock.patch("sys.stderr") as mock_stderr:
+            with self.assertRaises(SystemExit) as cm:
+                main_entry(["agents", "chat", "reviewer"])
+
+        self.assertEqual(cm.exception.code, 2)
+        mock_stderr.write.assert_called_with("Agent definition is invalid\n")
 
     def test_run_single_shot_builds_agent_and_returns_final_content(self) -> None:
         mock_agent = mock.Mock()
@@ -2557,6 +2607,108 @@ class UiCommandTests(unittest.TestCase):
         self.assertIn("`Enter`", text)
         self.assertIn("`Shift+Enter`", text)
         self.assertIn("`Ctrl+P` / `Ctrl+N`", text)
+
+    def test_prebuilt_definition_agent_initializes_tui_runtime_state(self) -> None:
+        workspace = Path("/tmp/definition-workspace")
+        fake_agent = mock.Mock()
+        fake_agent.workspace = workspace
+        fake_agent.config = SimpleNamespace(
+            user_dir="/tmp/user", tools_enabled=True
+        )
+        fake_agent.project_context = "definition context"
+        fake_agent.project_context_files = ["AGENTS.md", "skills/review.md"]
+        fake_agent.bus.loaded_extensions.return_value = []
+        definition = SimpleNamespace(name="reviewer", revision=4)
+        validation = SimpleNamespace(
+            resolved={"skills": ["project:skills/review.md"]},
+            warnings=("runner warning",),
+        )
+        context_sources = [
+            SimpleNamespace(scope=PROJECT_SCOPE, label="AGENTS.md"),
+            SimpleNamespace(scope=PROJECT_SCOPE, label="skills/review.md"),
+        ]
+
+        with mock.patch("pyagent.ui.Agent") as mock_agent_class, mock.patch(
+            "pyagent.ui.load_full_context",
+            return_value=("definition context", context_sources),
+        ) as mock_load_context:
+            app = PyAgentApp(
+                agent=fake_agent,
+                agent_definition=definition,
+                agent_validation=validation,
+            )
+
+        mock_agent_class.assert_not_called()
+        mock_load_context.assert_called_once_with(
+            workspace,
+            user_dir="/tmp/user",
+            loaded_user_skills=["project:skills/review.md"],
+        )
+        fake_agent.load_extensions.assert_called_once_with()
+        self.assertIs(app.agent, fake_agent)
+        self.assertEqual(
+            app.loaded_user_skills, ["project:skills/review.md"]
+        )
+        self.assertEqual(app.project_context, "definition context")
+        self.assertIn("reviewer r4", app._status_summary())
+        self.assertIn("runner warning", app._definition_startup_note())
+
+    def test_definition_mode_blocks_runtime_setting_overrides(self) -> None:
+        app = PyAgentApp()
+        app.agent_definition = SimpleNamespace(name="reviewer", revision=2)
+        notes: list[str] = []
+        app._add_system_note = notes.append
+        app.agent.set_profile = mock.Mock()
+        app.agent.set_model = mock.Mock()
+        original_tools_enabled = app.agent.config.tools_enabled
+        original_max_iterations = app.agent.config.max_iterations
+
+        commands = [
+            "/profile another-profile",
+            "/model another-model",
+            "/skills load review.md",
+            "/tools off",
+            "/max_iterations 2",
+            "/profiles reload",
+            "/reload_profiles",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(app._handle_slash_command(command))
+                self.assertIn("controls this setting", notes[-1])
+
+        app.agent.set_profile.assert_not_called()
+        app.agent.set_model.assert_not_called()
+        self.assertEqual(app.agent.config.tools_enabled, original_tools_enabled)
+        self.assertEqual(
+            app.agent.config.max_iterations, original_max_iterations
+        )
+        self.assertEqual(app.loaded_user_skills, [])
+
+    def test_definition_context_reload_uses_agent_workspace(self) -> None:
+        app = PyAgentApp()
+        workspace = Path("/tmp/definition-workspace")
+        app.agent.workspace = workspace
+        app.loaded_user_skills = ["project:skills/review.md"]
+        app.agent.set_project_context = mock.Mock()
+        app._add_system_note = mock.Mock()
+        app._set_status = mock.Mock()
+        sources = [SimpleNamespace(scope=PROJECT_SCOPE, label="AGENTS.md")]
+
+        with mock.patch(
+            "pyagent.commands.load_full_context",
+            return_value=("workspace context", sources),
+        ) as mock_load_context:
+            self.assertTrue(app._handle_slash_command("/reload_context"))
+
+        mock_load_context.assert_called_once_with(
+            workspace,
+            user_dir=app.agent.config.user_dir,
+            loaded_user_skills=["project:skills/review.md"],
+        )
+        app.agent.set_project_context.assert_called_once_with(
+            "workspace context", ["AGENTS.md"]
+        )
 
     def test_tools_command_toggles_runtime_tools_and_resets_conversation(self) -> None:
         app = PyAgentApp()

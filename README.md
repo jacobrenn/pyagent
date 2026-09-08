@@ -330,6 +330,15 @@ pyagent agents run reviewer "Review the current diff"
 pyagent agents run reviewer "Review the current diff" --revision 1 --cwd /work
 ```
 
+Open an interactive terminal TUI with the current or a pinned revision:
+
+```bash
+pyagent agents chat reviewer
+pyagent agents chat reviewer --revision 1 --cwd /work
+```
+
+The definition is resolved once when the TUI starts, so the displayed revision remains pinned for the session. The TUI keeps conversation history in the same local `Agent` instance and uses the definition's resolved workspace for tools, context discovery, and status output. Definition-controlled profile, model, prompt, skills, tool mode, workspace, and iteration limit cannot be overridden with slash commands; update the definition and start a new session to change them. Read-only inspection commands and `/reload_context` remain available, and globally enabled extensions retain their normal lifecycle.
+
 The `pyagent serve` browser UI also has an **Agents** page for creating, editing, validating, deleting, and inspecting revisions. Choose **Run in chat** to open a browser-local conversation pinned to the selected revision, or select any current agent definition from the chat runtime menu.
 
 Definition fields:
@@ -355,6 +364,13 @@ This is the local orchestration foundation, not yet a durable deployment schedul
 
 ```bash
 pyagent
+```
+
+To work interactively with a stored agent definition:
+
+```bash
+pyagent agents chat reviewer
+pyagent agents chat reviewer --revision 1 --cwd /work
 ```
 
 Or as a module:

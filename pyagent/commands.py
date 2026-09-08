@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any
-import os
 from difflib import get_close_matches
 from .model_profiles import ModelProfile, default_base_url_for_provider
 from .external_tools import find_tool_script, move_tool_script
@@ -297,13 +296,13 @@ def handle_status(app: PyAgentApp, args: list[str]) -> bool:
         f"- Agent tool-loop max iterations: {app._max_iterations_text()}\n- Built-in tools enabled: `{app.agent.config.builtin_tools_enabled}`\n"
         f"- User-tools enabled: `{app.agent.config.user_tools_enabled}`\n- Bash enabled: `{app.agent.config.bash_enabled}`\n"
         f"- Bash read-only: `{app.agent.config.bash_readonly_mode}`\n- Instruction context files loaded: `{len(app.agent.project_context_files)}`\n"
-        f"- Working directory: `{os.getcwd()}`"
+        f"- Working directory: `{app._runtime_workspace()}`"
     )
     return True
 
 
 def handle_cwd(app: PyAgentApp, args: list[str]) -> bool:
-    app._add_system_note(f"Current working directory: `{os.getcwd()}`")
+    app._add_system_note(f"Current agent workspace: `{app._runtime_workspace()}`")
     return True
 
 
@@ -360,7 +359,7 @@ def handle_reload_profiles(app: PyAgentApp, args: list[str]) -> bool:
 
 def _reload_context_state(app: PyAgentApp) -> None:
     app.project_context, app.context_sources = load_full_context(
-        os.getcwd(),
+        app.agent.workspace,
         user_dir=app.agent.config.user_dir,
         loaded_user_skills=app.loaded_user_skills,
     )
@@ -373,7 +372,7 @@ def _reload_context_state(app: PyAgentApp) -> None:
 def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
     if not args or args[0].lower() == "list":
         skills = list_available_skills(
-            os.getcwd(), user_dir=app.agent.config.user_dir)
+            app.agent.workspace, user_dir=app.agent.config.user_dir)
         loaded = set(app.loaded_user_skills)
         lines = [
             f"User skills directory: `{app.agent.config.user_dir}/skills/`",
@@ -408,7 +407,7 @@ def handle_skills(app: PyAgentApp, args: list[str]) -> bool:
     skill_name = args[1]
     skill = resolve_available_skill(
         skill_name,
-        os.getcwd(),
+        app.agent.workspace,
         user_dir=app.agent.config.user_dir,
     )
     if skill is None:
