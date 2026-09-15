@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { api } from "../api/client";
+import { ModelPicker } from "../components/ModelPicker";
 import {
   buildProfileCreatePayload,
   buildProfileUpdatePayload,
@@ -71,8 +72,6 @@ export function ProfilesPage({
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [models, setModels] = useState<string[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
 
   const selected = useMemo(
     () => profileList.find((profile) => profile.name === selectedName) ?? null,
@@ -91,7 +90,6 @@ export function ProfilesPage({
       setDraft(nextDraft);
       setHeadersText(JSON.stringify(nextDraft.headers, null, 2));
       setTransportText(JSON.stringify(nextDraft.httpxKwargs, null, 2));
-      setModels([]);
       setError("");
       setNotice("");
     }
@@ -104,7 +102,6 @@ export function ProfilesPage({
     setDraft(next);
     setHeadersText("{}");
     setTransportText("{}");
-    setModels([]);
     setError("");
     setNotice("");
   };
@@ -178,25 +175,6 @@ export function ProfilesPage({
     }
   };
 
-  const discoverModels = async () => {
-    if (!selected) return;
-    setModelsLoading(true);
-    setError("");
-    try {
-      const response = await api.listProfileModels(selected.name);
-      setModels(response.models);
-      setNotice(
-        response.models.length
-          ? `Found ${response.models.length} available models.`
-          : "The endpoint did not report any models.",
-      );
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not list models.");
-    } finally {
-      setModelsLoading(false);
-    }
-  };
-
   return (
     <div class="profiles-page">
       <section class="profiles-hero">
@@ -255,9 +233,6 @@ export function ProfilesPage({
             </div>
             {!creating && selected && (
               <div class="profile-actions">
-                <button onClick={() => void discoverModels()} disabled={modelsLoading}>
-                  {modelsLoading ? "Discovering…" : "Discover models"}
-                </button>
                 {!selected.is_default && <button onClick={() => void setDefault()}>Set default</button>}
                 <button class="danger-button" onClick={() => void remove()}>Delete</button>
               </div>
@@ -314,19 +289,17 @@ export function ProfilesPage({
                     <option value="responses" disabled={draft.provider === "ollama"}>Responses</option>
                   </select>
                 </label>
-                <label>
-                  <span>Model</span>
-                  <input
-                    value={draft.model}
-                    list="profile-model-list"
-                    required
-                    onInput={(event) => updateDraft("model", event.currentTarget.value)}
-                    placeholder="qwen2.5-coder:7b"
-                  />
-                  <datalist id="profile-model-list">
-                    {models.map((model) => <option key={model} value={model} />)}
-                  </datalist>
-                </label>
+                <ModelPicker
+                  id="profile-model"
+                  label="Model"
+                  value={draft.model}
+                  onChange={(model) => updateDraft("model", model)}
+                  profileName={creating ? undefined : selected?.name}
+                  required
+                  discoveryHint={creating
+                    ? "Save this profile before discovering models."
+                    : "Discovery uses the saved profile connection settings."}
+                />
                 <label class="form-grid__wide">
                   <span>Base URL <small>{creating ? "optional" : ""}</small></span>
                   <input

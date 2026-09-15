@@ -302,7 +302,8 @@ def handle_status(app: PyAgentApp, args: list[str]) -> bool:
 
 
 def handle_cwd(app: PyAgentApp, args: list[str]) -> bool:
-    app._add_system_note(f"Current agent workspace: `{app._runtime_workspace()}`")
+    app._add_system_note(
+        f"Current agent workspace: `{app._runtime_workspace()}`")
     return True
 
 

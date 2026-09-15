@@ -1100,6 +1100,15 @@ pre {
 .form-grid select { padding: 10px 11px; }
 .form-grid__wide { grid-column: 1 / -1; }
 
+.model-picker { min-width: 0; }
+.model-picker > label { margin-bottom: 6px; }
+.model-picker .field-action > input,
+.model-picker .field-action > select { width: 0; min-width: 0; flex: 1; }
+.model-picker .field-action > button { flex-shrink: 0; }
+.model-picker__toggle { margin-top: 4px; padding: 4px 0; }
+.model-picker__hint { margin: 6px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.model-picker__hint--error { color: var(--red); }
+
 .check-row {
   display: flex !important;
   flex-direction: row !important;

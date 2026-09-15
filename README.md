@@ -448,11 +448,13 @@ Open <http://127.0.0.1:8000/ui/> (or the server root) for the bundled browser UI
 - streaming chat with visible tool calls/results and a Stop control
 - per-conversation profile, model, working-directory, skill, and debug controls
 - browser-local conversation history stored in IndexedDB, with a local-storage fallback
-- profile creation, editing, deletion, default selection, and endpoint model discovery
+- profile creation, editing, deletion, default selection, and endpoint model discovery with dropdown selection
 - a resource manager for uploading, installing, enabling/disabling, and deleting tools, skills, and extensions
 - a versioned agent editor with resource selection, validation, revision history, and **Run in chat**
 - ad hoc and stored-agent conversations using the same streaming transcript and Stop control
 - secret-preserving profile updates: blank credentials preserve existing values, while explicit clear controls send `null`
+
+On **Profiles** and **Agents**, choose **Discover models** beside the model field to load an endpoint's models into a dropdown. The Profiles page uses the saved connection settings (save a new profile before discovering); the Agents page uses the selected profile, or the effective default profile when inheriting. Discovery preserves your current model selection. Agents can choose **Use profile model** to clear an override, and **Enter a model manually** remains available for models not listed by the endpoint. If discovery fails or returns no models, you can still enter a model name manually.
 
 The compiled UI ships inside the Python wheel; Node is not needed to run it. Frontend contributors can run a development server separately:
 

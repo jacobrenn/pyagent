@@ -1710,7 +1710,8 @@ class MainCliTests(unittest.TestCase):
 
         fake_ui_module.PyAgentApp.assert_called_once()
         mock_app_instance.run.assert_called_once()
-        mock_app_instance.agent.close.assert_called_once_with(reason="tui_exit")
+        mock_app_instance.agent.close.assert_called_once_with(
+            reason="tui_exit")
 
     def test_agent_chat_launches_tui_with_pinned_definition(self) -> None:
         fake_agent = mock.Mock()
@@ -2679,7 +2680,8 @@ class UiCommandTests(unittest.TestCase):
 
         app.agent.set_profile.assert_not_called()
         app.agent.set_model.assert_not_called()
-        self.assertEqual(app.agent.config.tools_enabled, original_tools_enabled)
+        self.assertEqual(app.agent.config.tools_enabled,
+                         original_tools_enabled)
         self.assertEqual(
             app.agent.config.max_iterations, original_max_iterations
         )

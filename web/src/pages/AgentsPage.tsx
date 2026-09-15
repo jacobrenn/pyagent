@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { api } from "../api/client";
+import { ModelPicker } from "../components/ModelPicker";
 import type {
   AgentDefinition,
   AgentsResponse,
@@ -264,7 +265,9 @@ export function AgentsPage({
     }
   };
 
-  const selectedProfile = profiles?.profiles.find((profile) => profile.name === draft.profile);
+  const selectedProfile = profiles?.profiles.find(
+    (profile) => profile.name === (draft.profile || profiles.effective_default_profile),
+  );
 
   return (
     <div class="management-page agents-page">
@@ -367,14 +370,14 @@ export function AgentsPage({
                     placeholder="Reviews changes for correctness and maintainability."
                   />
                 </label>
-                <label>
-                  <span>Model override <small>{selectedProfile?.model ? `profile: ${selectedProfile.model}` : "optional"}</small></span>
-                  <input
-                    value={draft.model}
-                    onInput={(event) => updateDraft("model", event.currentTarget.value)}
-                    placeholder="Use the profile model"
-                  />
-                </label>
+                <ModelPicker
+                  id="agent-model"
+                  label="Model override"
+                  value={draft.model}
+                  onChange={(model) => updateDraft("model", model)}
+                  profileName={selectedProfile?.name}
+                  profileModel={selectedProfile?.model}
+                />
                 <label>
                   <span>System prompt resource <small>optional</small></span>
                   <select
