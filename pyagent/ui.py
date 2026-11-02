@@ -28,7 +28,6 @@ from .project_context import (
     resolve_available_skill,
 )
 from .scaffold import ScaffoldError, create_user_tool
-from .session_logger import SessionLogger
 from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
 from .extensions.manager import handle_extension_command
 
@@ -313,14 +312,13 @@ class PyAgentApp(App):
         self._initial_status_note = self._extensions_summary_note()
         self.is_processing = False
         self.debug_visible = False
-        self.logging_enabled = False
-        self._session_logger: SessionLogger | None = None
+        self.logging_enabled = self.agent.logging_enabled
+        self.agent.run_source = "tui"
         self.chat_auto_follow = True
         self._chat_follow_timer = None
         self.input_history: list[str] = []
         self.input_history_index: int | None = None
         self.input_history_draft = ""
-        self._turn_counter: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -396,6 +394,11 @@ class PyAgentApp(App):
         )
         self._resize_prompt_input()
         self._log_debug("Debug log initialized.")
+        if self.logging_enabled:
+            self._add_system_note(
+                "Run logging enabled by configuration. Each prompt gets a separate log. "
+                "Use `/logging off` to disable it."
+            )
 
     def _runtime_workspace(self) -> str:
         return str(self.agent.workspace)
@@ -419,6 +422,9 @@ class PyAgentApp(App):
     def _status_summary(self) -> str:
         profile = self.agent.current_profile()
         context_count = len(self.agent.project_context_files)
+        logging_status = "on" if self.logging_enabled else "off"
+        if self.logging_enabled and getattr(self.agent, "logging_error", None):
+            logging_status = "error"
         agent_prefix = ""
         definition = getattr(self, "agent_definition", None)
         if definition is not None:
@@ -429,7 +435,7 @@ class PyAgentApp(App):
             f" • Tools: {'on' if self.agent.config.tools_enabled else 'off'}"
             f" • Context: {context_count}"
             f" • Debug: {'on' if self.debug_visible else 'off'}"
-            f" • Log: {'on' if self.logging_enabled else 'off'}"
+            f" • Log: {logging_status}"
         )
 
     def _max_iterations_text(self) -> str:
@@ -471,36 +477,6 @@ class PyAgentApp(App):
                 PROMPT_INPUT_MAX_HEIGHT, line_count + 2)
         )
         input_widget.styles.height = target_height
-
-    def _session_meta_attributes(self) -> dict[str, Any]:
-        """Build a dict of session metadata for log entries."""
-        profile = self.agent.current_profile()
-        definition = getattr(self, "agent_definition", None)
-        return {
-            "profile": profile.name,
-            "provider": profile.provider,
-            "api_mode": profile.resolved_api_mode(),
-            "model": profile.model,
-            "base_url": profile.base_url,
-            "tools_enabled": self.agent.config.tools_enabled,
-            "builtin_tools_enabled": self.agent.config.builtin_tools_enabled,
-            "user_tools_enabled": self.agent.config.user_tools_enabled,
-            "bash_enabled": self.agent.config.bash_enabled,
-            "bash_readonly_mode": self.agent.config.bash_readonly_mode,
-            "cwd": self._runtime_workspace(),
-            "agent": definition.name if definition is not None else None,
-            "agent_revision": (
-                definition.revision if definition is not None else None
-            ),
-            "extensions": self.agent.bus.loaded_extensions(),
-        }
-
-    def _log_session_start(self, session_logger: SessionLogger) -> None:
-        """Log a session-start entry with profile/runtime context."""
-        try:
-            session_logger.log_session_start(self._session_meta_attributes())
-        except Exception:
-            pass
 
     def _chat_container(self) -> VerticalScroll:
         return self.query_one("#chat-container", VerticalScroll)
@@ -565,7 +541,7 @@ class PyAgentApp(App):
             "- `/extension enable <name>` / `/extension disable <name>` — move an extension in or out of `extensions/disabled/`\n"
             "- `/extension remove <name>` — permanently delete an extension from disk\n"
             "- `/debug on|off` — show or hide the debug pane"
-            "- `logging on|off` - enable or disable logging (logs saved to `~/.pyagent/logs/`)"
+            "- `/logging on|off` — enable or disable per-run logging (default: `PYAGENT_LOGGING`)"
         )
         definition = getattr(self, "agent_definition", None)
         if definition is not None:
@@ -876,8 +852,6 @@ class PyAgentApp(App):
                 self._add_system_note(f"Skill `{skill_id}` is already loaded.")
                 return True
             self.loaded_user_skills.append(skill_id)
-            if self.logging_enabled and self._session_logger is not None:
-                self._session_logger.log_skill_load(skill_id)
             self._add_system_note(
                 f"Loaded skill `{skill_id}` into the system prompt for this session.\n\n{self._reload_context_details()}"
             )
@@ -890,8 +864,6 @@ class PyAgentApp(App):
             return True
         self.loaded_user_skills = [
             name for name in self.loaded_user_skills if name != skill_id]
-        if self.logging_enabled and self._session_logger is not None:
-            self._session_logger.log_skill_unload(skill_id)
         self._add_system_note(
             f"Unloaded skill `{skill_id}` from the system prompt for this session.\n\n{self._reload_context_details()}"
         )
@@ -1051,61 +1023,28 @@ class PyAgentApp(App):
         return True
 
     def _handle_logging_command(self, args: list[str]) -> bool:
-        from .user_runtime import user_log_dir
-
         if not args:
-            self._add_system_note(
-                f"Session logging is currently `{'on' if self.logging_enabled else 'off'}`."
-            )
+            lines = [
+                f"Run logging is currently `{'on' if self.logging_enabled else 'off'}`."]
+            if self.agent.last_log_path:
+                lines.append(f"Last log: `{self.agent.last_log_path}`")
+            if self.agent.logging_error:
+                lines.append(self.agent.logging_error)
+            self._add_system_note("\n".join(lines))
             return True
-
-        arg = args[0].lower()
-        if arg not in {"on", "off"}:
+        if len(args) != 1 or args[0].lower() not in {"on", "off"}:
             self._add_system_note("Usage: `/logging on` or `/logging off`")
             return True
-
-        enabled = arg == "on"
-
-        if enabled and not self.logging_enabled:
-            try:
-                logger = SessionLogger.from_config(self.agent.config)
-            except Exception as exc:
-                self._add_system_note(
-                    f"Could not start session logging: `{exc}`")
-                return True
-            self._session_logger = logger
-            self.logging_enabled = True
-            self.agent.attach_logger(logger)
-            log_path = str(logger.jsonl_path)
-            self._turn_counter = 0
-            self._log_session_start(logger)
+        if self.is_processing:
             self._add_system_note(
-                f"Session logging started. Transcripts will be saved to `{log_path}`."
-            )
-            self._set_status(self._ready_status())
+                "Wait for the current run to finish before changing logging.")
             return True
-
-        if not enabled and self.logging_enabled:
-            if self._session_logger is not None:
-                try:
-                    self._session_logger.log_session_end(
-                        self._turn_counter, self._session_meta_attributes()
-                    )
-                except Exception:
-                    pass
-                try:
-                    self._session_logger.close()
-                except Exception:
-                    pass
-                self._session_logger = None
-            self.agent.attach_logger(None)
-            self.logging_enabled = False
-            self._add_system_note(f"Session logging stopped.")
-            self._set_status(self._ready_status())
-            return True
-
-        state = "already on" if enabled else "already off"
-        self._add_system_note(f"Session logging is {state}.")
+        self.logging_enabled = args[0].lower() == "on"
+        self.agent.logging_enabled = self.logging_enabled
+        self.agent.logging_error = None
+        state = "enabled" if self.logging_enabled else "disabled"
+        self._add_system_note(f"Run logging {state} for subsequent prompts.")
+        self._set_status(self._ready_status())
         return True
 
     def _handle_slash_command(self, raw_input: str) -> bool:
@@ -1521,12 +1460,6 @@ class PyAgentApp(App):
         message.add_class(f"{role}-message")
         self._chat_container().mount(message)
         self._schedule_chat_scroll_end(force=should_autoscroll)
-        if self.logging_enabled and self._session_logger is not None:
-            try:
-                self._session_logger.log_entry(
-                    {"role": role, "content": content})
-            except Exception:
-                pass
         return message
 
     async def action_scroll_chat_up(self) -> None:
@@ -1558,19 +1491,11 @@ class PyAgentApp(App):
             self.notify(
                 "Wait for the current response to finish before clearing.")
             return
-        if self.logging_enabled and self._session_logger is not None:
-            try:
-                self._session_logger.log_session_end(
-                    self._turn_counter, self._session_meta_attributes()
-                )
-            except Exception:
-                pass
         self.agent.reset()
         await self._chat_container().remove_children()
         self._debug_log_widget().clear()
         self._add_message("system", "Conversation cleared.", finalized=True)
         self._log_debug("Conversation and debug log cleared.")
-        self._turn_counter = 0
         self._set_status(self._ready_status())
 
     async def action_toggle_debug(self) -> None:
@@ -1641,20 +1566,9 @@ class PyAgentApp(App):
         buffer: list[str] = []
         loop = asyncio.get_running_loop()
         last_flush = loop.time()
-        self._turn_counter += 1
-        turn_number = self._turn_counter
+        self.agent.run_metadata["skills"] = list(self.loaded_user_skills)
         generator = self.agent.run(user_input)
         assistant_message: ChatMessage | None = None
-        # Capture model input/output for turn logging
-        input_messages_snapshot: list[dict[str, Any]] = []
-        try:
-            input_messages_snapshot = json.loads(
-                json.dumps(self.agent.messages, default=str)
-            )
-        except Exception:
-            input_messages_snapshot = list(self.agent.messages)
-        output_index = len(self.agent.messages)
-        output_messages_snapshot: list[dict[str, Any]] = []
 
         def next_event():
             try:
@@ -1681,7 +1595,13 @@ class PyAgentApp(App):
 
         try:
             while True:
-                event, stopped = await asyncio.to_thread(next_event)
+                pending = asyncio.create_task(asyncio.to_thread(next_event))
+                try:
+                    event, stopped = await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    # Do not close a generator while its worker is still in next().
+                    await pending
+                    raise
                 if stopped:
                     break
 
@@ -1758,33 +1678,15 @@ class PyAgentApp(App):
                     self._log_debug(
                         f"assistant_done: {_truncate(event.get('content', ''), 500)}"
                     )
-                    # Snapshot new messages produced in this turn
-                    try:
-                        output_messages_snapshot = json.loads(
-                            json.dumps(
-                                self.agent.messages[output_index:], default=str)
-                        )
-                    except Exception:
-                        output_messages_snapshot = list(
-                            self.agent.messages[output_index:]
-                        )
                     continue
 
             flush_buffer()
         except Exception as exc:
             ensure_assistant_message().append_stream(f"\n\nError: {exc}")
         finally:
-            # Log full turn (input + output messages) when logging is enabled
-            if self.logging_enabled and self._session_logger is not None:
-                try:
-                    self._session_logger.log_turn(
-                        turn_number,
-                        input_messages_snapshot,
-                        output_messages_snapshot,
-                        self._session_meta_attributes(),
-                    )
-                except Exception:
-                    pass
+            generator.close()
+            if self.agent.logging_error:
+                self._add_system_note(self.agent.logging_error)
             if assistant_message is not None:
                 assistant_message.finalize()
                 self._schedule_chat_scroll_end()

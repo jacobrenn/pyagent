@@ -1166,7 +1166,8 @@ Recommended user directory layout:
 - `/extension enable <name>` — move an extension out of `disabled/` so it auto-loads next session (does not load into the running bus)
 - `/extension disable <name>` — move an extension into `disabled/` so it does not auto-load next session (unloads it from the running bus if loaded)
 - `/extension remove <name>` — permanently delete an extension from disk (checked in both enabled and disabled/)
-- `/logging on|off` — enable or disable session logging under `~/.pyagent/logs/`
+- `/logging` — show run-logging preference, last log path, and any logging failure (`/log` is an alias)
+- `/logging on|off` — enable or disable logging for subsequent prompts; one file per run under `~/.pyagent/logs/`
 - `/debug` — show whether the debug pane is currently on or off
 - `/debug on|off` — show or hide the debug pane
 
@@ -1196,10 +1197,67 @@ Create or update profiles with `/profile add`. Quote values containing spaces.
 - `Ctrl+D` — toggle the debug pane
 - `Ctrl+C` — quit the app
 
+## Per-run logging
+
+Logging is **off by default**. Set `PYAGENT_LOGGING` to `on`, `1`, `true`, or `yes` to enable it. Values are case-insensitive and whitespace is ignored. `off`, `0`, `false`, `no`, an empty/unset variable, or an unrecognized value leave logging disabled.
+
+```bash
+PYAGENT_LOGGING=on pyagent
+PYAGENT_LOGGING=1 pyagent --prompt "Explain this project"
+PYAGENT_LOGGING=on pyagent serve
+PYAGENT_LOGGING=on pyagent agents run reviewer "Review this change"
+```
+
+The setting applies to the TUI (including named-agent chat and `pyagent web`), single-shot CLI, and **all four API execution routes**: `/run`, `/run/stream`, `/agents/{name}/run`, and `/agents/{name}/run/stream`. Runs from the bundled `/ui/` browser interface use the server's setting. Restart the server after changing its environment; there is no per-request logging override.
+
+In the TUI, `/logging on` and `/logging off` override the initial setting for subsequent prompts without changing the environment. `/logging` reports the preference, last run's log path, and any logging error. Successful runs do not add log-path messages to the transcript; use `/logging` when you need the path. Logging failures still produce a visible warning. The startup note and status bar make the preference visible; failed logging is shown as `Log: error`. Changes are allowed between runs. Turning logging off does not delete existing files, and `/clear` resets conversation ancestry without changing the logging preference.
+
+This is independent of `/debug`, browser **Capture debug events**, `include_debug=true`, and Uvicorn access logs. Those settings do not enable or disable saved run files.
+
+### Files and run identity
+
+A **run** is one submitted prompt and its complete model/tool loop, even if it makes several model requests. Each logged run gets its own file:
+
+```text
+~/.pyagent/logs/run-<UTC timestamp>-<full UUID>.jsonl
+```
+
+`PYAGENT_USER_DIR` relocates the directory to `$PYAGENT_USER_DIR/logs/`. Files use exclusive creation with owner-only permissions where supported. Concurrent runs cannot append to or overwrite another run's file; a filename collision is retried with a fresh UUID. Older `session-*.jsonl` files are left untouched. Unlike the old TUI session logger, a multi-prompt conversation now creates one file per prompt, not one file per logging session. No file is opened merely by launching the TUI or enabling `/logging`; it is opened when a run is prepared.
+
+Regular API responses include `run_id`, and SSE envelopes use the **same ID** as the file and its records. The Python client exposes `RunResponse.run_id` and `AgentRunResponse.run_id` (`None` when talking to an older server). Server-local log paths are not returned by the API. Runs have IDs even with logging disabled, so an ID is not proof that a log exists. Requests rejected before execution do not create empty run logs.
+
+### JSONL format and continuation groundwork
+
+The log format has its own `schema_version` (currently `1`). Each line includes `run_id`, a UTC `timestamp`, monotonically increasing `sequence`, `type`, `severityText`, `body`, and record-specific `attributes`. `timeUnixNano` is also included as a decimal epoch-nanosecond string. Log sequence numbers are independent of SSE sequence numbers.
+
+Principal record types:
+
+- `run_start`: original prompt, initial history, optional `parent_run_id`, and allowlisted runtime metadata (source, profile/provider/model/API mode, sanitized endpoint, workspace, context files, skills, extensions, tools, limits, and named-agent revision when applicable).
+- `message`: canonical user/assistant/tool messages captured as they are produced, independently of later history trimming. Tool-call IDs and full tool outputs are retained.
+- `model_request`: actual message input after context hooks and request-time masking, including the effective system prompt.
+- `tool_call` / `tool_result`: agent execution events; extension bus events also record hooks and their results.
+- `error` / `partial_output`: failures and available partial streamed text. Raw provider debug chunks and individual tokens are not routinely written as separate records.
+- `run_end`: final canonical history, final response, outcome (`completed`, `failed`, or `cancelled`), error if any, and whether execution started. Its record timestamp is the completion time.
+
+Repeated runs on the same in-memory agent record the known previous run as `parent_run_id`; `/clear`, reset, and explicit history replacement clear that relationship. Separate API requests do not infer ancestry from matching prompts or timestamps. A parent ID may refer to an unlogged run. CLI/API runs use sources `cli`/`api`; TUI runs use `tui`, and direct Python `Agent` usage defaults to `python`.
+
+These records prepare for **future conversation loading and continuation**, but there is no resume command, history database, or log-browsing endpoint yet. Final history is the current bounded agent history, while individual message records retain messages removed by trimming. A future continuation should create a new run linked to the original, not append to the old file or automatically repeat tools with side effects. Logs do not restore provider internals, extension memory, or external filesystem state.
+
+### Reliability and privacy
+
+Logging is best-effort. Open/write failures produce a concise diagnostic on stderr (and in the TUI), without changing response stdout or adding terminal SSE events. Generators and files are explicitly closed on completion, error, or cancellation. The streaming producer owns cleanup: a disconnect cannot instantly stop a synchronous model/tool operation, but cleanup follows when it yields control. A crash, forced kill, or disk failure may leave a partial file without `run_end`; treat it as incomplete, never completed. There is no automatic retention, rotation, or deletion.
+
+Extension logging is active **during a logged run**. Startup, shutdown, and idle/between-run extension events outside that lifetime are not captured; current skills and context are included in the next run's metadata/input instead.
+
+**Logs contain sensitive material:** prompts, system instructions, source code, tool results, extension payloads, and prior conversation history may contain secrets. Runtime metadata does not serialize API keys, auth headers, or whole config/environment objects, and endpoint metadata strips URL credentials, query strings, and fragments. This is not general-purpose content redaction. Protect log files and do not publish them without review. Enabling logging partway through a conversation can capture earlier messages in the next run's initial history.
+
+For direct Python use, exhaust or explicitly close the generator returned by `Agent.run()`, and call `agent.close()` when done. Do not share an agent concurrently between runs; separate server requests use separate agents.
+
 ## Configuration reference
 
 ### Core environment variables
 
+- `PYAGENT_LOGGING` — enable per-run JSONL logs across TUI, CLI, and API; default `off`; accepts `on|off`, `1|0`, `true|false`, `yes|no` (see "Per-run logging")
 - `PYAGENT_PROFILE` — default profile name to select
 - `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding `~/.pyagent/profiles.json`
 - `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding `~/.pyagent/system_prompt.txt`
@@ -1319,7 +1377,7 @@ def register(bus, name):
             ctx.add_skill("guide")
 ```
 
-**Context (`ctx`) surface:** `ctx.extension` (this extension's name), `ctx.add_skill(key)` (declare a skill — this turn if called from `input`/`before_agent_start`/`turn_start`, otherwise next turn), `ctx.log` (the active `SessionLogger`, or a no-op when logging is off). That is the entire surface — there is no `ctx.agent`, `ctx.config`, `ctx.ui`, or `ctx.bus`.
+**Context (`ctx`) surface:** `ctx.extension` (this extension's name), `ctx.add_skill(key)` (declare a skill — this turn if called from `input`/`before_agent_start`/`turn_start`, otherwise next turn), `ctx.log` (the active run's `SessionLogger`, or a no-op outside a logged run). That is the entire surface — there is no `ctx.agent`, `ctx.config`, `ctx.ui`, or `ctx.bus`.
 
 ### How skills are injected (and removed)
 
@@ -1383,19 +1441,19 @@ Each example has a `__main__` self-check (`PYTHONPATH=. python examples/extensio
 
 ### Logging and fault isolation
 
-Extensions log through `ctx.log` (the active `SessionLogger`, or a no-op when logging is off); do **not** call `logging.getLogger(...)`. Bus events and handler faults are logged automatically. A handler that raises is caught per-emit, logged with the event/handler/extension/traceback, and skipped — the payload is unaffected and the loop continues.
+Extensions log through `ctx.log` (the active run's `SessionLogger`, or a no-op outside a logged run); do **not** call `logging.getLogger(...)`. Bus events and handler faults during logged runs are recorded automatically. Startup/shutdown and idle events outside a run are not captured. A handler that raises is caught per-emit, logged with the event/handler/extension/traceback, and skipped — the payload is unaffected and the loop continues.
 
 ## Development
 
 Quick smoke test:
 
 ```bash
-python test_agent.py
+python -m unittest -v
 ```
 
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py
 python -m unittest -v
 ```

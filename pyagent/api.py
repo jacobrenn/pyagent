@@ -10,6 +10,7 @@ from typing import Any
 from urllib import parse
 
 from .config import AppConfig
+from .run_logging import prepare_run_id
 from .extension_resources import (
     install_extension_bytes,
     install_extension_url,
@@ -69,6 +70,7 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    run_id: str | None = None
     response: str
     profile: str
     provider: str
@@ -619,8 +621,9 @@ def run(request: ChatRequest) -> ChatResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    agent.load_extensions()
     try:
+        agent.load_extensions()
+        run_id = prepare_run_id(agent, source="api")
         final_response = ""
         for event in agent.run(request.message):
             if event.get("type") == "error":
@@ -643,6 +646,7 @@ def run(request: ChatRequest) -> ChatResponse:
             else str(getattr(profile, "api_mode", "chat_completions"))
         )
         return ChatResponse(
+            run_id=run_id,
             response=final_response,
             profile=profile.name,
             provider=profile.provider,
@@ -825,9 +829,10 @@ def run_agent_definition(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    agent.load_extensions()
     final_response = ""
     try:
+        agent.load_extensions()
+        run_id = prepare_run_id(agent, source="api")
         for event in agent.run(request.message):
             if event.get("type") == "error":
                 message = str(event.get("message") or "Agent run failed")
@@ -845,6 +850,7 @@ def run_agent_definition(
 
     profile = agent.current_profile()
     return AgentDefinitionRunResponse(
+        run_id=run_id,
         agent=definition.name,
         revision=definition.revision,
         response=final_response,

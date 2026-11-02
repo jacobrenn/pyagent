@@ -7,7 +7,7 @@ Use this skill when changing logic in the agent loop, tools, config, model profi
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py
 python -m unittest -v
 ```
 
@@ -49,6 +49,14 @@ Test cases should cover:
 - reset behavior if system prompt composition changes
 - switching profiles or models if agent state changes
 - model-client and extension-session cleanup after single-shot or API runs
+
+### Run logging changes
+
+`test_run_logging.py` covers shared logging across TUI, CLI, named agents, and all four API run routes. Use a temporary `PYAGENT_USER_DIR`, profiles file, and system prompt; mock model clients rather than contacting providers.
+
+Check boolean parsing and default-off behavior, TUI overrides, one UUID file per run, exclusive creation/collision retries, matching API/SSE/log IDs, full message records despite history trimming, parent IDs/reset, sanitized credential metadata, and client compatibility with older responses. Test concurrent runs, early generator closure, model/extension errors, blocked-producer disconnects, and best-effort open/write failures. A missing terminal record means incomplete; never infer successful completion from a filename. Debug capture must remain independent of saved logs.
+
+For a manual server smoke test, start with `PYAGENT_LOGGING=on pyagent serve`, issue simultaneous streaming requests, and match each SSE `run_id` to a separate file under the temporary user directory. Repeat with `PYAGENT_LOGGING=off` and verify no new files. In the TUI, test `/logging`, repeated on/off toggles, multiple prompts, and `/clear` without changing the logging preference.
 
 ### Agent-definition and orchestration changes
 

@@ -496,6 +496,11 @@ def build_agent_from_definition(
         workspace=workspace,
         restrict_workspace=True,
     )
+    agent.run_metadata.update({
+        "agent": definition.name,
+        "agent_revision": definition.revision,
+        "skills": list(definition.skills),
+    })
     return agent, definition, validation
 
 

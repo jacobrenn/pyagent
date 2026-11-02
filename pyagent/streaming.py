@@ -6,7 +6,8 @@ import json
 import queue
 import threading
 from typing import Any, AsyncIterator, Callable
-from uuid import uuid4
+
+from .run_logging import prepare_run_id
 
 
 STREAM_SCHEMA_VERSION = 1
@@ -83,7 +84,7 @@ async def stream_agent_sse(
     generator and the Agent. The async consumer only handles framing,
     sequencing, heartbeats, and disconnect signalling.
     """
-    run_id = str(uuid4())
+    run_id = prepare_run_id(agent, source="api")
     event_queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, queue_size))
     cancelled = threading.Event()
 
@@ -173,17 +174,16 @@ async def stream_agent_sse(
     producer.start()
 
     sequence = 1
-    yield encode_sse_event(
-        _event_envelope(
-            run_id=run_id,
-            sequence=sequence,
-            event_type="start",
-            data=start_data,
-        )
-    )
-
     timeout = max(0.1, float(heartbeat_seconds))
     try:
+        yield encode_sse_event(
+            _event_envelope(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="start",
+                data=start_data,
+            )
+        )
         while True:
             try:
                 item = await asyncio.to_thread(

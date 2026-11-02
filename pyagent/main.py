@@ -73,13 +73,15 @@ def build_agent_for_request(
         loaded_user_skills=validated_skills,
     )
     project_context_files = [source.label for source in context_sources]
-    return Agent(
+    agent = Agent(
         profile=profile,
         model=model,
         project_context=project_context,
         project_context_files=project_context_files,
         workspace=base_cwd,
     )
+    agent.run_metadata["skills"] = validated_skills
+    return agent
 
 
 def run_single_shot(
@@ -94,9 +96,10 @@ def run_single_shot(
         model=model,
         skills=skills,
     )
-    agent.load_extensions()
+    agent.run_source = "cli"
     response = ""
     try:
+        agent.load_extensions()
         for event in agent.run(prompt):
             if event.get("type") == "assistant_done":
                 response = event["content"]
@@ -116,10 +119,11 @@ def run_agent_definition(
     from .agent_definitions import build_agent_from_definition
 
     agent, _, _ = build_agent_from_definition(name, revision=revision, cwd=cwd)
-    agent.load_extensions()
+    agent.run_source = "cli"
     response = ""
     completed = False
     try:
+        agent.load_extensions()
         for event in agent.run(prompt):
             if event.get("type") == "error":
                 raise ValueError(

@@ -32,6 +32,7 @@ class RunResponse:
     """Structured response returned by :meth:`PyAgentClient.run`.
 
     Attributes:
+        run_id: Stable run identity (None for older servers); not proof of a saved log.
         response: Final assistant text produced by the agent run.
         profile: Name of the model profile used by the server.
         provider: Provider backing the selected profile, such as ``ollama`` or
@@ -50,6 +51,7 @@ class RunResponse:
     messages: list[dict]
     context_files: list[str] = field(default_factory=list)
     api_mode: str = "chat_completions"
+    run_id: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -214,6 +216,7 @@ class PyAgentClient:
                 "PyAgent server returned an invalid run response")
         try:
             return RunResponse(
+                run_id=data.get("run_id"),
                 response=str(data["response"]),
                 profile=str(data["profile"]),
                 provider=str(data["provider"]),
@@ -408,6 +411,7 @@ class PyAgentClient:
             )
         try:
             return AgentRunResponse(
+                run_id=data.get("run_id"),
                 response=str(data["response"]),
                 profile=str(data["profile"]),
                 provider=str(data["provider"]),

@@ -19,6 +19,7 @@ from .external_tools import (
 from .llm_client import build_chat_client
 from .model_profiles import ModelProfile, ProfileStore, load_profile_store, save_profile_store, update_profile_store
 from .tools import ToolRegistry, create_default_tool_registry
+from .run_logging import RunLog, report_warning
 
 
 class Agent:
@@ -36,6 +37,15 @@ class Agent:
         restrict_workspace: bool = False,
     ):
         self.config = config or AppConfig.from_env()
+        self.logging_enabled = self.config.logging_enabled
+        self.logging_error: str | None = None
+        self.run_id: str | None = None
+        self.parent_run_id: str | None = None
+        self.last_log_path: Path | None = None
+        self.run_source = "python"
+        self.run_metadata: dict[str, Any] = {}
+        self._run_log: RunLog | None = None
+        self._active_run_generator: Any = None
         self.workspace = Path(workspace or os.getcwd()).expanduser().resolve()
         self.restrict_workspace = restrict_workspace
         self.allowed_tools = frozenset(
@@ -69,7 +79,7 @@ class Agent:
         self.prompt_file_path = None
 
         # --- Extension event bus. Emits are no-ops until extensions register
-        # handlers via load_extensions(). _ext_log is swapped by /logging. ---
+        # handlers via load_extensions(). Each logged run binds its own logger. ---
         self._ext_log: Any = NoOpLog()
         self.bus = EventBus(self._ext_log)
         self._session_started = False
@@ -299,6 +309,7 @@ class Agent:
         return names, None
 
     def reset(self) -> None:
+        self.parent_run_id = None
         self._system_prompt_base_value = self._system_prompt_base()
         self.messages: list[dict[str, Any]] = []
         self._refresh_system_message()
@@ -353,8 +364,16 @@ class Agent:
     def add_message(self, role: str, content: str, **extra: Any) -> None:
         message = {"role": role, "content": content}
         message.update(extra)
-        self.messages.append(message)
+        self._append_run_message(message)
         self._trim_history()
+
+    def _append_run_message(self, message: dict[str, Any]) -> None:
+        self.messages.append(message)
+        self._record_run_message(message)
+
+    def _record_run_message(self, message: dict[str, Any]) -> None:
+        if self._run_log is not None:
+            self._run_log.message(message)
 
     # --- Extension event bus plumbing ---
 
@@ -429,11 +448,20 @@ class Agent:
         self.bus.emit("session_shutdown", {"reason": reason}, self._ext_ctx)
 
     def close(self, reason: str = "shutdown") -> None:
-        """End the extension session and close the active model client."""
-        self.shutdown_session(reason=reason)
-        close = getattr(self.client, "close", None)
-        if callable(close):
-            close()
+        """Close unfinished generators before releasing their model client."""
+        try:
+            if self._active_run_generator is not None:
+                self._active_run_generator.close()
+                self._active_run_generator = None
+            # A prepared generator may never have been iterated.
+            if self._run_log is not None:
+                self._run_log.finish(self)
+                self._run_log = None
+            self.shutdown_session(reason=reason)
+        finally:
+            close = getattr(self.client, "close", None)
+            if callable(close):
+                close()
 
     def _emit_model_select(self, source: str) -> None:
         try:
@@ -670,7 +698,61 @@ class Agent:
 
         return stripped.endswith(":")
 
+    def _logging_warning(self, message: str) -> None:
+        self.logging_error = message
+        report_warning(message)
+
+    def prepare_run(self, *, source: str | None = None) -> str:
+        """Allocate identity/file before a transport publishes the run ID."""
+        if self._active_run_generator is not None:
+            raise RuntimeError("This agent already has an active run")
+        if source is not None:
+            self.run_source = source
+        if self._run_log is None:
+            self.logging_error = None
+            self._run_log = RunLog(self)
+            self.run_id = self._run_log.run_id
+            logger = self._run_log.logger
+            self.last_log_path = logger.path if logger is not None else None
+        return self._run_log.run_id
+
     def run(self, user_input: str):
+        self.prepare_run()
+        generator = self._run_logged(user_input)
+        self._active_run_generator = generator
+        return generator
+
+    def _run_logged(self, user_input: str):
+        record = self._run_log
+        assert record is not None
+        previous_log = self._ext_log
+        if record.logger is not None:
+            self.attach_logger(record.logger)
+        generator = self._run(user_input)
+        try:
+            record.start(self, user_input)
+            for event in generator:
+                record.event(event)
+                yield event
+            if record.outcome == "cancelled":
+                record.outcome = "failed"
+                record.error = "Agent run finished without a final response"
+        except Exception as exc:
+            record.outcome = "failed"
+            record.error = str(exc)
+            record.record("error", message=str(exc))
+            raise
+        finally:
+            try:
+                generator.close()
+            finally:
+                record.finish(self)
+                self.attach_logger(previous_log)
+                self.parent_run_id = record.run_id
+                self._run_log = None
+                self._active_run_generator = None
+
+    def _run(self, user_input: str):
         ctx = self._ext_ctx
 
         # Ephemeral skill rotation: skills declared last turn (e.g. at
@@ -690,8 +772,8 @@ class Agent:
         if action == "handled":
             self.add_message("user", input_event.get("text", user_input))
             yield {"type": "assistant_start"}
-            yield {"type": "assistant_done", "content": ""}
             self.bus.emit("agent_end", {"messages": list(self.messages)}, ctx)
+            yield {"type": "assistant_done", "content": ""}
             return
         if action == "transform" and input_event.get("text") is not None:
             user_input = input_event["text"]
@@ -762,6 +844,9 @@ class Agent:
 
                 self.bus.emit("message_start", {
                               "message": {"role": "assistant"}}, ctx)
+                if self._run_log is not None:
+                    self._run_log.record(
+                        "model_request", messages=request_messages)
                 for chunk in self.client.chat_stream(
                     request_messages,
                     tools=self.tools if self.config.tools_enabled else None,
@@ -819,14 +904,11 @@ class Agent:
                                 "data": {"tool_count": len(recent_tool_results)},
                             }
                             yield {"type": "content_delta", "delta": suffix}
+                    self._record_run_message(assistant_message)
                     yield {
                         "type": "debug",
                         "label": "assistant_message_complete",
                         "data": assistant_message,
-                    }
-                    yield {
-                        "type": "assistant_done",
-                        "content": assistant_message["content"],
                     }
                     self.bus.emit(
                         "turn_end",
@@ -838,8 +920,13 @@ class Agent:
                         },
                         ctx,
                     )
+                    yield {
+                        "type": "assistant_done",
+                        "content": assistant_message["content"],
+                    }
                     return
 
+                self._record_run_message(assistant_message)
                 for index, tool_call in enumerate(full_tool_calls):
                     name, arguments, tool_call_id = self._normalize_tool_call(
                         tool_call,
@@ -848,7 +935,7 @@ class Agent:
                     )
                     if not name:
                         result = "Error: received malformed tool call from model."
-                        self.messages.append(
+                        self._append_run_message(
                             {
                                 "role": "tool",
                                 "name": "<invalid>",
@@ -886,7 +973,7 @@ class Agent:
                         reason = tc_event.get(
                             "reason", "Blocked by an extension.")
                         result = f"Blocked: {reason}"
-                        self.messages.append(
+                        self._append_run_message(
                             {
                                 "role": "tool",
                                 "name": name,
@@ -928,6 +1015,16 @@ class Agent:
                     result = tr_event.get("content", result)
                     is_error = tr_event.get("is_error", is_error)
 
+                    # Save an executed tool's result before yielding control;
+                    # cancellation must not lose evidence of its side effects.
+                    self._append_run_message(
+                        {
+                            "role": "tool",
+                            "name": name,
+                            "content": result,
+                            "tool_call_id": tool_call_id,
+                        }
+                    )
                     yield {
                         "type": "debug",
                         "label": "tool_execution",
@@ -937,14 +1034,6 @@ class Agent:
                             "result_preview": result[:1000],
                         },
                     }
-                    self.messages.append(
-                        {
-                            "role": "tool",
-                            "name": name,
-                            "content": result,
-                            "tool_call_id": tool_call_id,
-                        }
-                    )
                     recent_tool_results.append(
                         {"name": name, "arguments": arguments, "result": result}
                     )
@@ -973,7 +1062,7 @@ class Agent:
                 iteration += 1
 
             warning = "Reached maximum iterations without a final answer."
-            self.messages.append({"role": "assistant", "content": warning})
+            self._append_run_message({"role": "assistant", "content": warning})
             yield {"type": "content_delta", "delta": f"\n\n{warning}"}
             yield {"type": "assistant_done", "content": warning}
         finally:

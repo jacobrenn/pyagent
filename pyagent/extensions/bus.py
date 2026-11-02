@@ -20,7 +20,7 @@ _VETO_KEYS = frozenset({"blocked", "cancel"})
 
 
 class NoOpLog:
-    """Default logger: swallows everything until /logging attaches a real one."""
+    """Default logger: no-op outside a logged run."""
 
     def debug(self, *_a: Any, **_k: Any) -> None: ...
     def info(self, *_a: Any, **_k: Any) -> None: ...

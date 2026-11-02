@@ -718,6 +718,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             response.json(),
             {
+                "run_id": response.json()["run_id"],
                 "response": "Hello World!",
                 "profile": "p1",
                 "provider": "ollama",

@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
+from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+LOG_SCHEMA_VERSION = 1
 
 _SEVERITY_DEBUG = "DEBUG"
 _SEVERITY_INFO = "INFO"
@@ -29,26 +34,61 @@ def _log_dir_path(log_dir: str | os.PathLike[str] | None) -> Path:
 
 
 class SessionLogger:
-    """
-    Writes OpenTelemetry-compatible JSON Lines (JSONL) logs to ~/.pyagent/logs/.
-    Each log line is a JSON object with OTel log record fields::
+    """Versioned JSONL records, written by one run's execution owner.
 
-    {
-      "timeUnixNano": "<ISO 8601 timestamp>",
-      "severityNumber": <int>,
-      "severityText": "<string>",
-      "body": "<message text>",
-      "attributes": { ... }
-    }
-
-    Each call creates a new log file named with the session start timestamp.
+    Files are exclusively created with owner-only permissions. No existing
+    transcript is ever appended to. Legacy logging methods remain available
+    to extensions, alongside the structured run records.
     """
 
-    def __init__(self, log_dir: str | os.PathLike[str] | None = None) -> None:
+    def __init__(
+        self,
+        log_dir: str | os.PathLike[str] | None = None,
+        *,
+        run_id: str | None = None,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        self._file = None
+        self.failed = False
+        self._on_error = on_error
+        self._sequence = 0
         self._log_dir = _log_dir_path(log_dir)
+        self.run_id = str(UUID(run_id)) if run_id else str(uuid4())
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-        self._log_path = self._log_dir / f"session-{timestamp}.jsonl"
-        self._file = open(self._log_path, "a", encoding="utf-8")
+        for _ in range(10):
+            self._log_path = self._log_dir / \
+                f"run-{timestamp}-{self.run_id}.jsonl"
+            try:
+                fd = os.open(self._log_path, os.O_WRONLY |
+                             os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                self.run_id = str(uuid4())
+                continue
+            try:
+                self._file = os.fdopen(fd, "w", encoding="utf-8")
+            except Exception:
+                os.close(fd)
+                raise
+            break
+        else:
+            raise FileExistsError("Could not allocate a unique run log")
+
+    def _failed(self, exc: Exception) -> None:
+        if self.failed:
+            return
+        self.failed = True
+        message = f"Run logging failed: {exc}"
+        # Diagnostics must never interrupt the run or contaminate response stdout.
+        try:
+            if self._on_error:
+                self._on_error(message)
+            else:
+                print(message, file=sys.stderr)
+        except Exception:
+            pass
+
+    def record(self, record_type: str, **data: Any) -> None:
+        self.info(record_type, {**data, "event_type": record_type})
 
     @property
     def path(self) -> Path:
@@ -60,16 +100,27 @@ class SessionLogger:
         body: str,
         attributes: dict[str, Any] | None = None,
     ) -> None:
+        if self.failed or self._file is None:
+            return
+        self._sequence += 1
         entry: dict[str, Any] = {
-            "timeUnixNano": _iso_timestamp(),
+            "schema_version": LOG_SCHEMA_VERSION,
+            "run_id": self.run_id,
+            "sequence": self._sequence,
+            "timestamp": _iso_timestamp(),
+            "timeUnixNano": str(time.time_ns()),
+            "type": (attributes or {}).get("event_type", "log"),
             "severityText": severity_text,
             "body": body,
         }
         if attributes:
             entry["attributes"] = attributes
-        self._file.write(json.dumps(
-            entry, ensure_ascii=False, default=str) + "\n")
-        self._file.flush()
+        try:
+            self._file.write(json.dumps(
+                entry, ensure_ascii=False, default=str) + "\n")
+            self._file.flush()
+        except Exception as exc:
+            self._failed(exc)
 
     def info(self, body: str, attributes: dict[str, Any] | None = None) -> None:
         self._write_entry(_SEVERITY_INFO, body, attributes)
@@ -221,9 +272,12 @@ class SessionLogger:
         )
 
     def close(self) -> None:
-        if self._file and not self._file.closed:
-            self._file.close()
-            self._file = None
+        file, self._file = self._file, None
+        if file is not None:
+            try:
+                file.close()
+            except Exception as exc:
+                self._failed(exc)
 
     def __del__(self) -> None:
         try:
