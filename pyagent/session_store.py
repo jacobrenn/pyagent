@@ -33,6 +33,10 @@ class SessionError(ValueError):
     """A saved run cannot be inspected or resumed safely."""
 
 
+class SessionNotFoundError(SessionError):
+    """No saved run has the requested identity."""
+
+
 def _identity(value: Any) -> str:
     if not isinstance(value, str):
         raise SessionError("Run IDs must be UUID strings.")
@@ -193,6 +197,8 @@ class SessionStore:
         identity = _identity(reference)
         matches = [p for p in self._paths(
         ) if p.name.lower().endswith(f"-{identity}.jsonl")]
+        if not matches:
+            raise SessionNotFoundError(f"No saved run for {identity}.")
         if len(matches) != 1:
             raise SessionError(
                 f"Expected one saved run for {identity}; found {len(matches)}.")
@@ -222,6 +228,9 @@ class SessionStore:
         except (OSError, UnicodeError, RecursionError, ValueError) as exc:
             if isinstance(exc, SessionError):
                 raise
+            if isinstance(exc, FileNotFoundError):
+                raise SessionNotFoundError(
+                    "Saved run no longer exists.") from exc
             raise SessionError(f"Cannot read {path.name}: {exc}") from exc
 
     def _read(self, stream: Any, path: Path) -> SavedRun:

@@ -8,6 +8,8 @@ import type {
   ResourceInstallInput,
   ResourceListResponse,
   RunRequest,
+  SavedRunDetail,
+  SavedRunList,
   SkillsResponse,
   StreamEvent,
   ToolsResponse,
@@ -78,6 +80,13 @@ function installResource(path: string, input: ResourceInstallInput) {
 export const api = {
   health: () => requestJson<{ status: string }>("/health"),
   version: () => requestJson<{ version: string }>("/version"),
+
+  sessionCapabilities: (signal?: AbortSignal) => requestJson<{ resume_supported: boolean; enabled: boolean }>(
+    "/sessions/capabilities", { cache: "no-store", signal }),
+  listSessions: (offset = 0, limit = 20) =>
+    requestJson<SavedRunList>(`/sessions?${new URLSearchParams({ offset: String(offset), limit: String(limit) })}`, { cache: "no-store" }),
+  showSession: (runId: string) =>
+    requestJson<SavedRunDetail>(`/sessions/${encodeURIComponent(runId)}`, { cache: "no-store" }),
 
   listProfiles: () => requestJson<ProfilesResponse>("/profiles"),
   createProfile: (payload: Record<string, unknown>) =>
@@ -201,7 +210,8 @@ export const api = {
     name: string,
     payload: {
       message: string;
-      messages: RunRequest["messages"];
+      messages?: RunRequest["messages"];
+      resume_from_run_id?: string;
       revision?: number;
       cwd?: string;
     },

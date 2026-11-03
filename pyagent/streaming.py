@@ -100,6 +100,7 @@ async def stream_agent_sse(
     def produce() -> None:
         run_generator: Any | None = None
         terminal_event: dict[str, Any] | None = None
+        final_response = ""
         try:
             run_generator = iter(agent.run(message))
             for raw_event in run_generator:
@@ -127,10 +128,9 @@ async def stream_agent_sse(
                     continue
                 if event_type == "assistant_done":
                     final_response = str(raw_event.get("content", ""))
-                    terminal_event = {
-                        "type": "done",
-                        **completion_data(final_response),
-                    }
+                    # Completion metadata (including log persistence) is only
+                    # authoritative after the producer finishes cleanup.
+                    terminal_event = {"type": "done"}
                     continue
                 if not offer(dict(raw_event)):
                     break
@@ -162,6 +162,14 @@ async def stream_agent_sse(
             except Exception:
                 pass
             if not cancelled.is_set():
+                if terminal_event is not None and terminal_event["type"] == "done":
+                    try:
+                        terminal_event.update(completion_data(final_response))
+                    except Exception as exc:
+                        terminal_event = {
+                            "type": "error", "code": "internal_error",
+                            "message": str(exc) or "Could not finalize the response.",
+                        }
                 if terminal_event is not None:
                     offer(terminal_event)
                 offer(_TERMINAL_SENTINEL)

@@ -448,6 +448,7 @@ Open <http://127.0.0.1:8000/ui/> (or the server root) for the bundled browser UI
 - streaming chat with visible tool calls/results and a Stop control
 - per-conversation profile, model, working-directory, skill, and debug controls
 - browser-local conversation history stored in IndexedDB, with a local-storage fallback
+- opt-in server checkpoint browsing/import and explicit saved-checkpoint continuation (`PYAGENT_SESSION_API=on`)
 - profile creation, editing, deletion, default selection, and endpoint model discovery with dropdown selection
 - a resource manager for uploading, installing, enabling/disabling, and deleting tools, skills, and extensions
 - a versioned agent editor with resource selection, validation, revision history, and **Run in chat**
@@ -676,7 +677,7 @@ curl -X PUT http://127.0.0.1:8000/agents/reviewer \
 
 `PUT /agents/{name}` has partial-update semantics: omitted fields are preserved, supplied arrays and objects replace their entire values, and JSON `null` restores inheritance for optional fields such as `profile`, `model`, `prompt`, `workspace`, and `max_iterations`. An empty `tools` array disables tool calling; `tools: null` inherits all tools enabled by server configuration. The name and stored revision metadata cannot be updated.
 
-Run the current or a pinned revision. Conversation history remains caller-managed unless a future persistent-session layer is used:
+Run the current or a pinned revision. History is caller-managed by default; opt-in `resume_from_run_id` loads a saved checkpoint instead (see "API and browser resumption"):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/agents/reviewer/run \
@@ -1226,7 +1227,7 @@ A **run** is one submitted prompt and its complete model/tool loop, even if it m
 
 `PYAGENT_USER_DIR` relocates the directory to `$PYAGENT_USER_DIR/logs/`. Files use exclusive creation with owner-only permissions where supported. Concurrent runs cannot append to or overwrite another run's file; a filename collision is retried with a fresh UUID. Older `session-*.jsonl` files are left untouched. Unlike the old TUI session logger, a multi-prompt conversation now creates one file per prompt, not one file per logging session. No file is opened merely by launching the TUI or enabling `/logging`; it is opened when a run is prepared.
 
-Regular API responses include `run_id`, and SSE envelopes use the **same ID** as the file and its records. The Python client exposes `RunResponse.run_id` and `AgentRunResponse.run_id` (`None` when talking to an older server). Server-local log paths are not returned by the API. Runs have IDs even with logging disabled, so an ID is not proof that a log exists. Requests rejected before execution do not create empty run logs.
+Regular API responses include `run_id`, and SSE envelopes use the **same ID** as the file and its records. The Python client exposes `RunResponse.run_id` and `AgentRunResponse.run_id` (`None` when talking to an older server). Server-local log paths are not returned by the API. Runs have IDs even with logging disabled, so an ID is not proof that a log exists. Regular responses and terminal SSE `done` events include `log_saved`, which is true only after the producer has written and closed a completed run log without a logging failure. The checkpoint is still revalidated when resumed and may have been removed since; this field is not a retention guarantee. Requests rejected before execution do not create empty run logs.
 
 ### JSONL format and checkpoints
 
@@ -1243,7 +1244,7 @@ Principal record types:
 
 Repeated runs on the same in-memory agent record the known previous run as `parent_run_id`; `/clear`, reset, and explicit history replacement clear that relationship. Separate API requests do not infer ancestry from matching prompts or timestamps. A parent ID may refer to an unlogged run. CLI/API runs use sources `cli`/`api`; TUI runs use `tui`, and direct Python `Agent` usage defaults to `python`.
 
-Completed checkpoints support **CLI and TUI conversation resumption** (see below). Final history is the current bounded agent history, while individual message records retain messages removed by trimming. A continuation creates a new run linked to the selected checkpoint; it never appends to the old file or replays historical tools. Logs do not restore provider internals, extension memory, or external filesystem state. There is no history database, API resume field, or server log-browsing endpoint in this release; API/browser conversation behavior is unchanged.
+Completed checkpoints support **CLI, TUI, and opt-in API/browser conversation resumption** (see below). Final history is the current bounded agent history, while individual message records retain messages removed by trimming. A continuation creates a new run linked to the selected checkpoint; it never appends to the old file or replays historical tools. Logs do not restore provider internals, extension memory, or external filesystem state. No history database is introduced: HTTP checkpoint access uses the same read-only file-based session store, and ordinary browser conversations remain local.
 
 ### Reliability and privacy
 
@@ -1255,7 +1256,7 @@ Extension logging is active **during a logged run**. Startup, shutdown, and idle
 
 For direct Python use, exhaust or explicitly close the iterator returned by `Agent.run()`, and call `agent.close()` when done. Closing the iterator before its first iteration releases the run without executing the prompt, tools, or extension hooks, and leaves the agent available for another prompt. If logging is enabled, it records a cancelled `run_end` with `started=false`; conversation history and the previous parent run are unchanged. Repeated iterator closes are harmless and do not close the model client. Do not share an agent concurrently between runs; separate server requests use separate agents.
 
-## Resuming saved conversations (CLI and TUI)
+## Resuming saved conversations
 
 A saved **run** is a checkpoint after one prompt's model/tool loop. A conversation consists of runs linked by explicit `parent_run_id` values. The read-only session store discovers these files under `$PYAGENT_USER_DIR/logs/` (default `~/.pyagent/logs/`); it does not create a database or modify logs.
 
@@ -1299,7 +1300,7 @@ Runtime differences are reported in the TUI or, for single-shot CLI continuation
 
 ### Supported checkpoints and limits
 
-This first release resumes **completed, started runs with a valid terminal checkpoint** in the current versioned `run-*.jsonl` format. Tool-call/result blocks must be complete and consistent. Native Ollama missing call IDs are normalized only where recorded ordered results can be paired by name; this changes restored history, not the source log. No tool results are invented.
+Resumption supports only **completed, started runs with a valid terminal checkpoint** in the current versioned `run-*.jsonl` format. Tool-call/result blocks must be complete and consistent. Native Ollama missing call IDs are normalized only where recorded ordered results can be paired by name; this changes restored history, not the source log. No tool results are invented.
 
 Failed/cancelled runs, unstarted runs, and files without `run_end` are inspection-only. A missing terminal record may also mean a run is still active. Truncated/corrupt files and unsupported schemas produce diagnostics; no automatic rewind, repair, or tool retry occurs. Older `session-*.jsonl` files are labelled legacy and require a future migration feature.
 
@@ -1307,13 +1308,70 @@ The reader enforces 64 MiB per file, 16 MiB per JSONL record, 4,096 checkpoint m
 
 **Logging remains opt-in.** Opening, inspecting, or restoring a checkpoint creates no run file and sends no prompt. Only an explicitly submitted new prompt starts a run. If logging is disabled, resumption still works but later prompts are not saved; the startup notice warns about this. Enable `PYAGENT_LOGGING=on` or `/logging on` to retain future checkpoints.
 
-Interrupted-run recovery, legacy import, API resume endpoints, and browser checkpoint imports are not part of this first release. The existing API remains caller-history-managed, and browser history remains local to IndexedDB/local storage.
+Interrupted-run recovery and legacy import remain unsupported. HTTP checkpoint access is separately opt-in, as described below. Ordinary API requests remain caller-history-managed, and browser history remains local to IndexedDB/local storage.
+
+### API and browser resumption
+
+Saved logs can contain source code, prompts, instructions, and sensitive tool output. HTTP browsing and resumption are **disabled by default**, independently of logging. To enable them on a trusted local server:
+
+```bash
+PYAGENT_SESSION_API=on PYAGENT_LOGGING=on pyagent serve
+```
+
+`PYAGENT_SESSION_API` accepts the same case-insensitive boolean values as `PYAGENT_LOGGING`. Restart the server after changing its environment. The opt-in is **not authentication or a security boundary**: anyone with access to the enabled server can inspect saved history, and the other tool/resource APIs already require trusted callers. Do not expose this unauthenticated server to untrusted networks or users.
+
+Read-only endpoints:
+
+- `GET /sessions/capabilities` — `{ "resume_supported": true, "enabled": true|false }`. Available without the opt-in; does not inspect files. New clients probe this before posting a resume request so older servers cannot silently ignore the new field.
+- `GET /sessions?limit=20&offset=0` — paginated `runs`, `total`, `unavailable_count`, `offset`, and `limit`. Limits are 1–100. Summaries include UUID, explicit parent/conversation IDs, timestamp, prompt preview, outcome/resumability, runtime hints, and warnings. Legacy/corrupt entries without usable identities are counted, not exposed by filename. Pagination limits the response; discovery still uses the bounded session-store scan.
+- `GET /sessions/{run_id}` — one summary plus canonical `messages` and saved `skills`. This is an explicit sensitive-history read, not agent startup. Runtime resources are revalidated when a prompt is submitted. Failed/cancelled/unstarted runs are inspection-only and have no resumable message payload.
+
+The endpoints send `Cache-Control: no-store`. Only UUID lookup is accepted over HTTP, not filenames or arbitrary paths. Responses allowlist runtime metadata and do not expose whole configurations, credential fields, or log paths. Conversation content itself is **not redacted** and may contain secrets.
+
+All four execution routes accept `resume_from_run_id`: `/run`, `/run/stream`, `/agents/{name}/run`, and `/agents/{name}/run/stream`.
+
+```bash
+curl http://127.0.0.1:8000/sessions
+curl 'http://127.0.0.1:8000/sessions/<run-id>'
+
+curl -N http://127.0.0.1:8000/run/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Continue the implementation","resume_from_run_id":"<run-id>"}'
+```
+
+- Omit `messages` and `skills` entirely when resuming; even explicit empty arrays conflict. The server loads canonical history from the checkpoint, never merges it with caller history.
+- Ad hoc checkpoints use `/run` or `/run/stream`. Optional `profile`, `model`, and `cwd` overrides follow CLI resume rules and are reported in restoration warnings.
+- Named checkpoints must use the matching `/agents/{name}/run[/stream]` route. Omit `cwd`; the saved resolved workspace is used without reapplying relative paths. Omit `revision` to use the saved revision, or supply exactly that revision. The latest definition is not substituted.
+- Restoration/validation happens before a stream starts. Disabled access returns `403`, missing checkpoints `404`, invalid/unresumable or mismatched checkpoints `409`, conflicting history/skills or unsupported runtime overrides `400`, and invalid UUIDs/request schemas/query bounds `422`. No run log is created for these rejected requests.
+- Regular responses and resumed SSE `start`/`done` data identify `parent_run_id` and contain restoration `warnings`. Each execution still has a fresh `run_id`. `log_saved` is reported only once execution/log cleanup has completed; logging failures do not turn a successful model response into a terminal SSE error.
+- Ordinary `messages` requests are unchanged and do not infer ancestry. There is no per-request logging override, durable server session object, or automatic replay/recovery.
+
+The Python client exposes `session_capabilities()`, `list_sessions(limit=20, offset=0)`, and `show_session(run_id)`. Its `run()`, `stream_run()`, `run_agent()`, and `stream_agent()` methods accept `resume_from_run_id`. `RunResponse` / `AgentRunResponse` also expose `parent_run_id`, `log_saved`, and `warnings`, with backward-compatible defaults for older servers:
+
+```python
+client = PyAgentClient("http://127.0.0.1:8000")
+checkpoint = client.show_session(run_id)
+answer = client.run("Continue", resume_from_run_id=checkpoint["run_id"])
+# Named checkpoints: client.run_agent("reviewer", "Continue", resume_from_run_id=run_id)
+# Only use answer.run_id as a saved continuation candidate when answer.log_saved is True.
+```
+
+#### Browser workflow
+
+On **Chat**, choose **Saved checkpoints**, inspect a completed entry, then **Import as new conversation**. Importing creates a new browser-local conversation without replacing an existing one, calling the model, or replaying tools. Canonical history is rendered locally, with saved system messages excluded from the active browser history. IndexedDB and its existing fallback remain the conversation store.
+
+Imported conversations use **saved-checkpoint mode**: runtime controls are pinned, and each submitted prompt sends only its checkpoint reference and the new prompt over the existing POST-fetch SSE path. The saved named-agent revision and resolved workspace remain authoritative. On successful completion, `log_saved=true` allows the browser to use the new run ID for the next continuation; source logs remain immutable and branches stay independent.
+
+If logging is off/fails, the request fails, or the stream is stopped/interrupted, the transcript stays local but the browser does **not** silently reuse the older checkpoint. Successful unsaved output remains in local canonical history; partial/failed output is display-only, outside the last confirmed model checkpoint. Enable server logging for future saved continuations, deliberately re-import an available checkpoint, or choose **Fork locally with current settings**.
+
+A local fork requires confirmation and creates another conversation using the last confirmed model history, the current default ad hoc profile/model, and the saved resolved directory. Named-agent/saved tool restrictions, saved skills, and server ancestry do not carry into this explicit ordinary-chat mode. A warning about potentially completed side effects is included in both the transcript and model history. Review the filesystem and runtime settings before continuing; a failed/stopped run is not proof that no tools ran. The original imported conversation is preserved. Existing ordinary local conversations continue to send their own `messages` as before.
 
 ## Configuration reference
 
 ### Core environment variables
 
 - `PYAGENT_LOGGING` — enable per-run JSONL logs across TUI, CLI, and API; default `off`; accepts `on|off`, `1|0`, `true|false`, `yes|no` (see "Per-run logging")
+- `PYAGENT_SESSION_API` — opt in to sensitive saved-checkpoint HTTP browsing/resumption; default `off`; accepts the same boolean values as `PYAGENT_LOGGING`; independent of whether new runs are logged
 - `PYAGENT_PROFILE` — default profile name to select
 - `PYAGENT_MODEL_PROFILES_PATH` — path to the JSON profile file, overriding `~/.pyagent/profiles.json`
 - `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding `~/.pyagent/system_prompt.txt`
@@ -1510,6 +1568,6 @@ python -m unittest -v
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py test_session_api.py
 python -m unittest -v
 ```

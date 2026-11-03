@@ -62,6 +62,7 @@ class Agent:
         self.run_id: str | None = None
         self.parent_run_id: str | None = None
         self.last_log_path: Path | None = None
+        self.log_saved = False
         self.run_source = "python"
         self.run_metadata: dict[str, Any] = {}
         self._run_log: RunLog | None = None
@@ -728,6 +729,7 @@ class Agent:
             self.run_source = source
         if self._run_log is None:
             self.logging_error = None
+            self.log_saved = False
             self._run_log = RunLog(self)
             self.run_id = self._run_log.run_id
             logger = self._run_log.logger
@@ -749,6 +751,10 @@ class Agent:
             return
         try:
             record.finish(self)
+            self.log_saved = bool(
+                record.started and record.outcome == "completed"
+                and record.logger is not None and not record.logger.failed
+            )
         finally:
             self._run_log = None
             self._active_run_generator = None

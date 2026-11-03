@@ -8,6 +8,7 @@ import shutil
 import threading
 from typing import Any
 from urllib import parse
+from uuid import UUID
 
 from .config import AppConfig
 from .run_logging import prepare_run_id
@@ -44,7 +45,7 @@ from .webui import ASSETS_DIR as _WEB_UI_ASSETS_DIR
 from .webui import INDEX_FILE as _WEB_UI_INDEX_FILE
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Query, Request, Response
     from fastapi.responses import (
         FileResponse,
         HTMLResponse,
@@ -62,6 +63,7 @@ except ImportError as exc:  # pragma: no cover - exercised via CLI guard
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    resume_from_run_id: UUID | None = None
     messages: list[dict[str, Any]] = Field(default_factory=list)
     profile: str | None = None
     model: str | None = None
@@ -71,6 +73,9 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     run_id: str | None = None
+    parent_run_id: str | None = None
+    log_saved: bool = False
+    warnings: list[str] = Field(default_factory=list)
     response: str
     profile: str
     provider: str
@@ -144,6 +149,7 @@ class AgentDefinitionValidationResponse(BaseModel):
 
 class AgentDefinitionRunRequest(StrictRequestModel):
     message: str = Field(..., min_length=1)
+    resume_from_run_id: UUID | None = None
     messages: list[dict[str, Any]] = Field(default_factory=list)
     revision: int | None = None
     cwd: str | None = None
@@ -152,6 +158,36 @@ class AgentDefinitionRunRequest(StrictRequestModel):
 class AgentDefinitionRunResponse(ChatResponse):
     agent: str
     revision: int
+
+
+class SavedRunSummary(BaseModel):
+    run_id: str
+    parent_run_id: str | None = None
+    conversation_id: str | None = None
+    timestamp: str
+    prompt_preview: str
+    outcome: str
+    resumable: bool
+    reason: str
+    profile: str | None = None
+    model: str | None = None
+    workspace: str | None = None
+    agent: str | None = None
+    agent_revision: int | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SavedRunDetail(SavedRunSummary):
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+
+
+class SavedRunListResponse(BaseModel):
+    runs: list[SavedRunSummary]
+    total: int
+    unavailable_count: int
+    offset: int
+    limit: int
 
 
 class VersionResponse(BaseModel):
@@ -606,21 +642,181 @@ def delete_profile(name: str) -> ProfileActionResponse:
     )
 
 
-@app.post("/run", response_model=ChatResponse)
-def run(request: ChatRequest) -> ChatResponse:
-    from .main import build_agent_for_request
+def _session_store_or_403():
+    from .session_store import SessionStore
+
+    config = AppConfig.from_env()
+    if not config.session_api_enabled:
+        raise HTTPException(status_code=403, detail=(
+            "Saved-session API access is disabled. Set PYAGENT_SESSION_API=on "
+            "on the trusted server to enable browsing and resumption."
+        ))
+    return SessionStore(config.user_dir)
+
+
+def _saved_run_or_error(store, run_id: str, *, completed: bool = False):
+    from .session_store import SessionError, SessionNotFoundError
 
     try:
-        agent = build_agent_for_request(
-            profile=request.profile,
-            model=request.model,
-            cwd=request.cwd,
-            skills=request.skills,
-        )
-        agent.load_messages(request.messages)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return store.load(run_id) if completed else store.inspect(run_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail="Saved checkpoint not found.") from exc
+    except SessionError as exc:
+        # Filesystem diagnostics can contain server-local paths. Keep them local.
+        raise HTTPException(
+            status_code=409, detail="Saved checkpoint is invalid, unavailable, or not resumable.") from exc
 
+
+def _saved_run_summary(saved) -> SavedRunSummary:
+    def text(key):
+        value = saved.metadata.get(key)
+        return value[:1024] if isinstance(value, str) else None
+
+    revision = saved.metadata.get("agent_revision")
+    if isinstance(revision, str) and len(revision) <= 16 and revision.isdecimal():
+        revision = int(revision)
+    if type(revision) is not int or not 0 < revision <= 9_007_199_254_740_991:
+        revision = None
+    return SavedRunSummary(
+        run_id=saved.run_id, parent_run_id=saved.parent_run_id,
+        conversation_id=saved.conversation_id, timestamp=saved.timestamp,
+        prompt_preview=" ".join(saved.prompt[:1000].split())[:160],
+        outcome=saved.outcome, resumable=saved.resumable, reason=saved.reason,
+        profile=text("profile"), model=text("model"), workspace=text("workspace"),
+        agent=text("agent"), agent_revision=revision,
+        warnings=[*saved.warnings, *
+                  ([saved.lineage_warning] if saved.lineage_warning else [])],
+    )
+
+
+@app.get("/sessions", response_model=SavedRunListResponse)
+def list_saved_runs(
+    response: Response,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> SavedRunListResponse:
+    from .session_store import SessionError
+
+    store = _session_store_or_403()
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        all_runs = store.list()
+    except (SessionError, OSError) as exc:
+        raise HTTPException(
+            status_code=409, detail="Saved-session listing is unavailable; inspect server logs locally.") from exc
+    runs = list(
+        {run.run_id: run for run in all_runs if run.run_id is not None}.values())
+    return SavedRunListResponse(
+        runs=[_saved_run_summary(run) for run in runs[offset:offset + limit]],
+        total=len(runs), unavailable_count=len(all_runs) - len(runs),
+        offset=offset, limit=limit,
+    )
+
+
+@app.get("/sessions/capabilities")
+def saved_session_capabilities(response: Response) -> dict[str, bool]:
+    """Safe feature negotiation; no log discovery or contents are exposed."""
+    response.headers["Cache-Control"] = "no-store"
+    return {"resume_supported": True, "enabled": AppConfig.from_env().session_api_enabled}
+
+
+@app.get("/sessions/{run_id}", response_model=SavedRunDetail)
+def get_saved_run(run_id: UUID, response: Response) -> SavedRunDetail:
+    store = _session_store_or_403()
+    response.headers["Cache-Control"] = "no-store"
+    saved = _saved_run_or_error(store, str(run_id))
+    # Expose only intentional runtime fields, not raw log/config metadata.
+    summary = _saved_run_summary(saved)
+    skills = saved.metadata.get("skills", [])
+    return SavedRunDetail(
+        **_model_payload(summary), messages=saved.messages,
+        skills=[key for key in skills if isinstance(
+            key, str)] if isinstance(skills, list) else [],
+    )
+
+
+def _prepare_request_agent(request, *, name: str | None = None):
+    """Construct history OR restore a checkpoint; never mix the two modes."""
+    from .agent_definitions import AgentDefinitionError, build_agent_from_definition
+    from .main import build_agent_for_request
+    from .resume import restore_session
+    from .session_store import SessionError, SessionNotFoundError
+
+    agent = None
+    try:
+        if request.resume_from_run_id is None:
+            extra = {}
+            if name is None:
+                agent = build_agent_for_request(
+                    profile=request.profile, model=request.model,
+                    cwd=request.cwd, skills=request.skills)
+            else:
+                agent, definition, _ = build_agent_from_definition(
+                    name, revision=request.revision, cwd=request.cwd)
+                extra = {"agent": definition.name,
+                         "revision": definition.revision}
+            agent.load_messages(request.messages)
+            return agent, extra
+
+        store = _session_store_or_403()
+        fields = getattr(request, "model_fields_set", None)
+        if fields is None:
+            fields = request.__fields_set__
+        if fields.intersection({"messages", "skills"}):
+            raise HTTPException(
+                status_code=400, detail="resume_from_run_id cannot be combined with messages or skills, even empty values.")
+        run_id = str(request.resume_from_run_id)
+        saved = _saved_run_or_error(store, run_id, completed=True)
+        if saved.metadata.get("agent") != name:
+            raise HTTPException(
+                status_code=409, detail="Checkpoint runtime does not match this route; use its saved named-agent route or /run for ad hoc checkpoints.")
+        if name is not None:
+            if request.cwd is not None:
+                raise HTTPException(
+                    status_code=400, detail="Named checkpoint workspace cannot be overridden.")
+            if request.revision is not None and request.revision != saved.metadata.get("agent_revision"):
+                raise HTTPException(
+                    status_code=409, detail="Requested revision does not match the checkpoint.")
+        restored = restore_session(
+            run_id, store=store,
+            profile=request.profile if name is None else None,
+            model=request.model if name is None else None,
+            cwd=request.cwd if name is None else None,
+        )
+        agent = restored.agent
+        # Recheck the loaded snapshot, not just the earlier inspection.
+        definition = restored.definition
+        if (definition.name if definition else None) != name or (
+            name is not None and request.revision is not None and request.revision != definition.revision
+        ):
+            raise HTTPException(
+                status_code=409, detail="Checkpoint runtime changed during restoration.")
+        extra = {"parent_run_id": run_id, "warnings": [restored.notice()]}
+        if definition is not None:
+            extra.update(agent=definition.name, revision=definition.revision)
+        return agent, extra
+    except Exception as exc:
+        _close_agent_quietly(agent)
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, SessionNotFoundError):
+            raise HTTPException(
+                status_code=404, detail="Saved checkpoint not found.") from exc
+        if isinstance(exc, SessionError):
+            raise HTTPException(
+                status_code=409, detail="Saved checkpoint cannot be restored with the current runtime.") from exc
+        if isinstance(exc, AgentDefinitionError):
+            status = 404 if "No agent definition" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
+
+
+@app.post("/run", response_model=ChatResponse)
+def run(request: ChatRequest) -> ChatResponse:
+    agent, extra = _prepare_request_agent(request)
     try:
         agent.load_extensions()
         run_id = prepare_run_id(agent, source="api")
@@ -638,25 +834,15 @@ def run(request: ChatRequest) -> ChatResponse:
                 detail="Agent run finished without a final assistant response.",
             )
 
-        profile = agent.current_profile()
-        resolve_api_mode = getattr(profile, "resolved_api_mode", None)
-        api_mode = (
-            resolve_api_mode()
-            if callable(resolve_api_mode)
-            else str(getattr(profile, "api_mode", "chat_completions"))
-        )
-        return ChatResponse(
-            run_id=run_id,
-            response=final_response,
-            profile=profile.name,
-            provider=profile.provider,
-            api_mode=api_mode,
-            model=profile.model,
-            messages=agent.messages,
-            context_files=list(agent.project_context_files),
-        )
     finally:
         agent.close(reason="api_request_complete")
+
+    return ChatResponse(
+        run_id=run_id, response=final_response,
+        **_agent_runtime_data(agent, extra),
+        log_saved=getattr(agent, "log_saved", False) is True,
+        messages=agent.messages,
+    )
 
 
 @app.post("/run/stream")
@@ -664,17 +850,8 @@ def run_stream(
     request: ChatRequest,
     include_debug: bool = False,
 ) -> StreamingResponse:
-    from .main import build_agent_for_request
-
-    agent = None
+    agent, extra = _prepare_request_agent(request)
     try:
-        agent = build_agent_for_request(
-            profile=request.profile,
-            model=request.model,
-            cwd=request.cwd,
-            skills=request.skills,
-        )
-        agent.load_messages(request.messages)
         agent.load_extensions()
     except ValueError as exc:
         _close_agent_quietly(agent)
@@ -684,9 +861,7 @@ def run_stream(
         raise
 
     return _agent_streaming_response(
-        agent,
-        request.message,
-        include_debug=include_debug,
+        agent, request.message, include_debug=include_debug, extra=extra,
     )
 
 
@@ -814,21 +989,7 @@ def run_agent_definition(
     name: str,
     request: AgentDefinitionRunRequest,
 ) -> AgentDefinitionRunResponse:
-    from .agent_definitions import AgentDefinitionError, build_agent_from_definition
-
-    try:
-        agent, definition, _ = build_agent_from_definition(
-            name,
-            revision=request.revision,
-            cwd=request.cwd,
-        )
-        agent.load_messages(request.messages)
-    except AgentDefinitionError as exc:
-        status = 404 if "No agent definition" in str(exc) else 400
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    agent, extra = _prepare_request_agent(request, name=name)
     final_response = ""
     try:
         agent.load_extensions()
@@ -848,18 +1009,11 @@ def run_agent_definition(
     finally:
         agent.close(reason="api_request_complete")
 
-    profile = agent.current_profile()
     return AgentDefinitionRunResponse(
-        run_id=run_id,
-        agent=definition.name,
-        revision=definition.revision,
-        response=final_response,
-        profile=profile.name,
-        provider=profile.provider,
-        api_mode=profile.resolved_api_mode(),
-        model=profile.model,
+        run_id=run_id, response=final_response,
+        **_agent_runtime_data(agent, extra),
+        log_saved=getattr(agent, "log_saved", False) is True,
         messages=agent.messages,
-        context_files=list(agent.project_context_files),
     )
 
 
@@ -869,21 +1023,9 @@ def run_agent_definition_stream(
     request: AgentDefinitionRunRequest,
     include_debug: bool = False,
 ) -> StreamingResponse:
-    from .agent_definitions import AgentDefinitionError, build_agent_from_definition
-
-    agent = None
+    agent, extra = _prepare_request_agent(request, name=name)
     try:
-        agent, definition, _ = build_agent_from_definition(
-            name,
-            revision=request.revision,
-            cwd=request.cwd,
-        )
-        agent.load_messages(request.messages)
         agent.load_extensions()
-    except AgentDefinitionError as exc:
-        _close_agent_quietly(agent)
-        status = 404 if "No agent definition" in str(exc) else 400
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except ValueError as exc:
         _close_agent_quietly(agent)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -892,10 +1034,7 @@ def run_agent_definition_stream(
         raise
 
     return _agent_streaming_response(
-        agent,
-        request.message,
-        include_debug=include_debug,
-        extra={"agent": definition.name, "revision": definition.revision},
+        agent, request.message, include_debug=include_debug, extra=extra,
     )
 
 
@@ -1303,6 +1442,7 @@ def _agent_streaming_response(
             "response": response,
             **_agent_runtime_data(agent, extra),
             "messages": copy.deepcopy(agent.messages),
+            "log_saved": getattr(agent, "log_saved", False) is True,
         }
 
     return StreamingResponse(

@@ -719,6 +719,9 @@ class ApiTests(unittest.TestCase):
             response.json(),
             {
                 "run_id": response.json()["run_id"],
+                "parent_run_id": None,
+                "log_saved": False,
+                "warnings": [],
                 "response": "Hello World!",
                 "profile": "p1",
                 "provider": "ollama",

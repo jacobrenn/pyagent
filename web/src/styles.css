@@ -1538,6 +1538,21 @@ pre {
 .revision-history span { display: flex; justify-content: space-between; padding: 5px; border-radius: 6px; background: #090f14; color: var(--faint); font-size: 8px; }
 .revision-history strong { color: #91cbaa; }
 
+.saved-sessions { padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+.saved-sessions > button { width: 100%; }
+.saved-sessions__panel { max-height: 48vh; overflow-y: auto; font-size: 12px; overflow-wrap: anywhere; }
+.saved-sessions__panel p { color: var(--muted); line-height: 1.5; }
+.saved-sessions__panel [role="alert"] { color: var(--red); }
+.saved-sessions__list { display: grid; gap: 6px; margin: 10px 0; }
+.saved-sessions__list button { display: grid; gap: 4px; text-align: left; white-space: normal; }
+.saved-sessions__list small { font-size: 10px; font-weight: normal; }
+.saved-sessions__pagination { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.saved-sessions__selection { padding: 10px 0; border-top: 1px solid var(--border-soft); }
+.saved-sessions__selection code { display: block; margin-top: 6px; font-size: 11px; }
+.checkpoint-notice { display: grid; gap: 5px; margin-bottom: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.checkpoint-notice small { color: var(--muted); }
+.checkpoint-notice button { justify-self: start; }
+
 @media (max-width: 900px) {
   .app-header { grid-template-columns: 1fr auto; }
   .app-header nav { order: 3; position: fixed; right: 16px; bottom: 14px; left: 16px; justify-content: center; box-shadow: var(--shadow); }

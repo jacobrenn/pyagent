@@ -33,6 +33,9 @@ class RunResponse:
 
     Attributes:
         run_id: Stable run identity (None for older servers); not proof of a saved log.
+        parent_run_id: Explicit checkpoint parent, or None for caller-managed history.
+        log_saved: True only after a completed run log was written and closed.
+        warnings: Runtime restoration notices; empty for ordinary runs.
         response: Final assistant text produced by the agent run.
         profile: Name of the model profile used by the server.
         provider: Provider backing the selected profile, such as ``ollama`` or
@@ -52,6 +55,9 @@ class RunResponse:
     context_files: list[str] = field(default_factory=list)
     api_mode: str = "chat_completions"
     run_id: str | None = field(default=None, kw_only=True)
+    parent_run_id: str | None = field(default=None, kw_only=True)
+    log_saved: bool = field(default=False, kw_only=True)
+    warnings: list[str] = field(default_factory=list, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -60,6 +66,20 @@ class AgentRunResponse(RunResponse):
 
     agent: str = ""
     revision: int = 1
+
+
+def _checkpoint_payload(
+    payload: dict[str, Any], run_id: str | None,
+    messages: list[dict] | None, skills: list[str] | None = None,
+) -> dict[str, Any]:
+    if run_id is not None:
+        if messages is not None or skills is not None:
+            raise PyAgentClientError(
+                "resume_from_run_id cannot be combined with messages or skills.")
+        payload.pop("messages", None)
+        payload.pop("skills", None)
+        payload["resume_from_run_id"] = run_id
+    return payload
 
 
 class PyAgentClient:
@@ -172,6 +192,7 @@ class PyAgentClient:
         model: str | None = None,
         cwd: str | None = None,
         skills: list[str] | None = None,
+        resume_from_run_id: str | None = None,
     ) -> RunResponse:
         """Run a single agent turn and return the final response.
 
@@ -193,6 +214,9 @@ class PyAgentClient:
                 and tool execution.
             skills: Optional skill identifiers to explicitly load into the
                 system prompt for this request.
+            resume_from_run_id: Saved checkpoint UUID, instead of messages/skills.
+                Requires the server's PYAGENT_SESSION_API opt-in. The client
+                checks capabilities before sending a resume request.
 
         Returns:
             A :class:`RunResponse` containing the assistant response, selected
@@ -210,6 +234,9 @@ class PyAgentClient:
             "cwd": cwd,
             "skills": list(skills or []),
         }
+        payload = _checkpoint_payload(
+            payload, resume_from_run_id, messages, skills)
+        self._check_resume_support(resume_from_run_id)
         data = self._request_json("POST", "/run", payload)
         if not isinstance(data, dict):
             raise PyAgentClientError(
@@ -217,6 +244,9 @@ class PyAgentClient:
         try:
             return RunResponse(
                 run_id=data.get("run_id"),
+                parent_run_id=data.get("parent_run_id"),
+                log_saved=data.get("log_saved") is True,
+                warnings=[str(item) for item in data.get("warnings", [])],
                 response=str(data["response"]),
                 profile=str(data["profile"]),
                 provider=str(data["provider"]),
@@ -240,9 +270,10 @@ class PyAgentClient:
         model: str | None = None,
         cwd: str | None = None,
         skills: list[str] | None = None,
+        resume_from_run_id: str | None = None,
         include_debug: bool = False,
     ) -> Iterator[dict[str, Any]]:
-        """Stream one agent turn as decoded Server-Sent Events."""
+        """Stream a turn using caller history or an explicit saved checkpoint."""
         payload = {
             "message": message,
             "messages": list(messages or []),
@@ -251,10 +282,34 @@ class PyAgentClient:
             "cwd": cwd,
             "skills": list(skills or []),
         }
+        payload = _checkpoint_payload(
+            payload, resume_from_run_id, messages, skills)
+        self._check_resume_support(resume_from_run_id)
         path = "/run/stream"
         if include_debug:
             path += "?" + parse.urlencode({"include_debug": "true"})
         return self._stream_sse("POST", path, payload)
+
+    # Saved checkpoints (server opt-in required) -------------------------
+
+    def session_capabilities(self) -> dict[str, Any]:
+        return self._expect_dict(self._request_json("GET", "/sessions/capabilities"), "session capabilities")
+
+    def _check_resume_support(self, run_id: str | None) -> None:
+        if run_id is None:
+            return
+        capabilities = self.session_capabilities()
+        if capabilities.get("resume_supported") is not True or capabilities.get("enabled") is not True:
+            raise PyAgentClientError(
+                "Saved-session resumption is unsupported or disabled on the server.")
+
+    def list_sessions(self, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        query = parse.urlencode({"limit": limit, "offset": offset})
+        return self._expect_dict(self._request_json("GET", f"/sessions?{query}"), "saved sessions")
+
+    def show_session(self, run_id: str) -> dict[str, Any]:
+        return self._expect_dict(
+            self._request_json("GET", self._path_with_name("/sessions", run_id)), "saved checkpoint")
 
     # Model profiles -----------------------------------------------------
 
@@ -394,14 +449,21 @@ class PyAgentClient:
         messages: list[dict] | None = None,
         revision: int | None = None,
         cwd: str | None = None,
+        resume_from_run_id: str | None = None,
     ) -> AgentRunResponse:
-        """Run one turn using a stored agent-definition revision."""
+        """Run a named agent, optionally resuming its saved, pinned revision.
+
+        With resume_from_run_id, omit messages/cwd; an explicit revision must
+        match the checkpoint. Current runtime resources are revalidated.
+        """
         payload = {
             "message": message,
             "messages": list(messages or []),
             "revision": revision,
             "cwd": cwd,
         }
+        payload = _checkpoint_payload(payload, resume_from_run_id, messages)
+        self._check_resume_support(resume_from_run_id)
         data = self._request_json(
             "POST", self._path_with_name("/agents", name, "/run"), payload
         )
@@ -412,6 +474,9 @@ class PyAgentClient:
         try:
             return AgentRunResponse(
                 run_id=data.get("run_id"),
+                parent_run_id=data.get("parent_run_id"),
+                log_saved=data.get("log_saved") is True,
+                warnings=[str(item) for item in data.get("warnings", [])],
                 response=str(data["response"]),
                 profile=str(data["profile"]),
                 provider=str(data["provider"]),
@@ -436,6 +501,7 @@ class PyAgentClient:
         messages: list[dict] | None = None,
         revision: int | None = None,
         cwd: str | None = None,
+        resume_from_run_id: str | None = None,
         include_debug: bool = False,
     ) -> Iterator[dict[str, Any]]:
         """Stream one turn from a stored agent-definition revision."""
@@ -445,6 +511,8 @@ class PyAgentClient:
             "revision": revision,
             "cwd": cwd,
         }
+        payload = _checkpoint_payload(payload, resume_from_run_id, messages)
+        self._check_resume_support(resume_from_run_id)
         path = self._path_with_name("/agents", name, "/run/stream")
         if include_debug:
             path += "?" + parse.urlencode({"include_debug": "true"})

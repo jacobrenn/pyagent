@@ -7,7 +7,7 @@ Use this skill when changing logic in the agent loop, tools, config, model profi
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py test_session_api.py
 python -m unittest -v
 ```
 
@@ -65,6 +65,14 @@ For a manual server smoke test, start with `PYAGENT_LOGGING=on pyagent serve`, i
 Check explicit parent grouping, branching, missing ancestors, cycle detection, unchanged source bytes, current system instructions/skills/credentials, named revision and resolved-workspace handling, saved/current permission intersection, and history trimming. Opening a checkpoint must not call a model, replay a tool/hook, or create a run file. Cover CLI response stdout vs diagnostics stderr, TUI confirmation/busy guards, failed/cancelled candidate cleanup, preserved logging preference, and prompt/transcript restoration. Test continuation through Ollama, Chat Completions, and Responses message formats.
 
 Manual smoke test: enable logging, submit a multi-tool prompt, exit, inspect it with `pyagent sessions show <id>`, then `pyagent resume <id>`. Verify restored transcript/scrolling, `/context`, `/sessions`, and `/resume <id> --confirm`. Submit a new prompt and check its file has a new UUID and the selected parent. Repeat with logging off; opening a checkpoint should never make a model request.
+
+### API/browser checkpoint resumption
+
+`test_session_api.py` covers the separate `PYAGENT_SESSION_API` opt-in, UUID-only/no-store/allowlisted discovery, pagination, all four resume routes, explicit-field conflicts (including empty arrays), named runtime/revision enforcement, HTTP errors before streaming, concurrent branches, and producer-owned disconnect cleanup. Check that final `log_saved` reflects terminal-record/close failures, not just successful file creation, and that ordinary caller-history requests never acquire inferred parent links. Python clients must negotiate capabilities before posting to older servers.
+
+Frontend tests cover read-only import into a new local conversation, historical tool rendering, checkpoint-only request payloads, pinned runtime controls, saved child identity persistence, unsaved/error/stop behavior, explicit current-settings forks, backward-compatible local storage, opt-in errors, pagination, and stale-response guards. After frontend changes run `cd web && npm run typecheck && npm test && npm run build` and include refreshed packaged assets.
+
+Manual smoke test: run with `PYAGENT_SESSION_API=on PYAGENT_LOGGING=on`, import a saved checkpoint in `/ui/`, send two prompts, and check both fresh run IDs form an explicit parent chain. Stop a tool/model run and verify the browser does not reuse the old checkpoint automatically. Repeat with logging off, then with session API access off; check the local transcript remains available and no silent fallback to ordinary request history occurs.
 
 ### Agent-definition and orchestration changes
 

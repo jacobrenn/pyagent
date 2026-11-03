@@ -145,6 +145,9 @@ export interface ResourceInstallInput {
 export interface StreamEvent {
   schema_version?: number;
   run_id?: string;
+  parent_run_id?: string | null;
+  log_saved?: boolean;
+  warnings?: string[];
   sequence?: number | string;
   timestamp?: string;
   type: string;
@@ -172,11 +175,42 @@ export interface StreamEvent {
 
 export interface RunRequest {
   message: string;
-  messages: ChatMessage[];
+  resume_from_run_id?: string;
+  messages?: ChatMessage[];
   profile?: string;
   model?: string;
   cwd?: string;
+  skills?: string[];
+}
+
+export interface SavedRunSummary {
+  run_id: string;
+  parent_run_id: string | null;
+  conversation_id: string | null;
+  timestamp: string;
+  prompt_preview: string;
+  outcome: string;
+  resumable: boolean;
+  reason: string;
+  profile: string | null;
+  model: string | null;
+  workspace: string | null;
+  agent: string | null;
+  agent_revision: number | null;
+  warnings: string[];
+}
+
+export interface SavedRunDetail extends SavedRunSummary {
+  messages: ChatMessage[];
   skills: string[];
+}
+
+export interface SavedRunList {
+  runs: SavedRunSummary[];
+  total: number;
+  unavailable_count: number;
+  offset: number;
+  limit: number;
 }
 
 export type TranscriptEntryKind =
@@ -209,6 +243,9 @@ export interface Conversation {
   skills: string[];
   agent?: string;
   agentRevision?: number;
+  importedFromRunId?: string;
+  checkpointMode?: boolean;
+  resumeFromRunId?: string;
   messages: ChatMessage[];
   entries: TranscriptEntry[];
 }

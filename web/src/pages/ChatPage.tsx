@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api, ApiError } from "../api/client";
 import { Transcript } from "../components/Transcript";
+import { SavedSessions } from "../components/SavedSessions";
+import { checkpointRequest, completedCheckpoint, forkCheckpointLocally, importCheckpoint } from "../state/checkpoints";
 import {
   deleteConversation,
   listConversations,
@@ -13,6 +15,7 @@ import type {
   Profile,
   ProfilesResponse,
   Skill,
+  SavedRunDetail,
   StreamEvent,
   TranscriptEntry,
 } from "../types";
@@ -86,6 +89,8 @@ export function ChatPage({
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
   const saveTimersRef = useRef(new Map<string, number>());
   const pendingSavesRef = useRef(new Map<string, Conversation>());
 
@@ -114,7 +119,10 @@ export function ChatPage({
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
       for (const timer of saveTimersRef.current.values()) {
         window.clearTimeout(timer);
       }
@@ -126,6 +134,7 @@ export function ChatPage({
 
   useEffect(() => {
     void listConversations().then((stored) => {
+      if (!mountedRef.current) return;
       if (stored.length) {
         setConversations(stored);
         setActiveId(stored[0].id);
@@ -140,7 +149,7 @@ export function ChatPage({
   }, []);
 
   useEffect(() => {
-    if (!loaded || !profiles || !active || active.profile) {
+    if (!loaded || !profiles || !active || active.profile || active.checkpointMode) {
       return;
     }
     updateConversation(active.id, (conversation) => ({
@@ -199,6 +208,31 @@ export function ChatPage({
     setActiveId(created.id);
     setDebugEvents([]);
     setModels([]);
+    void saveConversation(created);
+  };
+
+  const openCheckpoint = (checkpoint: SavedRunDetail) => {
+    if (busyRef.current) return;
+    const created = importCheckpoint(newConversation(effectiveProfile), checkpoint, entry);
+    setConversations((current) => [created, ...current]);
+    setActiveId(created.id);
+    setComposer("");
+    setDebugEvents([]);
+    setModels([]);
+    setRunStatus("Checkpoint imported · ready");
+    void saveConversation(created);
+  };
+
+  const forkLocally = () => {
+    if (!active || busyRef.current) return;
+    if (!window.confirm("Create a new local conversation using the last confirmed history and current ad hoc settings? Saved restrictions and server ancestry will not carry over. Interrupted tools may already have changed files; review before repeating actions.")) return;
+    const created = forkCheckpointLocally(newConversation(effectiveProfile), active, entry);
+    setConversations((current) => [created, ...current]);
+    setActiveId(created.id);
+    setComposer("");
+    setDebugEvents([]);
+    setModels([]);
+    setRunStatus("Local fork · review settings before continuing");
     void saveConversation(created);
   };
 
@@ -261,9 +295,16 @@ export function ChatPage({
   const handleStreamEvent = (
     conversationId: string,
     eventData: StreamEvent,
-    state: { assistantId: string | null; receivedContent: boolean },
+    state: { assistantId: string | null; receivedContent: boolean; checkpointMode: boolean; terminal: boolean },
   ) => {
+    if (!mountedRef.current) return;
     if (eventData.type === "start") {
+      if (eventData.warnings?.length) {
+        updateConversation(conversationId, (conversation) => ({
+          ...conversation,
+          entries: [...conversation.entries, ...eventData.warnings!.map((warning) => entry("system", warning))],
+        }));
+      }
       setRunStatus(`Connected · ${eventData.model ?? "model"}`);
       return;
     }
@@ -329,6 +370,7 @@ export function ChatPage({
       return;
     }
     if (eventData.type === "done") {
+      state.terminal = true;
       if (!state.receivedContent) {
         if (state.assistantId) {
           const assistantId = state.assistantId;
@@ -348,18 +390,20 @@ export function ChatPage({
           }));
         }
       }
-      updateConversation(conversationId, (conversation) => ({
+      updateConversation(conversationId, (conversation) => completedCheckpoint({
         ...conversation,
         profile: eventData.profile ?? conversation.profile,
         model: eventData.model ?? conversation.model,
         messages: (eventData.messages ?? []).filter(
           (message) => message.role !== "system",
         ),
-      }));
-      setRunStatus("Complete");
+      }, eventData));
+      setRunStatus(state.checkpointMode && eventData.log_saved !== true
+        ? "Complete · continuation not saved" : "Complete");
       return;
     }
     if (eventData.type === "error") {
+      state.terminal = true;
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         entries: [
@@ -373,9 +417,12 @@ export function ChatPage({
 
   const submit = async () => {
     const prompt = composer.trim();
-    if (!active || !prompt || streaming || (!active.agent && !active.profile)) {
+    if (!active || !prompt || busyRef.current || streaming || (!active.agent && !active.profile)
+      || (active.checkpointMode && !active.resumeFromRunId)) {
       return;
     }
+    busyRef.current = true;
+    const resumePayload = checkpointRequest(active, prompt);
 
     const conversationId = active.id;
     const history = active.messages;
@@ -386,7 +433,10 @@ export function ChatPage({
         conversation.entries.length === 0
           ? `${prompt.slice(0, 44)}${prompt.length > 44 ? "…" : ""}`
           : conversation.title,
-      messages: [...conversation.messages, { role: "user", content: prompt }],
+      messages: conversation.checkpointMode ? conversation.messages
+        : [...conversation.messages, { role: "user", content: prompt }],
+      // Once submitted, an interrupted request must not silently reuse an old checkpoint.
+      resumeFromRunId: undefined,
       entries: [...conversation.entries, userEntry],
     }));
     setComposer("");
@@ -395,15 +445,22 @@ export function ChatPage({
     setRunStatus("Connecting…");
     const controller = new AbortController();
     abortRef.current = controller;
-    const eventState = { assistantId: null as string | null, receivedContent: false };
+    const eventState = { assistantId: null as string | null, receivedContent: false, checkpointMode: Boolean(active.checkpointMode), terminal: false };
 
     try {
+      if (resumePayload) {
+        const capabilities = await api.sessionCapabilities(controller.signal);
+        if (!capabilities.resume_supported || !capabilities.enabled) {
+          throw new Error("This server does not support or enable saved-checkpoint resumption.");
+        }
+        if (controller.signal.aborted) throw new Error("Run stopped before submission.");
+      }
       const onEvent = (eventData: StreamEvent) =>
         handleStreamEvent(conversationId, eventData, eventState);
       if (active.agent) {
         await api.streamAgentRun(
           active.agent,
-          {
+          resumePayload ?? {
             message: prompt,
             messages: history,
             revision: active.agentRevision,
@@ -414,7 +471,7 @@ export function ChatPage({
         );
       } else {
         await api.streamRun(
-          {
+          resumePayload ?? {
             message: prompt,
             messages: history,
             profile: active.profile,
@@ -426,7 +483,9 @@ export function ChatPage({
           { signal: controller.signal, includeDebug },
         );
       }
+      if (!eventState.terminal) throw new Error("Stream ended without a terminal event. No saved continuation was confirmed.");
     } catch (error) {
+      if (!mountedRef.current) return;
       if (controller.signal.aborted) {
         updateConversation(conversationId, (conversation) => ({
           ...conversation,
@@ -449,8 +508,11 @@ export function ChatPage({
       }
     } finally {
       abortRef.current = null;
-      setActiveAssistantId(null);
-      setStreaming(false);
+      busyRef.current = false;
+      if (mountedRef.current) {
+        setActiveAssistantId(null);
+        setStreaming(false);
+      }
     }
   };
 
@@ -474,6 +536,7 @@ export function ChatPage({
             +
           </button>
         </div>
+        <SavedSessions disabled={streaming} onImport={openCheckpoint} />
         <div class="conversation-list">
           {conversations.map((conversation) => (
             <button
@@ -502,7 +565,7 @@ export function ChatPage({
             <select
               id="chat-runtime"
               value={active.agent ?? ""}
-              disabled={streaming}
+              disabled={streaming || active.checkpointMode}
               onChange={(event) => {
                 const agentName = event.currentTarget.value;
                 const definition = agents?.agents.find((item) => item.name === agentName);
@@ -514,6 +577,7 @@ export function ChatPage({
               }}
             >
               <option value="">Ad hoc chat</option>
+              {active.agent && !selectedAgent && <option value={active.agent}>{active.agent} · saved revision</option>}
               {(agents?.agents ?? []).map((agent) => (
                 <option key={agent.name} value={agent.name}>
                   Agent · {agent.name} (r{agent.revision})
@@ -527,7 +591,7 @@ export function ChatPage({
               <select
                 id="chat-profile"
                 value={active.profile}
-                disabled={streaming}
+                disabled={streaming || active.checkpointMode}
                 onChange={(event) => {
                   const profile = profileList.find(
                     (item) => item.name === event.currentTarget.value,
@@ -541,6 +605,7 @@ export function ChatPage({
                 }}
               >
                 {!profileList.length && <option value="">No profiles</option>}
+                {active.profile && !selectedProfile && <option value={active.profile}>{active.profile} · saved</option>}
                 {profileList.map((profile) => (
                   <option key={profile.name} value={profile.name}>
                     {profile.name}{profile.is_default ? " · default" : ""}
@@ -574,6 +639,15 @@ export function ChatPage({
         </div>
 
         <div class="composer-shell">
+          {active.checkpointMode && <div class="checkpoint-notice" role="status">
+            <strong>Saved-checkpoint mode</strong>
+            <span>{active.resumeFromRunId
+              ? `Next prompt continues checkpoint ${active.resumeFromRunId.slice(0, 8)} with its saved runtime restrictions.`
+              : streaming ? "Continuation in progress…"
+                : "No saved continuation is available. The transcript remains local; review any side effects before continuing."}</span>
+            <small>Logging must be enabled on the server to save each new continuation. Runtime settings stay pinned in this mode.</small>
+            <button disabled={streaming} onClick={forkLocally}>Fork locally with current settings</button>
+          </div>}
           {!profileList.length && !active.agent && (
             <button class="inline-alert" onClick={onOpenProfiles}>
               Create a model profile before starting a conversation →
@@ -583,7 +657,7 @@ export function ChatPage({
             <summary>Run settings</summary>
             {active.agent && (
               <p class="agent-run-note">
-                <strong>{selectedAgent?.name ?? active.agent}</strong> controls the profile, model, prompt, skills, and tool allowlist. The directory below is the base for a relative agent workspace.
+                <strong>{selectedAgent?.name ?? active.agent}</strong> controls the profile, model, prompt, skills, and tool allowlist. {active.checkpointMode ? "The saved resolved workspace is used unchanged." : "The directory below is the base for a relative agent workspace."}
               </p>
             )}
             <div class="run-settings__grid">
@@ -594,7 +668,7 @@ export function ChatPage({
                     <input
                       value={active.model}
                       list="available-models"
-                      disabled={streaming}
+                      disabled={streaming || active.checkpointMode}
                       onInput={(event) =>
                         updateConversation(active.id, (conversation) => ({
                           ...conversation,
@@ -605,7 +679,7 @@ export function ChatPage({
                     <button
                       type="button"
                       onClick={() => void loadModels()}
-                      disabled={modelsLoading || streaming || !active.profile}
+                      disabled={modelsLoading || streaming || Boolean(active.checkpointMode) || !active.profile}
                     >
                       {modelsLoading ? "…" : "Find"}
                     </button>
@@ -616,10 +690,10 @@ export function ChatPage({
                 </label>
               )}
               <label>
-                <span>{active.agent ? "Workspace base directory" : "Working directory"}</span>
+                <span>{active.agent && !active.checkpointMode ? "Workspace base directory" : "Working directory"}</span>
                 <input
                   value={active.cwd}
-                  disabled={streaming}
+                  disabled={streaming || active.checkpointMode}
                   onInput={(event) =>
                     updateConversation(active.id, (conversation) => ({
                       ...conversation,
@@ -637,7 +711,7 @@ export function ChatPage({
               <button
                 type="button"
                 onClick={() => void loadSkills()}
-                disabled={skillsLoading || streaming}
+                disabled={skillsLoading || streaming || active.checkpointMode}
               >
                 {skillsLoading ? "Loading…" : "Discover skills"}
               </button>
@@ -649,7 +723,7 @@ export function ChatPage({
                     <input
                       type="checkbox"
                       checked={activeSkillSet.has(skill.id)}
-                      disabled={streaming || Boolean(skill.error)}
+                      disabled={streaming || Boolean(active.checkpointMode) || Boolean(skill.error)}
                       onChange={(event) =>
                         updateConversation(active.id, (conversation) => ({
                           ...conversation,
@@ -690,7 +764,7 @@ export function ChatPage({
             <textarea
               value={composer}
               placeholder="Ask PyAgent about this workspace…"
-              disabled={streaming || (!active.agent && !active.profile)}
+              disabled={streaming || (!active.agent && !active.profile) || Boolean(active.checkpointMode && !active.resumeFromRunId)}
               rows={3}
               onInput={(event) => setComposer(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -712,7 +786,7 @@ export function ChatPage({
               <button
                 class="send-button"
                 type="submit"
-                disabled={!composer.trim() || (!active.agent && !active.profile)}
+                disabled={!composer.trim() || (!active.agent && !active.profile) || Boolean(active.checkpointMode && !active.resumeFromRunId)}
               >
                 Send <span>↗</span>
               </button>

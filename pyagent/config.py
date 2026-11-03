@@ -81,11 +81,15 @@ class AppConfig:
     user_tool_describe_timeout: float = 10.0
     tool_runner: str = DEFAULT_TOOL_RUNNER
     logging_enabled: bool = False
+    session_api_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "AppConfig":
         defaults = cls()
         return cls(
+            session_api_enabled=os.getenv(
+                "PYAGENT_SESSION_API", "off").strip().lower()
+            in {"1", "true", "yes", "on"},
             logging_enabled=os.getenv("PYAGENT_LOGGING", "off").strip().lower()
             in {"1", "true", "yes", "on"},
             request_timeout=int(
