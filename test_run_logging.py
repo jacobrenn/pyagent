@@ -242,7 +242,8 @@ class RunLoggingTests(unittest.TestCase):
                 agent.close()
                 log = records(agent.last_log_path)
                 self.assertEqual(log[-1]["attributes"]["outcome"], "cancelled")
-                self.assertEqual(log[-1]["attributes"]["started"], state == "started")
+                self.assertEqual(log[-1]["attributes"]
+                                 ["started"], state == "started")
                 self.assertEqual(sum(r["type"] == "run_end" for r in log), 1)
                 self.assertIsNone(agent._run_log)
                 self.assertIsNone(agent._active_run_generator)
@@ -283,7 +284,8 @@ class RunLoggingTests(unittest.TestCase):
                 self.assertEqual([r["type"] for r in log], ["run_end"])
                 self.assertEqual(log[0]["attributes"]["outcome"], "cancelled")
                 self.assertFalse(log[0]["attributes"]["started"])
-                self.assertEqual(log[0]["attributes"]["messages"], initial_messages)
+                self.assertEqual(log[0]["attributes"]
+                                 ["messages"], initial_messages)
                 before = path.read_bytes()
                 events = list(agent.run("next prompt"))
                 self.assertEqual(events[-1]["content"], "Done")
@@ -310,7 +312,8 @@ class RunLoggingTests(unittest.TestCase):
     def test_closing_old_generator_does_not_affect_current_run(self):
         for state in ("unstarted", "cancelled", "completed"):
             with self.subTest(state=state):
-                agent = self.agent([[{"content": "Done"}], [{"content": "Done"}]])
+                agent = self.agent(
+                    [[{"content": "Done"}], [{"content": "Done"}]])
                 old = agent.run("old prompt")
                 if state == "cancelled":
                     next(old)
