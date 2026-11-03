@@ -7,7 +7,7 @@ Use this skill when changing logic in the agent loop, tools, config, model profi
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py
 python -m unittest -v
 ```
 
@@ -57,6 +57,14 @@ Test cases should cover:
 Check boolean parsing and default-off behavior, TUI overrides, one UUID file per run, exclusive creation/collision retries, matching API/SSE/log IDs, full message records despite history trimming, parent IDs/reset, sanitized credential metadata, and client compatibility with older responses. Test concurrent runs, early generator closure, model/extension errors, blocked-producer disconnects, and best-effort open/write failures. A missing terminal record means incomplete; never infer successful completion from a filename. Debug capture must remain independent of saved logs.
 
 For a manual server smoke test, start with `PYAGENT_LOGGING=on pyagent serve`, issue simultaneous streaming requests, and match each SSE `run_id` to a separate file under the temporary user directory. Repeat with `PYAGENT_LOGGING=off` and verify no new files. In the TUI, test `/logging`, repeated on/off toggles, multiple prompts, and `/clear` without changing the logging preference.
+
+### Saved-session and resume changes
+
+`test_sessions.py` covers the read-only session store and CLI/TUI checkpoint restoration. Use temporary user/workspace/profile directories and mock model clients. Check schema/sequence/run-ID validation, bounded parsing, duplicate IDs, symlink/path rejection, incomplete and legacy classification, complete tool blocks, and native Ollama ID normalization. A failed or cancelled run is not automatically resumable.
+
+Check explicit parent grouping, branching, missing ancestors, cycle detection, unchanged source bytes, current system instructions/skills/credentials, named revision and resolved-workspace handling, saved/current permission intersection, and history trimming. Opening a checkpoint must not call a model, replay a tool/hook, or create a run file. Cover CLI response stdout vs diagnostics stderr, TUI confirmation/busy guards, failed/cancelled candidate cleanup, preserved logging preference, and prompt/transcript restoration. Test continuation through Ollama, Chat Completions, and Responses message formats.
+
+Manual smoke test: enable logging, submit a multi-tool prompt, exit, inspect it with `pyagent sessions show <id>`, then `pyagent resume <id>`. Verify restored transcript/scrolling, `/context`, `/sessions`, and `/resume <id> --confirm`. Submit a new prompt and check its file has a new UUID and the selected parent. Repeat with logging off; opening a checkpoint should never make a model request.
 
 ### Agent-definition and orchestration changes
 

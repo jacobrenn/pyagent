@@ -319,20 +319,28 @@ def validate_agent_definition(
     *,
     cwd: str | os.PathLike[str] | None = None,
     config: AppConfig | None = None,
+    resolved_workspace: str | os.PathLike[str] | None = None,
 ) -> AgentDefinitionValidation:
     runtime_config = config or AppConfig.from_env()
     errors: list[str] = []
     warnings: list[str] = []
     resolved: dict[str, Any] = {}
 
-    workspace = _resolve_workspace(definition, cwd)
+    workspace = (Path(resolved_workspace).expanduser().resolve()
+                 if resolved_workspace is not None else _resolve_workspace(definition, cwd))
     resolved["workspace"] = str(workspace)
+    if resolved_workspace is not None and definition.workspace:
+        configured = Path(definition.workspace).expanduser()
+        if configured.is_absolute() and configured.resolve() != workspace:
+            errors.append(
+                "Saved workspace conflicts with the pinned definition's absolute workspace.")
     if not workspace.is_dir():
         errors.append(f"Workspace directory does not exist: {workspace}")
 
     try:
         store = load_profile_store(runtime_config.model_profiles_path)
-        profile = store.get(definition.profile)
+        profile = store.get(
+            definition.profile or runtime_config.default_profile)
         if definition.model:
             profile = replace(profile, model=definition.model)
         profile.resolved_provider()
@@ -454,17 +462,20 @@ def build_agent_from_definition(
     revision: int | None = None,
     cwd: str | os.PathLike[str] | None = None,
     user_dir: str | os.PathLike[str] | None = None,
+    config: AppConfig | None = None,
+    resolved_workspace: str | os.PathLike[str] | None = None,
 ):
-    """Resolve a stored definition and construct a workspace-bound Agent."""
+    """Resolve a definition; resume may supply its already-resolved workspace."""
     from .agent import Agent
 
-    store = AgentDefinitionStore(user_dir)
-    definition = store.get(name, revision=revision)
-    config = AppConfig.from_env()
+    config = replace(config) if config is not None else AppConfig.from_env()
     if user_dir is not None:
         config.user_dir = str(resolve_user_dir(user_dir))
+    store = AgentDefinitionStore(config.user_dir)
+    definition = store.get(name, revision=revision)
 
-    validation = validate_agent_definition(definition, cwd=cwd, config=config)
+    validation = validate_agent_definition(
+        definition, cwd=cwd, config=config, resolved_workspace=resolved_workspace)
     if not validation.valid:
         details = "; ".join(validation.errors)
         raise AgentDefinitionError(

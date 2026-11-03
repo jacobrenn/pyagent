@@ -140,6 +140,64 @@ def run_agent_definition(
     return response
 
 
+def _handle_sessions_command(args: argparse.Namespace) -> None:
+    from dataclasses import asdict
+    from .resume import restore_session
+    from .session_store import SessionStore, format_sessions
+
+    restored = None
+    app = None
+    try:
+        store = SessionStore(AppConfig.from_env().user_dir)
+        if args.command == "sessions":
+            if args.session_action == "list":
+                if args.limit < 1:
+                    raise ValueError("--limit must be positive")
+                print(format_sessions(store.list(), args.limit))
+            else:
+                saved = store.inspect(args.run_id)
+                chain, warning = store.lineage(args.run_id)
+                payload = asdict(saved)
+                payload.update(ancestors=chain[1:], lineage_warning=warning)
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        if args.skills is not None:
+            raise ValueError(
+                "Resume restores saved skills; --skills cannot override them.")
+        restored = restore_session(
+            args.run_id, store=store, profile=args.profile, model=args.model, cwd=args.cwd)
+        if args.prompt is None:
+            from .ui import PyAgentApp
+            app = PyAgentApp(resumed_session=restored)
+            app.run()
+        else:
+            if not args.prompt.strip():
+                raise ValueError("--prompt must not be empty")
+            agent = restored.agent
+            agent.run_source = "cli"
+            print(restored.notice(), file=sys.stderr)
+            agent.load_extensions()
+            for event in agent.run(args.prompt):
+                if event.get("type") == "error":
+                    raise ValueError(
+                        str(event.get("message") or "Agent run failed"))
+                if event.get("type") == "assistant_done":
+                    sys.stdout.write(str(event.get("content", "")))
+                    sys.stdout.flush()
+                    break
+            else:
+                raise ValueError(
+                    "Agent run finished without a final response.")
+    except (ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from exc
+    finally:
+        if app is not None:
+            app.agent.close(reason="tui_exit")
+        elif restored is not None:
+            restored.agent.close(reason="resume_complete")
+
+
 def _parse_agent_labels(values: list[str] | None) -> dict[str, str]:
     labels: dict[str, str] = {}
     for value in values or []:
@@ -267,6 +325,7 @@ def _handle_agents_command(args: argparse.Namespace) -> None:
                 revision=args.revision,
                 cwd=args.cwd,
             )
+            app = None
             try:
                 app = PyAgentApp(
                     agent=agent,
@@ -275,7 +334,7 @@ def _handle_agents_command(args: argparse.Namespace) -> None:
                 )
                 app.run()
             finally:
-                agent.close(reason="tui_exit")
+                (app.agent if app is not None else agent).close(reason="tui_exit")
             return
     except (AgentDefinitionError, ValueError) as exc:
         sys.stderr.write(f"{exc}\n")
@@ -491,6 +550,27 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--prompt", type=str,
                         help="Single prompt to run and exit")
     subparsers = parser.add_subparsers(dest="command")
+    sessions_parser = subparsers.add_parser(
+        "sessions", help="Inspect saved run checkpoints")
+    sessions_actions = sessions_parser.add_subparsers(
+        dest="session_action", required=True)
+    sessions_list = sessions_actions.add_parser(
+        "list", help="List saved runs and parent links")
+    sessions_list.add_argument("--limit", type=int, default=20)
+    sessions_show = sessions_actions.add_parser(
+        "show", help="Show checkpoint history and ancestry as JSON")
+    sessions_show.add_argument(
+        "run_id", help="Full run UUID (or log basename for inspection)")
+    resume_parser = subparsers.add_parser(
+        "resume", help="Continue a completed saved checkpoint")
+    resume_parser.add_argument("run_id", help="Full run UUID")
+    resume_parser.add_argument(
+        "--prompt", default=argparse.SUPPRESS, help="Continue once and exit")
+    resume_parser.add_argument(
+        "--profile", default=argparse.SUPPRESS, help="Ad hoc profile override")
+    resume_parser.add_argument(
+        "--model", default=argparse.SUPPRESS, help="Ad hoc model override")
+    resume_parser.add_argument("--cwd", help="Ad hoc replacement workspace")
     serve_parser = subparsers.add_parser(
         "serve", help="Run the PyAgent HTTP API")
     serve_parser.add_argument(
@@ -721,6 +801,10 @@ def main(argv: list[str] | None = None) -> None:
         "url", nargs="?", help="GitHub URL to install from")
 
     args = parser.parse_args(argv)
+
+    if args.command in {"sessions", "resume"}:
+        _handle_sessions_command(args)
+        return
 
     if args.command in {"skills", "tools", "prompts"}:
         _handle_resource_command(args)

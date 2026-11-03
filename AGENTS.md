@@ -30,12 +30,13 @@ Core files:
 - `pyagent/api.py` + `pyagent/client.py` — FastAPI server and dependency-free synchronous client for regular and SSE-streaming runs, profiles, agent definitions, and managed resources
 - `pyagent/streaming.py` — SSE framing, background agent iteration, heartbeat delivery, backpressure, and disconnect cleanup
 - `pyagent/run_logging.py` + `pyagent/session_logger.py` — shared per-run lifecycle, safe metadata, versioned JSONL records, UUID filenames, and best-effort diagnostics
+- `pyagent/session_store.py` + `pyagent/resume.py` — read-only checkpoint discovery/validation, explicit parent-chain management, and fresh-agent restoration for CLI/TUI resume
 - `web/` + `pyagent/webui/` — Preact/Vite browser UI source and packaged static build served under `/ui/`
 - `pyagent/agent_definitions.py` — versioned reusable agent definitions, resource validation, and workspace-bound agent construction
 - `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
 - `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`
-- `test_agent.py` + `test_run_logging.py` — unit and integration tests
+- `test_agent.py` + `test_run_logging.py` + `test_sessions.py` — unit and integration tests
 
 ## Development priorities
 
@@ -105,7 +106,8 @@ In `pyagent/agent.py`:
 - Keep provider-specific request/stream formatting out of the core loop when possible.
 - HTTP streams emit versioned SSE events with one terminal `done` or `error`; preserve pre-stream HTTP errors, tool-call IDs, debug opt-in, and agent cleanup on disconnect.
 - `PYAGENT_LOGGING` defaults off and controls one JSONL file per prompt/run across TUI, CLI, and API. `/logging` overrides the TUI preference between runs. Keep run IDs identical across API/SSE/file records, use exclusive UUID filenames, and never append a new run to an old log.
-- Run logs have a versioned schema and final history checkpoint; capture messages before trimming, preserve tool-call IDs, and distinguish completed/failed/cancelled/incomplete runs. Loading/resuming is not implemented. Do not infer ancestry between separate API requests.
+- Run logs have a versioned schema and final history checkpoint; capture messages before trimming, preserve tool-call IDs, and distinguish completed/failed/cancelled/incomplete runs. CLI/TUI resume supports completed checkpoints only, through `session_store.py` and `resume.py`; API/browser resume, interrupted-run recovery, and legacy import are not implemented. Do not infer ancestry between separate API requests.
+- Resume restores only validated `run_end.messages` into a fresh agent, rebuilding current trusted instructions/resources and enforcing current policy plus saved restrictions. Never replay historical tools/hooks, invent tool results, append to source logs, or require ancestors to exist. New prompts get fresh IDs linked to the selected checkpoint. Keep discovery read-only, bounded, and off the TUI event loop; preserve the active conversation if candidate restoration fails. Named revisions and absolute workspaces remain pinned; recorded relative workspaces are already resolved.
 - Logging must not fail the run, leak credential configuration in metadata, write diagnostics to response stdout, or close a producer-owned log from a disconnect consumer. Extension logs outside an active run are no-ops.
 
 ## Model/profile conventions
@@ -152,7 +154,7 @@ If you change that behavior:
 For any non-trivial change, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py
 python -m unittest -v
 ```
 

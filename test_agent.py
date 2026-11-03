@@ -1720,6 +1720,7 @@ class MainCliTests(unittest.TestCase):
         validation = SimpleNamespace(resolved={"skills": []}, warnings=())
         fake_ui_module = SimpleNamespace(PyAgentApp=mock.Mock())
         mock_app = fake_ui_module.PyAgentApp.return_value
+        mock_app.agent = fake_agent
 
         with mock.patch(
             "pyagent.agent_definitions.build_agent_from_definition",

@@ -1129,6 +1129,8 @@ Recommended user directory layout:
 ### Runtime slash commands
 
 - `/clear` — clear the conversation
+- `/sessions` / `/sessions show <run-id>` — list saved checkpoints or inspect their ancestry
+- `/resume <run-id> [--confirm]` — restore a completed saved checkpoint between runs
 - `/help` — show command help
 - `/tools` — show tool status, built-ins, external tools, and broken/disabled scripts
 - `/tools on` — enable model tool calling for the current session
@@ -1226,7 +1228,7 @@ A **run** is one submitted prompt and its complete model/tool loop, even if it m
 
 Regular API responses include `run_id`, and SSE envelopes use the **same ID** as the file and its records. The Python client exposes `RunResponse.run_id` and `AgentRunResponse.run_id` (`None` when talking to an older server). Server-local log paths are not returned by the API. Runs have IDs even with logging disabled, so an ID is not proof that a log exists. Requests rejected before execution do not create empty run logs.
 
-### JSONL format and continuation groundwork
+### JSONL format and checkpoints
 
 The log format has its own `schema_version` (currently `1`). Each line includes `run_id`, a UTC `timestamp`, monotonically increasing `sequence`, `type`, `severityText`, `body`, and record-specific `attributes`. `timeUnixNano` is also included as a decimal epoch-nanosecond string. Log sequence numbers are independent of SSE sequence numbers.
 
@@ -1241,7 +1243,7 @@ Principal record types:
 
 Repeated runs on the same in-memory agent record the known previous run as `parent_run_id`; `/clear`, reset, and explicit history replacement clear that relationship. Separate API requests do not infer ancestry from matching prompts or timestamps. A parent ID may refer to an unlogged run. CLI/API runs use sources `cli`/`api`; TUI runs use `tui`, and direct Python `Agent` usage defaults to `python`.
 
-These records prepare for **future conversation loading and continuation**, but there is no resume command, history database, or log-browsing endpoint yet. Final history is the current bounded agent history, while individual message records retain messages removed by trimming. A future continuation should create a new run linked to the original, not append to the old file or automatically repeat tools with side effects. Logs do not restore provider internals, extension memory, or external filesystem state.
+Completed checkpoints support **CLI and TUI conversation resumption** (see below). Final history is the current bounded agent history, while individual message records retain messages removed by trimming. A continuation creates a new run linked to the selected checkpoint; it never appends to the old file or replays historical tools. Logs do not restore provider internals, extension memory, or external filesystem state. There is no history database, API resume field, or server log-browsing endpoint in this release; API/browser conversation behavior is unchanged.
 
 ### Reliability and privacy
 
@@ -1252,6 +1254,60 @@ Extension logging is active **during a logged run**. Startup, shutdown, and idle
 **Logs contain sensitive material:** prompts, system instructions, source code, tool results, extension payloads, and prior conversation history may contain secrets. Runtime metadata does not serialize API keys, auth headers, or whole config/environment objects, and endpoint metadata strips URL credentials, query strings, and fragments. This is not general-purpose content redaction. Protect log files and do not publish them without review. Enabling logging partway through a conversation can capture earlier messages in the next run's initial history.
 
 For direct Python use, exhaust or explicitly close the iterator returned by `Agent.run()`, and call `agent.close()` when done. Closing the iterator before its first iteration releases the run without executing the prompt, tools, or extension hooks, and leaves the agent available for another prompt. If logging is enabled, it records a cancelled `run_end` with `started=false`; conversation history and the previous parent run are unchanged. Repeated iterator closes are harmless and do not close the model client. Do not share an agent concurrently between runs; separate server requests use separate agents.
+
+## Resuming saved conversations (CLI and TUI)
+
+A saved **run** is a checkpoint after one prompt's model/tool loop. A conversation consists of runs linked by explicit `parent_run_id` values. The read-only session store discovers these files under `$PYAGENT_USER_DIR/logs/` (default `~/.pyagent/logs/`); it does not create a database or modify logs.
+
+```bash
+# Inspect saved runs, grouped by known parent links
+pyagent sessions list
+pyagent sessions list --limit 50
+pyagent sessions show <run-id>
+
+# Open the checkpoint in the terminal TUI, without making a model request
+pyagent resume <run-id>
+
+# Submit one new prompt against the restored history and exit
+PYAGENT_LOGGING=on pyagent resume <run-id> --prompt "Continue the implementation"
+
+# Explicit runtime overrides for ad hoc (non-named-agent) checkpoints
+pyagent resume <run-id> --profile local --model my-model --cwd /new/workspace
+```
+
+Use the full UUID shown in the listing. Log basenames are also accepted; arbitrary filesystem paths and log symlinks are rejected. `sessions show` emits JSON with checkpoint metadata, canonical history, validation warnings, and available ancestors. This output can contain sensitive prompts and source code. Listing defaults to the newest 20 runs, grouped by known ancestry, and includes outcomes, resumability, workspace, model/profile or named-agent revision, and parent IDs. Missing ancestors are labelled; matching prompts or timestamps never establish ancestry. Duplicate IDs are ambiguous and cannot be resumed.
+
+Inside the TUI:
+
+- `/sessions` — list saved checkpoints without leaving the current conversation.
+- `/sessions show <run-id>` — inspect checkpoint status, message count, and parent chain.
+- `/resume <run-id>` — restore a checkpoint while idle.
+- `/resume <run-id> --confirm` — explicitly replace a nonempty conversation after the confirmation prompt.
+
+The candidate is validated and initialized before replacing the current agent; a failure keeps the original conversation usable. Discovery/restoration runs in a background worker. The TUI displays checkpoint history without replaying tool events, and restores user prompts into prompt history. Display is bounded to the last 64 checkpoint messages, with long messages/tool results previewed; this display limit is independent of model context. Normal slash commands remain available, including `/logging` and `/clear`. A resumed named agent keeps its definition-controlled settings locked. Switching sessions does not silently change the TUI logging preference.
+
+### What is restored
+
+- **History:** only `run_end.messages`, not a concatenation of repeated model requests, initial histories, and extension events. Current history limits still apply, with a warning if additional trimming occurs. The original checkpoint is unchanged.
+- **Ancestry:** the next prompt gets a fresh run ID and names the selected checkpoint as its parent. Repeated resumption creates independent branches. Missing ancestors do not prevent resuming a valid, self-contained checkpoint. Reset, `/clear`, and explicit history/context replacement clear ancestry as before.
+- **Runtime:** the recorded profile/model and resolved workspace are preferred. Credentials and endpoints come from current profile configuration, never from the log. Ad hoc runs can explicitly override profile, model, and workspace on the CLI; missing profiles/workspaces require resolution rather than silent fallback.
+- **Instructions and skills:** current system-prompt, layered `AGENTS.md`, and saved skill resources are loaded with the normal context budgets. Saved system messages are not promoted into active instructions. Missing required skills fail restoration. CLI `--skills` cannot replace saved skills during resume.
+- **Named agents:** the saved definition revision is required, not the latest revision. Its restrictions remain authoritative. Relative workspaces use the recorded resolved directory without applying the relative path a second time; absolute definition workspaces must match. Named-agent resumes reject profile/model/workspace overrides. Restore missing definitions or revisions before resuming.
+- **Safety:** available tools are restricted to saved tool names intersected with current policy and named-agent restrictions. Saved settings may disable tools/bash or require read-only bash, but cannot enable permissions disabled now. Resumed file tools are workspace-bound, including ad hoc resumes. Bash and custom tools are not a security sandbox. Current iteration/history limits apply; the named definition still controls its own iteration limit.
+
+Runtime differences are reported in the TUI or, for single-shot CLI continuation, on stderr so stdout remains the final response. Current installed extensions have their normal startup lifecycle; historical hooks, tools, and provider-internal reasoning caches are not replayed or restored. Filesystem changes made by earlier tools are neither undone nor recreated.
+
+### Supported checkpoints and limits
+
+This first release resumes **completed, started runs with a valid terminal checkpoint** in the current versioned `run-*.jsonl` format. Tool-call/result blocks must be complete and consistent. Native Ollama missing call IDs are normalized only where recorded ordered results can be paired by name; this changes restored history, not the source log. No tool results are invented.
+
+Failed/cancelled runs, unstarted runs, and files without `run_end` are inspection-only. A missing terminal record may also mean a run is still active. Truncated/corrupt files and unsupported schemas produce diagnostics; no automatic rewind, repair, or tool retry occurs. Older `session-*.jsonl` files are labelled legacy and require a future migration feature.
+
+The reader enforces 64 MiB per file, 16 MiB per JSONL record, 4,096 checkpoint messages, and 8 Mi characters per message. Each record is limited to 64 JSON nesting levels and 100,000 JSON value nodes. Discovery is capped at 10,000 log files; archive older files if necessary. Files changing during a read are rejected for retry. These limits supplement, rather than replace, the runtime's context budgets.
+
+**Logging remains opt-in.** Opening, inspecting, or restoring a checkpoint creates no run file and sends no prompt. Only an explicitly submitted new prompt starts a run. If logging is disabled, resumption still works but later prompts are not saved; the startup notice warns about this. Enable `PYAGENT_LOGGING=on` or `/logging on` to retain future checkpoints.
+
+Interrupted-run recovery, legacy import, API resume endpoints, and browser checkpoint imports are not part of this first release. The existing API remains caller-history-managed, and browser history remains local to IndexedDB/local storage.
 
 ## Configuration reference
 
@@ -1454,6 +1510,6 @@ python -m unittest -v
 For non-trivial changes, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py
 python -m unittest -v
 ```

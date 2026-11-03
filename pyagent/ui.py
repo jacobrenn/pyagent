@@ -33,6 +33,7 @@ from .extensions.manager import handle_extension_command
 
 if TYPE_CHECKING:
     from .agent_definitions import AgentDefinition, AgentDefinitionValidation
+    from .resume import RestoredSession
 
 PROMPT_INPUT_MIN_HEIGHT = 8
 PROMPT_INPUT_MAX_HEIGHT = 20
@@ -274,8 +275,14 @@ class PyAgentApp(App):
         agent: Agent | None = None,
         agent_definition: "AgentDefinition | None" = None,
         agent_validation: "AgentDefinitionValidation | None" = None,
+        resumed_session: "RestoredSession | None" = None,
     ):
         super().__init__()
+        self.resumed_session = resumed_session
+        if resumed_session is not None:
+            agent = resumed_session.agent
+            agent_definition = resumed_session.definition
+            agent_validation = resumed_session.validation
         self.agent_definition = agent_definition
         self.agent_validation = agent_validation
 
@@ -295,15 +302,20 @@ class PyAgentApp(App):
             )
         else:
             self.agent = agent
-            resolved = agent_validation.resolved if agent_validation else {}
-            self.loaded_user_skills = [
-                str(item) for item in resolved.get("skills", [])
-            ]
-            _, self.context_sources = load_full_context(
-                self.agent.workspace,
-                user_dir=self.agent.config.user_dir,
-                loaded_user_skills=self.loaded_user_skills,
-            )
+            if resumed_session is not None:
+                self.loaded_user_skills = list(
+                    self.agent.run_metadata.get("skills", []))
+                self.context_sources = resumed_session.context_sources
+            else:
+                resolved = agent_validation.resolved if agent_validation else {}
+                self.loaded_user_skills = [
+                    str(item) for item in resolved.get("skills", [])
+                ]
+                _, self.context_sources = load_full_context(
+                    self.agent.workspace,
+                    user_dir=self.agent.config.user_dir,
+                    loaded_user_skills=self.loaded_user_skills,
+                )
             self.project_context = self.agent.project_context
             self.project_context_files = list(self.agent.project_context_files)
 
@@ -399,6 +411,127 @@ class PyAgentApp(App):
                 "Run logging enabled by configuration. Each prompt gets a separate log. "
                 "Use `/logging off` to disable it."
             )
+        if self.resumed_session is not None:
+            self._render_restored_session(self.resumed_session)
+
+    def _render_restored_session(self, restored: "RestoredSession") -> None:
+        history = [m for m in self.agent.messages if m.get("role") != "system"]
+        self.input_history = [m["content"]
+                              for m in history if m["role"] == "user"]
+        self.input_history_index = None
+        self.input_history_draft = ""
+        self._add_system_note(restored.notice())
+        if len(history) > 64:
+            self._add_system_note(
+                "Showing the last 64 checkpoint messages; model history is separate.")
+        for message in history[-64:]:
+            role = message["role"]
+            content = message["content"]
+            if role == "tool":
+                content = f"Tool result • {message.get('name', message.get('tool_name', 'tool'))}\n{content}"
+            self._add_message(role, _truncate(content, 800 if role == "tool" else 16000),
+                              finalized=True, render_mode="plain")
+            for call in message.get("tool_calls", []):
+                function = call["function"]
+                self._add_message("tool", f"Historical tool call • {function['name']}\n"
+                                  + _truncate(json.dumps(function.get("arguments", {})), 800),
+                                  finalized=True, render_mode="plain")
+
+    def _handle_session_command(self, command: str, args: list[str]) -> bool:
+        if self.is_processing:
+            self._add_system_note(
+                "Wait for the current run to finish before loading sessions.")
+            return True
+        if command == "/resume":
+            if not args or len(args) > 2 or (len(args) == 2 and args[1] != "--confirm"):
+                self._add_system_note("Usage: `/resume <run-id> [--confirm]`")
+                return True
+            if len(self.agent.messages) > 1 and len(args) == 1:
+                self._add_system_note(
+                    f"Replace the current conversation? Use `/resume {args[0]} --confirm` to proceed.")
+                return True
+        elif args and not (len(args) == 2 and args[0] == "show"):
+            self._add_system_note(
+                "Usage: `/sessions` or `/sessions show <run-id>`")
+            return True
+        self.is_processing = True
+        self._prompt_input().disabled = True
+        self._set_status("Loading saved sessions…" if command ==
+                         "/sessions" else "Restoring checkpoint…")
+        self.run_worker(self._session_action(command, args),
+                        exclusive=True, thread=False)
+        return True
+
+    async def _session_action(self, command: str, args: list[str]) -> None:
+        from .resume import restore_session
+        from .session_store import SessionStore, format_sessions
+
+        replacement = None
+        store = SessionStore(self.agent.config.user_dir)
+        try:
+            if command == "/sessions":
+                if args:
+                    saved = await asyncio.to_thread(store.inspect, args[1])
+                    chain, warning = await asyncio.to_thread(store.lineage, args[1])
+                    text = format_sessions(
+                        [saved]) + f"\nCheckpoint messages: {len(saved.messages)}\nAncestry: {' <- '.join(chain)}"
+                    if warning:
+                        text += "\n" + warning
+                else:
+                    text = format_sessions(await asyncio.to_thread(store.list))
+                self._add_message("system", text, render_mode="plain")
+                return
+            # A cancelled UI worker must still collect/close its candidate agent.
+            pending = asyncio.create_task(asyncio.to_thread(
+                restore_session, args[0], store=store, config=self.agent.config))
+            try:
+                replacement = await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                replacement = await pending
+                raise
+            replacement.agent.logging_enabled = self.logging_enabled
+            pending = asyncio.create_task(
+                asyncio.to_thread(replacement.agent.load_extensions))
+            try:
+                await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                await pending
+                raise
+            old = self.agent
+            await self._chat_container().remove_children()
+            self.agent = replacement.agent
+            self.agent.run_source = "tui"
+            self.agent_definition = replacement.definition
+            self.agent_validation = replacement.validation
+            self.loaded_user_skills = list(
+                self.agent.run_metadata.get("skills", []))
+            self.context_sources = replacement.context_sources
+            self.project_context = self.agent.project_context
+            self.project_context_files = list(self.agent.project_context_files)
+            self.resumed_session = replacement
+            replacement = None  # ownership transferred to the app
+            try:
+                self._debug_log_widget().clear()
+                self._render_restored_session(self.resumed_session)
+            finally:
+                try:
+                    old.close(reason="session_replaced")
+                except Exception as exc:
+                    self._add_system_note(
+                        f"Previous agent cleanup failed: {exc}")
+        except Exception as exc:
+            self._add_system_note(f"Could not load session: {exc}")
+        finally:
+            if replacement is not None:
+                try:
+                    replacement.agent.close(reason="resume_failed")
+                except Exception as exc:
+                    self._add_system_note(
+                        f"Candidate agent cleanup failed: {exc}")
+            self.is_processing = False
+            self._prompt_input().disabled = False
+            self._prompt_input().focus()
+            self._set_status(self._ready_status())
 
     def _runtime_workspace(self) -> str:
         return str(self.agent.workspace)
@@ -504,6 +637,8 @@ class PyAgentApp(App):
             "\n"
             "Session\n"
             "- `/clear` — clear the conversation\n"
+            "- `/sessions` / `/sessions show <run-id>` — inspect saved checkpoints and parent links\n"
+            "- `/resume <run-id> [--confirm]` — restore a completed checkpoint between runs\n"
             "- `/status` — show current configuration and runtime limits\n"
             "- `/max_iterations <n|-1>` — set the agent tool-loop iteration limit for this session\n"
             "- `/cwd` — show the current working directory\n"
@@ -644,6 +779,8 @@ class PyAgentApp(App):
     def _unknown_command_message(self, command: str) -> str:
         known_commands = [
             "/clear",
+            "/sessions",
+            "/resume",
             "/help",
             "/tools",
             "/profiles",
@@ -1065,6 +1202,9 @@ class PyAgentApp(App):
         if lock_message is not None:
             self._add_system_note(lock_message)
             return True
+
+        if command in {"/sessions", "/resume"}:
+            return self._handle_session_command(command, args)
 
         handler = COMMAND_REGISTRY.get(command)
         if handler is not None:
