@@ -1251,7 +1251,7 @@ Extension logging is active **during a logged run**. Startup, shutdown, and idle
 
 **Logs contain sensitive material:** prompts, system instructions, source code, tool results, extension payloads, and prior conversation history may contain secrets. Runtime metadata does not serialize API keys, auth headers, or whole config/environment objects, and endpoint metadata strips URL credentials, query strings, and fragments. This is not general-purpose content redaction. Protect log files and do not publish them without review. Enabling logging partway through a conversation can capture earlier messages in the next run's initial history.
 
-For direct Python use, exhaust or explicitly close the generator returned by `Agent.run()`, and call `agent.close()` when done. Do not share an agent concurrently between runs; separate server requests use separate agents.
+For direct Python use, exhaust or explicitly close the iterator returned by `Agent.run()`, and call `agent.close()` when done. Closing the iterator before its first iteration releases the run without executing the prompt, tools, or extension hooks, and leaves the agent available for another prompt. If logging is enabled, it records a cancelled `run_end` with `started=false`; conversation history and the previous parent run are unchanged. Repeated iterator closes are harmless and do not close the model client. Do not share an agent concurrently between runs; separate server requests use separate agents.
 
 ## Configuration reference
 

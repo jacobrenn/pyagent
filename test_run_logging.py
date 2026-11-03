@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import contextlib
+import copy
 import io
 import json
 import os
@@ -229,17 +230,144 @@ class RunLoggingTests(unittest.TestCase):
             sum(r["type"] == "run_end" for r in records(agent.last_log_path)), 1)
 
     def test_cancelled_and_unstarted_runs_close_cleanly(self):
-        for iterate in (True, False):
-            with self.subTest(iterate=iterate):
+        for state in ("prepared", "unstarted", "started"):
+            with self.subTest(state=state):
                 agent = self.agent()
-                generator = agent.run("hi")
-                if iterate:
-                    next(generator)
+                agent.prepare_run()
+                if state != "prepared":
+                    generator = agent.run("hi")
+                    if state == "started":
+                        next(generator)
                 agent.close()
-                self.assertEqual(records(agent.last_log_path)
-                                 [-1]["attributes"]["outcome"], "cancelled")
+                agent.close()
+                log = records(agent.last_log_path)
+                self.assertEqual(log[-1]["attributes"]["outcome"], "cancelled")
+                self.assertEqual(log[-1]["attributes"]["started"], state == "started")
+                self.assertEqual(sum(r["type"] == "run_end" for r in log), 1)
                 self.assertIsNone(agent._run_log)
                 self.assertIsNone(agent._active_run_generator)
+                self.assertTrue(agent.client.closed)
+
+    def test_unstarted_generator_close_finishes_log_and_allows_reuse(self):
+        for prepare_first in (False, True):
+            with self.subTest(prepare_first=prepare_first):
+                agent = self.agent()
+                initial_messages = copy.deepcopy(agent.messages)
+                previous_log = agent._ext_log
+                prepared_id = agent.prepare_run() if prepare_first else None
+                with mock.patch.object(agent.client, "chat_stream") as chat, mock.patch.object(agent.tool_registry, "execute") as execute, mock.patch.object(agent.bus, "emit") as emit:
+                    generator = agent.run("unused prompt")
+                    record = agent._run_log
+                    path = agent.last_log_path
+                    file = record.logger._file
+                    generator.close()
+                    generator.close()
+                    chat.assert_not_called()
+                    execute.assert_not_called()
+                    emit.assert_not_called()
+                self.assertTrue(file.closed)
+                self.assertTrue(record.finished)
+                self.assertIsNone(agent._run_log)
+                self.assertIsNone(agent._active_run_generator)
+                self.assertIs(agent._ext_log, previous_log)
+                self.assertIsNone(agent.parent_run_id)
+                self.assertEqual(agent.messages, initial_messages)
+                self.assertFalse(agent.client.closed)
+                self.assertEqual(agent.run_id, record.run_id)
+                self.assertEqual(agent.last_log_path, path)
+                if prepare_first:
+                    self.assertEqual(agent.run_id, prepared_id)
+                with self.assertRaises(StopIteration):
+                    next(generator)
+                log = records(path)
+                self.assertEqual([r["type"] for r in log], ["run_end"])
+                self.assertEqual(log[0]["attributes"]["outcome"], "cancelled")
+                self.assertFalse(log[0]["attributes"]["started"])
+                self.assertEqual(log[0]["attributes"]["messages"], initial_messages)
+                before = path.read_bytes()
+                events = list(agent.run("next prompt"))
+                self.assertEqual(events[-1]["content"], "Done")
+                self.assertNotEqual(agent.run_id, record.run_id)
+                self.assertNotEqual(agent.last_log_path, path)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_unstarted_generator_close_without_logging_allows_reuse(self):
+        agent = self.agent(logging_enabled=False)
+        generator = agent.run("unused prompt")
+        record = agent._run_log
+        generator.close()
+        generator.close()
+        self.assertTrue(record.finished)
+        self.assertIsNone(agent._run_log)
+        self.assertIsNone(agent._active_run_generator)
+        self.assertFalse(agent.client.closed)
+        events = list(agent.run("next prompt"))
+        self.assertEqual(events[-1]["content"], "Done")
+        self.assertNotEqual(agent.run_id, record.run_id)
+        self.assertIsNone(agent.last_log_path)
+        self.assertFalse((self.root / "user" / "logs").exists())
+
+    def test_closing_old_generator_does_not_affect_current_run(self):
+        for state in ("unstarted", "cancelled", "completed"):
+            with self.subTest(state=state):
+                agent = self.agent([[{"content": "Done"}], [{"content": "Done"}]])
+                old = agent.run("old prompt")
+                if state == "cancelled":
+                    next(old)
+                elif state == "completed":
+                    list(old)
+                old.close()
+                old_path = agent.last_log_path
+                old_bytes = old_path.read_bytes()
+                current = agent.run("new prompt")
+                next(current)
+                record = agent._run_log
+                old.close()
+                self.assertIs(agent._active_run_generator, current)
+                self.assertIs(agent._run_log, record)
+                self.assertIs(agent._ext_log, record.logger)
+                self.assertFalse(record.finished)
+                self.assertFalse(record.logger._file.closed)
+                events = list(current)
+                self.assertEqual(events[-1]["content"], "Done")
+                self.assertEqual(records(agent.last_log_path)
+                                 [-1]["attributes"]["outcome"], "completed")
+                self.assertEqual(old_path.read_bytes(), old_bytes)
+
+    def test_unstarted_generator_close_preserves_history_and_parent(self):
+        agent = self.agent([[{"content": "one"}], [{"content": "two"}]])
+        list(agent.run("first prompt"))
+        parent_id = agent.run_id
+        history = copy.deepcopy(agent.messages)
+        generator = agent.run("unused prompt")
+        generator.close()
+        self.assertEqual(agent.messages, history)
+        self.assertEqual(agent.parent_run_id, parent_id)
+        list(agent.run("next prompt"))
+        start = records(agent.last_log_path)[0]["attributes"]
+        self.assertEqual(start["parent_run_id"], parent_id)
+        self.assertEqual(start["initial_messages"], history)
+
+    def test_unstarted_generator_close_write_failure_allows_reuse(self):
+        agent = self.agent()
+        generator = agent.run("unused prompt")
+        logger = agent._run_log.logger
+        real_file = logger._file
+        failed_file = mock.Mock(wraps=real_file)
+        failed_file.write.side_effect = OSError("disk full")
+        logger._file = failed_file
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            generator.close()
+            generator.close()
+        self.assertEqual(stderr.getvalue().count("disk full"), 1)
+        self.assertTrue(real_file.closed)
+        self.assertIsNone(agent._run_log)
+        self.assertIsNone(agent._active_run_generator)
+        self.assertFalse(agent.client.closed)
+        events = list(agent.run("next prompt"))
+        self.assertEqual(events[-1]["content"], "Done")
+        self.assertIsNone(agent.logging_error)
 
     def test_open_failure_does_not_change_response_or_stdout(self):
         agent = self.agent()

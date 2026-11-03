@@ -22,6 +22,26 @@ from .tools import ToolRegistry, create_default_tool_registry
 from .run_logging import RunLog, report_warning
 
 
+class _RunIterator:
+    """Own run cleanup even when the underlying generator is never started."""
+
+    def __init__(self, agent: Agent, record: RunLog, user_input: str) -> None:
+        self._agent = agent
+        self._record = record
+        self._generator = agent._run_logged(user_input, record)
+
+    def __iter__(self) -> _RunIterator:
+        return self
+
+    def __next__(self) -> dict[str, Any]:
+        return next(self._generator)
+
+    def close(self) -> None:
+        self._generator.close()
+        # An unstarted generator's close() never enters its finally block.
+        self._agent._finish_run(self._record)
+
+
 class Agent:
     def __init__(
         self,
@@ -45,7 +65,7 @@ class Agent:
         self.run_source = "python"
         self.run_metadata: dict[str, Any] = {}
         self._run_log: RunLog | None = None
-        self._active_run_generator: Any = None
+        self._active_run_generator: _RunIterator | None = None
         self.workspace = Path(workspace or os.getcwd()).expanduser().resolve()
         self.restrict_workspace = restrict_workspace
         self.allowed_tools = frozenset(
@@ -452,11 +472,9 @@ class Agent:
         try:
             if self._active_run_generator is not None:
                 self._active_run_generator.close()
-                self._active_run_generator = None
-            # A prepared generator may never have been iterated.
+            # A run ID may have been prepared without creating an iterator.
             if self._run_log is not None:
-                self._run_log.finish(self)
-                self._run_log = None
+                self._finish_run(self._run_log)
             self.shutdown_session(reason=reason)
         finally:
             close = getattr(self.client, "close", None)
@@ -716,15 +734,30 @@ class Agent:
             self.last_log_path = logger.path if logger is not None else None
         return self._run_log.run_id
 
-    def run(self, user_input: str):
+    def run(self, user_input: str) -> _RunIterator:
+        """Prepare a run and return its closable iterator without executing it."""
         self.prepare_run()
-        generator = self._run_logged(user_input)
+        record = self._run_log
+        assert record is not None
+        generator = _RunIterator(self, record, user_input)
         self._active_run_generator = generator
         return generator
 
-    def _run_logged(self, user_input: str):
-        record = self._run_log
-        assert record is not None
+    def _finish_run(self, record: RunLog, previous_log: Any = None) -> None:
+        """Finalize only the run that owns the active state."""
+        if self._run_log is not record:
+            return
+        try:
+            record.finish(self)
+        finally:
+            self._run_log = None
+            self._active_run_generator = None
+            if record.started:
+                self.parent_run_id = record.run_id
+            if previous_log is not None:
+                self.attach_logger(previous_log)
+
+    def _run_logged(self, user_input: str, record: RunLog):
         previous_log = self._ext_log
         if record.logger is not None:
             self.attach_logger(record.logger)
@@ -746,11 +779,7 @@ class Agent:
             try:
                 generator.close()
             finally:
-                record.finish(self)
-                self.attach_logger(previous_log)
-                self.parent_run_id = record.run_id
-                self._run_log = None
-                self._active_run_generator = None
+                self._finish_run(record, previous_log)
 
     def _run(self, user_input: str):
         ctx = self._ext_ctx
