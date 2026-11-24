@@ -9,6 +9,7 @@ from .agent import Agent
 from .agent_definitions import AgentDefinition, AgentDefinitionValidation, build_agent_from_definition
 from .config import AppConfig
 from .project_context import ContextSource, load_full_context, resolve_available_skill
+from .compaction import COMPACTION_MARKER
 from .run_logging import safe_endpoint
 from .session_store import SavedRun, SessionError, SessionStore
 
@@ -167,15 +168,22 @@ def restore_session(
         if sorted(tools) != sorted(item["function"]["name"] for item in agent.tools):
             warnings.append(
                 "Available tools differ from the saved run; current restrictions apply.")
-        for key in ("max_iterations", "max_history_messages", "max_previous_tool_result_chars",
+        for key in ("max_iterations", "compaction_enabled", "context_window",
                     "tools_enabled", "builtin_tools_enabled", "user_tools_enabled", "bash_enabled", "bash_readonly_mode"):
             if key in settings and settings[key] != getattr(agent.config, key):
                 warnings.append(
                     f"Current {key} is {getattr(agent.config, key)} (saved: {settings[key]}).")
         agent.load_messages(saved.messages)
-        if len(agent.messages) < len(saved.messages):
+        compacted_sections = sum(
+            1 for message in saved.messages
+            if isinstance(message, dict)
+            and str(message.get("content", "")).startswith(COMPACTION_MARKER)
+        )
+        if compacted_sections:
             warnings.append(
-                "Restored model history was trimmed to the current history limit.")
+                f"History contains {compacted_sections} auto-compacted section(s); "
+                "their original detail exists only in the source run logs."
+            )
         # load_messages/reset deliberately clear ancestry; establish it only
         # after validated restoration. No run/file is prepared until a prompt.
         agent.parent_run_id = saved.run_id

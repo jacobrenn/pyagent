@@ -16,6 +16,8 @@ import zipfile
 from typing import Any
 
 from fastapi.testclient import TestClient
+
+import openai
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -2149,8 +2151,6 @@ class AgentTests(unittest.TestCase):
         self,
         first_result: str,
         second_result: str,
-        *,
-        mask_limit: int = 120,
     ) -> tuple[Agent, list[dict[str, Any]]]:
         registry = ToolRegistry(
             [
@@ -2168,11 +2168,7 @@ class AgentTests(unittest.TestCase):
                 ),
             ]
         )
-        config = AppConfig(
-            max_iterations=3,
-            max_history_messages=50,
-            max_previous_tool_result_chars=mask_limit,
-        )
+        config = AppConfig(max_iterations=3)
         agent = Agent(config=config, tool_registry=registry)
         agent.client = DummyClient(
             [
@@ -2321,120 +2317,22 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(
             events[-1], {"type": "assistant_done", "content": "Finished"})
 
-    def test_trim_history_drops_orphaned_tool_messages(self) -> None:
-        config = AppConfig(max_history_messages=3)
-        agent = Agent(
-            config=config, tool_registry=create_default_tool_registry(config))
-        agent.messages = [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "older question"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "function": {
-                            "name": "search_text",
-                            "arguments": {"query": "PyAgent"},
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "name": "search_text",
-                "content": "result",
-                "tool_call_id": "call_1",
-            },
-            {"role": "assistant", "content": "older answer"},
-            {"role": "user", "content": "latest question"},
-        ]
-
-        agent._trim_history()
-
-        self.assertEqual(
-            [message["role"] for message in agent.messages],
-            ["system", "assistant", "user"],
-        )
-        self.assertEqual(agent.messages[-1]["content"], "latest question")
-
-    def test_request_masks_previous_long_tool_outputs_but_keeps_latest_full(self) -> None:
+    def test_tool_outputs_pass_through_unmodified_by_default(self) -> None:
         first_result = "A" * 300
-        second_result = "B" * 300
-
-        agent, events = self._run_two_tool_sequence(
-            first_result, second_result)
-
-        self.assertEqual(
-            events[-1], {"type": "assistant_done", "content": "done"})
-        second_request_tools = self._tool_messages(
-            agent.client.seen_messages[1])
-        self.assertEqual(second_request_tools[-1]["content"], first_result)
-
-        third_request_tools = self._tool_messages(
-            agent.client.seen_messages[2])
-        self.assertEqual(len(third_request_tools), 2)
-        self.assertIn("masked", third_request_tools[0]["content"])
-        self.assertLessEqual(len(third_request_tools[0]["content"]), 120)
-        self.assertLess(
-            len(third_request_tools[0]["content"]), len(first_result))
-        self.assertEqual(third_request_tools[1]["content"], second_result)
-        self.assertEqual(
-            [
-                message["content"]
-                for message in agent.messages
-                if message.get("role") == "tool"
-            ],
-            [first_result, second_result],
-        )
-
-        agent.client = DummyClient([[{"content": "follow-up"}]])
-        list(agent.run("now answer a follow-up"))
-
-        follow_up_tools = self._tool_messages(agent.client.seen_messages[0])
-        self.assertEqual(len(follow_up_tools), 2)
-        self.assertIn("masked", follow_up_tools[0]["content"])
-        self.assertIn("masked", follow_up_tools[1]["content"])
-        self.assertEqual(
-            [
-                message["content"]
-                for message in agent.messages
-                if message.get("role") == "tool"
-            ],
-            [first_result, second_result],
-        )
-
-    def test_request_leaves_short_previous_tool_outputs_unmasked(self) -> None:
-        first_result = "short result"
         second_result = "B" * 300
 
         agent, _events = self._run_two_tool_sequence(
             first_result, second_result)
 
-        third_request_tools = self._tool_messages(
-            agent.client.seen_messages[2])
-        self.assertEqual(third_request_tools[0]["content"], first_result)
-        self.assertEqual(third_request_tools[1]["content"], second_result)
-
-    def test_request_tool_output_masking_can_be_disabled(self) -> None:
-        first_result = "A" * 300
-        second_result = "B" * 300
-        for limit in (0, -1):
-            with self.subTest(limit=limit):
-                agent, _events = self._run_two_tool_sequence(
-                    first_result,
-                    second_result,
-                    mask_limit=limit,
-                )
-
-                third_request_tools = self._tool_messages(
-                    agent.client.seen_messages[2]
-                )
-                self.assertEqual(
-                    third_request_tools[0]["content"], first_result)
-                self.assertEqual(
-                    third_request_tools[1]["content"], second_result)
+        third_request_tools = self._tool_messages(agent.client.seen_messages[2])
+        self.assertEqual(
+            [message["content"] for message in third_request_tools],
+            [first_result, second_result],
+        )
+        self.assertEqual(
+            [message["content"] for message in agent.messages if message.get("role") == "tool"],
+            [first_result, second_result],
+        )
 
     def test_set_model_updates_agent_and_client(self) -> None:
         agent = Agent(config=AppConfig(),
@@ -2898,14 +2796,28 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.builtin_tools_enabled)
         self.assertFalse(config.user_tools_enabled)
 
-    def test_from_env_reads_previous_tool_result_mask_limit(self) -> None:
+    def test_from_env_reads_compaction_settings(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS": "1234"},
+            {
+                "PYAGENT_COMPACTION": "on",
+                "PYAGENT_CONTEXT_WINDOW": "32000",
+                "PYAGENT_COMPACTION_SOFT_TOKENS": "10000",
+                "PYAGENT_COMPACTION_HARD_TOKENS": "14000",
+                "PYAGENT_COMPACTION_KEEP_RECENT_TOKENS": "4000",
+                "PYAGENT_COMPACTION_MAX_SUMMARY_TOKENS": "512",
+                "PYAGENT_COMPACTION_MODEL": "cheap-model",
+            },
         ):
             config = AppConfig.from_env()
 
-        self.assertEqual(config.max_previous_tool_result_chars, 1234)
+        self.assertTrue(config.compaction_enabled)
+        self.assertEqual(config.context_window, 32000)
+        self.assertEqual(config.compaction_soft_tokens, 10000)
+        self.assertEqual(config.compaction_hard_tokens, 14000)
+        self.assertEqual(config.compaction_keep_recent_tokens, 4000)
+        self.assertEqual(config.compaction_max_summary_tokens, 512)
+        self.assertEqual(config.compaction_model, "cheap-model")
 
 
 class ExtensionCliTests(unittest.TestCase):
@@ -5576,3 +5488,149 @@ class TestManager(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsageStreamTests(unittest.TestCase):
+    def _openai_profile(self):
+        return ModelProfile(
+            name="remote",
+            provider="openai_compatible",
+            model="gpt-4.1-mini",
+            base_url="https://example.com/v1",
+            api_key="secret",
+        )
+
+    def test_chat_completions_stream_requests_and_emits_usage(self) -> None:
+        profile = self._openai_profile()
+        usage_chunk = SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+        )
+        fake_sdk_client = FakeOpenAIClient(
+            stream=[make_chunk(content="Hello"), usage_chunk],
+        )
+        client = OpenAICompatibleClient(profile=profile)
+        client._client_factory = lambda **kwargs: fake_sdk_client
+
+        chunks = list(client.chat_stream(messages=[], tools=None))
+
+        self.assertEqual(chunks[0], {"content": "Hello"})
+        self.assertEqual(
+            chunks[-1],
+            {"usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}},
+        )
+        self.assertEqual(
+            fake_sdk_client.chat.completions.last_create["stream_options"],
+            {"include_usage": True},
+        )
+
+    def test_chat_completions_retries_without_stream_options_when_rejected(self) -> None:
+        import httpx
+
+        profile = self._openai_profile()
+        calls: list[dict] = []
+
+        class FlakyCompletions:
+            def create(self, **payload):
+                calls.append(payload)
+                if "stream_options" in payload:
+                    raise openai.APIError(
+                        "unsupported parameter stream_options",
+                        request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+                        body=None,
+                    )
+                return iter([make_chunk(content="Hello")])
+
+        fake_sdk_client = SimpleNamespace(chat=SimpleNamespace(completions=FlakyCompletions()))
+        client = OpenAICompatibleClient(profile=profile)
+        client._client_factory = lambda **kwargs: fake_sdk_client
+
+        chunks = list(client.chat_stream(messages=[], tools=None))
+
+        self.assertEqual(chunks, [{"content": "Hello"}])
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("stream_options", calls[1])
+
+    def test_responses_stream_emits_usage_from_completed_event(self) -> None:
+        profile = ModelProfile(
+            name="responses",
+            provider="openai",
+            model="gpt-4.1-mini",
+            base_url="https://api.openai.com/v1",
+            api_mode="responses",
+            api_key="secret",
+        )
+        fake_sdk_client = FakeOpenAIClient(
+            response_streams=[
+                [
+                    make_response_event(
+                        "response.completed",
+                        response=SimpleNamespace(
+                            output=[],
+                            usage=SimpleNamespace(
+                                input_tokens=123,
+                                output_tokens=7,
+                                total_tokens=130,
+                            ),
+                        ),
+                    ),
+                ]
+            ]
+        )
+        client = OpenAIResponsesClient(profile)
+        client._client_factory = lambda **kwargs: fake_sdk_client
+
+        chunks = list(client.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+        self.assertIn(
+            {"usage": {"prompt_tokens": 123, "completion_tokens": 7, "total_tokens": 130}},
+            chunks,
+        )
+
+    def test_ollama_stream_emits_usage_from_final_chunk(self) -> None:
+        profile = ModelProfile(
+            name="local",
+            provider="ollama",
+            model="llama3.1",
+            base_url="http://localhost:11434",
+        )
+        lines = [
+            '{"message": {"role": "assistant", "content": "Hi"}, "done": false}',
+            '{"message": {"role": "assistant", "content": "!"}, "done": false}',
+            '{"message": {"role": "assistant", "content": ""}, "done": true, '
+            '"prompt_eval_count": 42, "eval_count": 5}',
+        ]
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_lines(self, decode_unicode=True):
+                return iter(lines)
+
+        class FakeSession:
+            def __init__(self):
+                self.posts = []
+
+            def post(self, url, json=None, stream=None, timeout=None, headers=None):
+                self.posts.append(json)
+                return FakeResponse()
+
+            def close(self):
+                return None
+
+        client = OllamaClient(profile)
+        client.session = FakeSession()
+
+        chunks = list(client.chat_stream([{"role": "user", "content": "hi"}]))
+
+        self.assertEqual(chunks[0], {"content": "Hi"})
+        self.assertEqual(chunks[-1], {
+            "usage": {"prompt_tokens": 42, "completion_tokens": 5, "total_tokens": 47}
+        })

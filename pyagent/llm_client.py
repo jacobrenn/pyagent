@@ -109,6 +109,8 @@ class OllamaClient(BaseChatClient):
     ) -> Iterable[dict[str, Any]]:
         payload = self._payload(messages, tools, stream=True)
         collected_tool_calls: list[dict[str, Any]] = []
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
         try:
             with self.session.post(
                 self.api_url,
@@ -132,6 +134,12 @@ class OllamaClient(BaseChatClient):
                     if content:
                         yield {"content": content}
 
+                    if chunk.get("done"):
+                        if isinstance(chunk.get("prompt_eval_count"), int):
+                            prompt_tokens = chunk["prompt_eval_count"]
+                        if isinstance(chunk.get("eval_count"), int):
+                            completion_tokens = chunk["eval_count"]
+
                     tool_calls = message.get("tool_calls") or []
                     if tool_calls:
                         collected_tool_calls = _merge_tool_call_fragments(
@@ -141,6 +149,14 @@ class OllamaClient(BaseChatClient):
 
                 if collected_tool_calls:
                     yield {"tool_calls": collected_tool_calls}
+                if prompt_tokens is not None or completion_tokens is not None:
+                    prompt = prompt_tokens or 0
+                    completion = completion_tokens or 0
+                    yield {"usage": {
+                        "prompt_tokens": prompt,
+                        "completion_tokens": completion,
+                        "total_tokens": prompt + completion,
+                    }}
         except ValueError as exc:
             yield {"error": str(exc)}
         except requests.RequestException as exc:
@@ -268,14 +284,36 @@ class OpenAICompatibleClient(BaseChatClient):
             "model": self.model,
             "messages": self._prepare_messages(messages),
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             payload["tools"] = tools
 
         tool_call_fragments: dict[int, dict[str, Any]] = {}
         try:
-            stream = self._get_client().chat.completions.create(**payload)
+            try:
+                stream = self._get_client().chat.completions.create(**payload)
+            except openai.APIError as exc:
+                # Some strict OpenAI-compatible servers reject stream_options;
+                # retry once without it (usage accounting simply stays unknown).
+                if "stream_options" not in str(exc) or "stream_options" not in payload:
+                    raise
+                payload = {
+                    key: value for key, value in payload.items() if key != "stream_options"
+                }
+                stream = self._get_client().chat.completions.create(**payload)
+            usage_payload: dict[str, int] | None = None
             for chunk in stream:
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    prompt = getattr(chunk_usage, "prompt_tokens", None)
+                    completion = getattr(chunk_usage, "completion_tokens", None)
+                    total = getattr(chunk_usage, "total_tokens", None)
+                    usage_payload = {
+                        "prompt_tokens": int(prompt) if prompt is not None else 0,
+                        "completion_tokens": int(completion) if completion is not None else 0,
+                        "total_tokens": int(total) if total is not None else int(prompt or 0) + int(completion or 0),
+                    }
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -323,6 +361,8 @@ class OpenAICompatibleClient(BaseChatClient):
                         for index in sorted(tool_call_fragments)
                     ]
                 }
+            if usage_payload is not None:
+                yield {"usage": usage_payload}
         except ValueError as exc:
             yield {"error": str(exc)}
         except openai.APIError as exc:
@@ -352,8 +392,8 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
 
         Reusing raw Responses output items preserves reasoning items during a
         function-call loop without handing conversation ownership to
-        ``previous_response_id``. That keeps local history masking and context
-        extension behavior effective on every request.
+        ``previous_response_id``. That keeps local compaction behavior
+        effective on every request.
         """
         if not self._last_response_output or not messages:
             return None
@@ -544,6 +584,7 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
         output_items: dict[int, Any] = {}
         completed_output: list[Any] | None = None
         tool_call_fragments: dict[int, dict[str, Any]] = {}
+        usage_payload: dict[str, int] | None = None
 
         try:
             stream = self._get_client().responses.create(**payload)
@@ -616,6 +657,18 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
                     response = getattr(event, "response", None)
                     completed_output = list(
                         getattr(response, "output", None) or [])
+                    usage = getattr(response, "usage", None)
+                    if usage is not None:
+                        input_tokens = getattr(usage, "input_tokens", None)
+                        output_tokens = getattr(usage, "output_tokens", None)
+                        total_tokens = getattr(usage, "total_tokens", None)
+                        usage_payload = {
+                            "prompt_tokens": int(input_tokens or 0),
+                            "completion_tokens": int(output_tokens or 0),
+                            "total_tokens": int(total_tokens)
+                            if total_tokens is not None
+                            else int(input_tokens or 0) + int(output_tokens or 0),
+                        }
                     continue
 
                 if event_type == "error":
@@ -648,6 +701,8 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
             ]
             if tool_calls:
                 yield {"tool_calls": tool_calls}
+            if usage_payload is not None:
+                yield {"usage": usage_payload}
         except ValueError as exc:
             yield {"error": str(exc)}
         except openai.APIError as exc:

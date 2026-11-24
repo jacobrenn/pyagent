@@ -297,7 +297,8 @@ def handle_status(app: PyAgentApp, args: list[str]) -> bool:
         f"Current status:\n- {app._status_summary()}\n- Base URL: `{profile.base_url}`\n- Profile file: `{app.agent.profile_store.path}`\n"
         f"- Agent tool-loop max iterations: {app._max_iterations_text()}\n- Built-in tools enabled: `{app.agent.config.builtin_tools_enabled}`\n"
         f"- User-tools enabled: `{app.agent.config.user_tools_enabled}`\n- Bash enabled: `{app.agent.config.bash_enabled}`\n"
-        f"- Bash read-only: `{app.agent.config.bash_readonly_mode}`\n- Instruction context files loaded: `{len(app.agent.project_context_files)}`\n"
+        f"- Bash read-only: `{app.agent.config.bash_readonly_mode}`\n"
+        f"- Compaction: `{'on' if app.agent.config.compaction_enabled else 'off'}` (window: `{app.agent.config.context_window or 'auto'}`)\n- Instruction context files loaded: `{len(app.agent.project_context_files)}`\n"
         f"- Working directory: `{app._runtime_workspace()}`"
     )
     return True
@@ -345,6 +346,33 @@ def handle_prompt(app: PyAgentApp, args: list[str]) -> bool:
 
 def handle_context(app: PyAgentApp, args: list[str]) -> bool:
     app._add_system_note(app._context_status_text())
+    return True
+
+
+def handle_compact(app: PyAgentApp, args: list[str]) -> bool:
+    report = app.agent.compact_now()
+    parts: list[str] = []
+    if report.pruned_tool_outputs:
+        parts.append(f"pruned {report.pruned_tool_outputs} tool output(s)")
+    if report.summarized:
+        parts.append(f"summarized {report.summarized_messages} earlier messages")
+    if report.dropped_blocks:
+        parts.append(f"dropped {report.dropped_blocks} oldest block(s)")
+    if report.failure:
+        app._add_system_note(
+            f"Compaction incomplete: {report.failure}. "
+            f"History is ~{report.estimated_tokens_after:,} tokens."
+        )
+        return True
+    if not parts:
+        app._add_system_note(
+            f"Nothing to compact — history is within budget (~{report.estimated_tokens_after:,} tokens)."
+        )
+        return True
+    app._add_system_note(
+        f"Context compacted: {', '.join(parts)}. "
+        f"~{report.estimated_tokens_before:,} → ~{report.estimated_tokens_after:,} tokens."
+    )
     return True
 
 
@@ -766,6 +794,7 @@ COMMAND_REGISTRY = {
     "/history": handle_history,
     "/prompt": handle_prompt,
     "/context": handle_context,
+    "/compact": handle_compact,
     "/skills": handle_skills,
     "/reload_profiles": handle_reload_profiles,
     "/reload_context": handle_reload_context,

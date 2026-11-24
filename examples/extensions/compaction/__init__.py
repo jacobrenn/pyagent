@@ -1,4 +1,10 @@
-"""Reference extension: context compaction via a surfaced skill + tool.
+"""Reference extension: custom context compaction via a surfaced skill + tool.
+
+PyAgent ships built-in context compaction (enable with ``PYAGENT_COMPACTION=on``;
+see the README, "Context compaction"), which prunes old tool outputs and
+summarizes older history at loop boundaries. This example remains useful as a
+template for a *custom* context-management policy on top of the extension API
+(e.g. surfacing extra guidance, or delegating condensation to a dedicated tool).
 
 This extension is **deterministic**: it only decides *when* to surface
 guidance. It listens for ``turn_end`` and, once the conversation grows past a

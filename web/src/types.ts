@@ -170,6 +170,14 @@ export interface StreamEvent {
   data?: unknown;
   agent?: string;
   revision?: number;
+  estimated_tokens_before?: number;
+  estimated_tokens_after?: number;
+  pruned_tool_outputs?: number;
+  pruned_chars?: number;
+  summarized?: boolean;
+  summarized_messages?: number;
+  dropped_blocks?: number;
+  failure?: string | null;
   [key: string]: unknown;
 }
 

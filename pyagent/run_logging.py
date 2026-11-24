@@ -40,8 +40,8 @@ def runtime_metadata(agent: Any) -> dict[str, Any]:
         "tools": [item["function"]["name"] for item in agent.tools],
         "settings": {
             key: getattr(agent.config, key) for key in (
-                "max_iterations", "max_history_messages",
-                "max_previous_tool_result_chars", "tools_enabled",
+                "max_iterations", "compaction_enabled",
+                "context_window", "compaction_model", "tools_enabled",
                 "builtin_tools_enabled", "user_tools_enabled", "bash_enabled",
                 "bash_readonly_mode",
             )

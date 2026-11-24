@@ -41,8 +41,13 @@ After you receive a tool result, continue the task and provide a complete user-f
 class AppConfig:
     request_timeout: int = 300
     max_iterations: int = 10
-    max_history_messages: int = 24
-    max_previous_tool_result_chars: int = 4_000
+    compaction_enabled: bool = False
+    context_window: int = 0
+    compaction_soft_tokens: int = 0
+    compaction_hard_tokens: int = 0
+    compaction_keep_recent_tokens: int = 0
+    compaction_max_summary_tokens: int = 1024
+    compaction_model: str = ""
     stream_batch_interval: float = 0.05
     default_profile: str | None = None
     model_profiles_path: str = _default_profiles_path()
@@ -103,18 +108,43 @@ class AppConfig:
                 os.getenv("PYAGENT_MAX_ITERATIONS",
                           str(defaults.max_iterations))
             ),
-            max_history_messages=int(
+            compaction_enabled=os.getenv(
+                "PYAGENT_COMPACTION", "off").strip().lower()
+            in {"1", "true", "yes", "on"},
+            context_window=int(
                 os.getenv(
-                    "PYAGENT_MAX_HISTORY_MESSAGES",
-                    str(defaults.max_history_messages),
+                    "PYAGENT_CONTEXT_WINDOW",
+                    str(defaults.context_window),
                 )
             ),
-            max_previous_tool_result_chars=int(
+            compaction_soft_tokens=int(
                 os.getenv(
-                    "PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS",
-                    str(defaults.max_previous_tool_result_chars),
+                    "PYAGENT_COMPACTION_SOFT_TOKENS",
+                    str(defaults.compaction_soft_tokens),
                 )
             ),
+            compaction_hard_tokens=int(
+                os.getenv(
+                    "PYAGENT_COMPACTION_HARD_TOKENS",
+                    str(defaults.compaction_hard_tokens),
+                )
+            ),
+            compaction_keep_recent_tokens=int(
+                os.getenv(
+                    "PYAGENT_COMPACTION_KEEP_RECENT_TOKENS",
+                    str(defaults.compaction_keep_recent_tokens),
+                )
+            ),
+            compaction_max_summary_tokens=int(
+                os.getenv(
+                    "PYAGENT_COMPACTION_MAX_SUMMARY_TOKENS",
+                    str(defaults.compaction_max_summary_tokens),
+                )
+            ),
+            compaction_model=os.getenv(
+                "PYAGENT_COMPACTION_MODEL",
+                defaults.compaction_model,
+            ).strip(),
             stream_batch_interval=float(
                 os.getenv(
                     "PYAGENT_STREAM_BATCH_INTERVAL",

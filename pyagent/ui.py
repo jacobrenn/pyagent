@@ -654,7 +654,8 @@ class PyAgentApp(App):
             "- `/model <name>` — override the current profile's model for this session\n"
             "\n"
             "Context and prompts\n"
-            "- `/context` — show loaded user-global and project instruction sources\n"
+            "- `/context` — show loaded user-global and project instruction sources and context-window usage\n"
+            "- `/compact` — compact older conversation history now (prune tool outputs, summarize the middle)\n"
             "- `/skills list` — show available user and project skills and session load state\n"
             "- `/skills load <id-or-path>` / `/skills unload <id-or-path>` — opt a skill into or out of the system prompt for this session\n"
             "- `/prompt` — show the active system prompt\n"
@@ -698,6 +699,7 @@ class PyAgentApp(App):
             return (
                 "Loaded instruction context:\n"
                 "- No `AGENTS.md` or explicitly loaded skills are currently loaded."
+                + self._compaction_status_text()
             )
         global_paths = [
             source.label
@@ -745,6 +747,41 @@ class PyAgentApp(App):
         if not global_paths and not project_paths:
             lines.append("- Sources:")
             lines.extend(f"  - `{path}`" for path in files)
+        lines.append("")
+        lines.append(self._compaction_status_text().lstrip("\n"))
+        return "\n".join(lines)
+
+    def _compaction_status_text(self) -> str:
+        try:
+            status = self.agent.context_status()
+        except Exception:
+            return "\nContext compaction: unavailable"
+        window = status["window"]
+        window_text = f"{window:,} tokens" if window else "unknown (set PYAGENT_CONTEXT_WINDOW)"
+        lines = [
+            "\nContext window:",
+            f"- Estimated history size: `{status['estimated_tokens']:,}` tokens"
+            + (f" (provider-reported prompt: `{status['last_prompt_tokens']:,}`)" if status["last_prompt_tokens"] else ""),
+            f"- Context window: `{window_text}`",
+            f"- Compaction: `{'on' if status['enabled'] else 'off'}`"
+            + f" (soft ~{status['soft_tokens']:,}, hard ~{status['hard_tokens']:,}, keep recent ~{status['keep_recent_tokens']:,})",
+            f"- Summary model: `{status['model']}`",
+        ]
+        last = status.get("last_compaction")
+        if last:
+            details = []
+            if last.get("summarized"):
+                details.append(f"summarized {last.get('summarized_messages', 0)} messages")
+            if last.get("pruned_tool_outputs"):
+                details.append(f"pruned {last['pruned_tool_outputs']} tool outputs")
+            if last.get("dropped_blocks"):
+                details.append(f"dropped {last['dropped_blocks']} oldest block(s)")
+            if last.get("failure"):
+                details.append(f"summarizer failed: {last['failure']}")
+            lines.append(
+                f"- Last compaction: {'; '.join(details) or 'no-op'}"
+                f" ({last.get('estimated_tokens_before', 0):,} → {last.get('estimated_tokens_after', 0):,} tokens)"
+            )
         return "\n".join(lines)
 
     def _definition_command_lock_message(
@@ -796,6 +833,7 @@ class PyAgentApp(App):
             "/history",
             "/prompt",
             "/context",
+            "/compact",
             "/skills",
             "/reload_profiles",
             "/reload_context",
@@ -1794,6 +1832,24 @@ class PyAgentApp(App):
                     self._log_debug(
                         f"{event.get('label', 'event')}: {self._format_debug_data(event.get('data'))}"
                     )
+                    continue
+
+                if event_type == "compaction":
+                    self._log_debug(f"compaction: {self._format_debug_data(event)}")
+                    details = []
+                    if event.get("summarized"):
+                        details.append(f"summarized {event.get('summarized_messages', 0)} earlier messages")
+                    if event.get("pruned_tool_outputs"):
+                        details.append(f"pruned {event['pruned_tool_outputs']} tool output(s)")
+                    if event.get("dropped_blocks"):
+                        details.append(f"dropped {event['dropped_blocks']} oldest block(s) to fit the window")
+                    if event.get("failure"):
+                        details.append(f"summarizer failed: {event['failure']}")
+                    if details:
+                        self._add_system_note(
+                            "Context compacted · " + "; ".join(details)
+                            + f" (~{event.get('estimated_tokens_after', 0):,} tokens)"
+                        )
                     continue
 
                 if event_type == "assistant_start":

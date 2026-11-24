@@ -1263,7 +1263,8 @@ Recommended user directory layout:
 - `/cwd` — show current working directory
 - `/history` — show recent prompt history
 - `/history search <text>` — search saved prompt history for matching prompts
-- `/context` — show loaded instruction sources and context size
+- `/context` — show loaded instruction sources, context-window usage, and compaction status
+- `/compact` — compact older conversation history now (prune old tool outputs, then summarize the older middle; works even when `PYAGENT_COMPACTION` is off)
 - `/skills list` — show available user and project skills plus session load state
 - `/skills load <id-or-path>` — load a user or project skill into the system prompt for this session
 - `/skills unload <id-or-path>` — unload a previously loaded skill from the system prompt
@@ -1344,15 +1345,16 @@ The log format has its own `schema_version` (currently `1`). Each line includes 
 Principal record types:
 
 - `run_start`: original prompt, initial history, optional `parent_run_id`, and allowlisted runtime metadata (source, profile/provider/model/API mode, sanitized endpoint, workspace, context files, skills, extensions, tools, limits, and named-agent revision when applicable).
-- `message`: canonical user/assistant/tool messages captured as they are produced, independently of later history trimming. Tool-call IDs and full tool outputs are retained.
-- `model_request`: actual message input after context hooks and request-time masking, including the effective system prompt.
+- `message`: canonical user/assistant/tool messages captured as they are produced, independently of later context compaction. Tool-call IDs and full tool outputs are retained.
+- `model_request`: actual message input after context hooks and compaction, including the effective system prompt.
+- `compaction`: a context-compaction pass — tool outputs pruned (count/bytes), estimated tokens before/after, whether a summary was produced and how many messages it replaced, any backstop drops, or a summarizer failure.
 - `tool_call` / `tool_result`: agent execution events; extension bus events also record hooks and their results.
 - `error` / `partial_output`: failures and available partial streamed text. Raw provider debug chunks and individual tokens are not routinely written as separate records.
 - `run_end`: final canonical history, final response, outcome (`completed`, `failed`, or `cancelled`), error if any, and whether execution started. Its record timestamp is the completion time.
 
 Repeated runs on the same in-memory agent record the known previous run as `parent_run_id`; `/clear`, reset, and explicit history replacement clear that relationship. Separate API requests do not infer ancestry from matching prompts or timestamps. A parent ID may refer to an unlogged run. CLI/API runs use sources `cli`/`api`; TUI runs use `tui`, and direct Python `Agent` usage defaults to `python`.
 
-Completed checkpoints support **CLI, TUI, and opt-in API/browser conversation resumption** (see below). Final history is the current bounded agent history, while individual message records retain messages removed by trimming. A continuation creates a new run linked to the selected checkpoint; it never appends to the old file or replays historical tools. Logs do not restore provider internals, extension memory, or external filesystem state. No history database is introduced: HTTP checkpoint access uses the same read-only file-based session store, and ordinary browser conversations remain local.
+Completed checkpoints support **CLI, TUI, and opt-in API/browser conversation resumption** (see below). Final history is the compacted history at the end of the run, while individual message records retain every message as it was produced. A continuation creates a new run linked to the selected checkpoint; it never appends to the old file or replays historical tools. Logs do not restore provider internals, extension memory, or external filesystem state. No history database is introduced: HTTP checkpoint access uses the same read-only file-based session store, and ordinary browser conversations remain local.
 
 ### Reliability and privacy
 
@@ -1397,7 +1399,7 @@ The candidate is validated and initialized before replacing the current agent; a
 
 ### What is restored
 
-- **History:** only `run_end.messages`, not a concatenation of repeated model requests, initial histories, and extension events. Current history limits still apply, with a warning if additional trimming occurs. The original checkpoint is unchanged.
+- **History:** only `run_end.messages`, not a concatenation of repeated model requests, initial histories, and extension events. History is restored exactly as saved (compaction, when enabled, re-applies at the next run rather than on restore). If the checkpoint contains auto-compacted sections, a warning notes that their original detail exists only in the source run logs. The original checkpoint is unchanged.
 - **Ancestry:** the next prompt gets a fresh run ID and names the selected checkpoint as its parent. Repeated resumption creates independent branches. Missing ancestors do not prevent resuming a valid, self-contained checkpoint. Reset, `/clear`, and explicit history/context replacement clear ancestry as before.
 - **Runtime:** the recorded profile/model and resolved workspace are preferred. Credentials and endpoints come from current profile configuration, never from the log. Ad hoc runs can explicitly override profile, model, and workspace on the CLI; missing profiles/workspaces require resolution rather than silent fallback.
 - **Instructions and skills:** current system-prompt, layered `AGENTS.md`, and saved skill resources are loaded with the normal context budgets. Saved system messages are not promoted into active instructions. Missing required skills fail restoration. CLI `--skills` cannot replace saved skills during resume.
@@ -1474,6 +1476,20 @@ If logging is off/fails, the request fails, or the stream is stopped/interrupted
 
 A local fork requires confirmation and creates another conversation using the last confirmed model history, the current default ad hoc profile/model, and the saved resolved directory. Named-agent/saved tool restrictions, saved skills, and server ancestry do not carry into this explicit ordinary-chat mode. A warning about potentially completed side effects is included in both the transcript and model history. Review the filesystem and runtime settings before continuing; a failed/stopped run is not proof that no tools ran. The original imported conversation is preserved. Existing ordinary local conversations continue to send their own `messages` as before.
 
+## Context compaction
+
+PyAgent can keep long-running sessions inside the model's context window with built-in compaction. It is **off by default**; enable it with `PYAGENT_COMPACTION=on`. Removed `PYAGENT_MAX_HISTORY_MESSAGES` and `PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS` no longer exist.
+
+At the start of each tool-loop iteration, PyAgent estimates the size of the conversation (a chars-per-token estimate calibrated against provider-reported usage — OpenAI-compatible `stream_options` usage, Responses API usage, and Ollama token counts are all consumed when available). Under the soft budget nothing happens; over it, a three-stage pipeline runs:
+
+1. **Prune** — tool outputs older than the keep-recent window are replaced with a short stub (original length, tool name, first 200 characters). No model call needed; this recovers most context in tool-heavy sessions. The newest tool results are always kept intact, and tool-call/result pairs are never split.
+2. **Summarize** — if still over budget, everything except the pinned prefix (the system prompt and the first user message) and the recent window is summarized by the active model into a structured brief: goal, constraints, decisions, artifacts, findings, open items. The summary replaces the summarized span as a single marked message. Prior summaries are folded into subsequent ones, so repeated compactions stay coherent, and the marker tells the model that recent messages take precedence.
+3. **Backstop** — if history still exceeds the hard budget (for example, the summarizer failed), the oldest non-pinned blocks are dropped and an explicit marker records how many. Nothing is ever dropped silently.
+
+Compaction never calls the model mid-stream, keeps the Responses-API path unchanged, and is recorded in run logs as a `compaction` record. The TUI and browser show a one-line notice when it fires; `/context` shows the current estimate, the effective budgets, and the last compaction; `/compact` forces a pass on demand (works even when compaction is disabled by environment). Compacted history round-trips through checkpoints as ordinary messages; resume restores it as-is and warns when the checkpoint contains compacted sections.
+
+Compaction is lossy by design. If you log your runs, pre-compaction detail remains in `message` records even after the live history has been summarized away.
+
 ## Configuration reference
 
 ### Core environment variables
@@ -1485,8 +1501,13 @@ A local fork requires confirmation and creates another conversation using the la
 - `PYAGENT_SYSTEM_PROMPT_PATH` — path to the system prompt text file, overriding `~/.pyagent/system_prompt.txt`
 - `PYAGENT_REQUEST_TIMEOUT` — request timeout in seconds
 - `PYAGENT_MAX_ITERATIONS` — maximum tool loop iterations per user turn; `-1` means infinite
-- `PYAGENT_MAX_HISTORY_MESSAGES` — number of recent non-system messages to keep
-- `PYAGENT_MAX_PREVIOUS_TOOL_RESULT_CHARS` — maximum characters to send for older tool-result messages; the current trailing tool-result block is kept intact, and `0` or `-1` disables masking
+- `PYAGENT_COMPACTION` — enable built-in context compaction; default `off`; accepts `on|off`, `1|0`, `true|false`, `yes|no`
+- `PYAGENT_CONTEXT_WINDOW` — context window of the active model in tokens; `0` (default) means unknown, which selects conservative built-in budgets
+- `PYAGENT_COMPACTION_SOFT_TOKENS` — compaction is considered once estimated history passes this many tokens; `0` = auto (65% of the window, or 24k when unknown)
+- `PYAGENT_COMPACTION_HARD_TOKENS` — hard ceiling enforced by dropping oldest non-pinned blocks if the summarizer cannot keep up; `0` = auto (85% of the window, or 32k)
+- `PYAGENT_COMPACTION_KEEP_RECENT_TOKENS` — verbatim recent window that is never summarized; `0` = auto (25% of the window, or 8k)
+- `PYAGENT_COMPACTION_MAX_SUMMARY_TOKENS` — maximum tokens for each summary call (default `1024`)
+- `PYAGENT_COMPACTION_MODEL` — model to use for compaction summaries; default is the active profile's model
 - `PYAGENT_STREAM_BATCH_INTERVAL` — UI flush interval in seconds
 - `PYAGENT_USER_DIR` — root for reusable prompts, versioned agent definitions and revision history, tools, skills, extensions, logs, and user-global `AGENTS.md`; default `~/.pyagent`. It does not relocate model profiles or the active system prompt: use `PYAGENT_MODEL_PROFILES_PATH` and `PYAGENT_SYSTEM_PROMPT_PATH` for those files.
 
@@ -1663,7 +1684,7 @@ The `~/.pyagent/` layout:
 Two examples ship under [`examples/extensions/`](examples/extensions/):
 
 - **[`examples/extensions/template/`](examples/extensions/template/)** — a copy-paste starter showing an event handler (safeguard) and a one-turn skill injection.
-- **[`examples/extensions/compaction/`](examples/extensions/compaction/)** — a deterministic reference: a `turn_end` handler injects the `compaction` skill once the conversation grows past a soft threshold. The skill (`skills/compaction.md`) tells the LLM to use the `compact_context` tool (a deterministic condenser; reference script at [`examples/tools/compact_context.py`](examples/tools/compact_context.py)) to compact older context. Copy the extension package to `~/.pyagent/extensions/compaction/`, drop the tool into its `tools/` dir, then `/extension reload`.
+- **[`examples/extensions/compaction/`](examples/extensions/compaction/)** — a deterministic reference for *custom* compaction policy via an extension: a `turn_end` handler injects the `compaction` skill once the conversation grows past a soft threshold, and the `compact_context` tool (reference script at [`examples/tools/compact_context.py`](examples/tools/compact_context.py)) performs a head/tail condenser. PyAgent also ships built-in compaction (see [Context compaction](#context-compaction)), which is what most users want; this example shows how to layer your own context-management policy on top. Copy it to `~/.pyagent/extensions/compaction/`, drop the tool into its `tools/` dir, then `/extension reload`.
 
 Each example has a `__main__` self-check (`PYTHONPATH=. python examples/extensions/template/__init__.py`).
 

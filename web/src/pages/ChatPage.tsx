@@ -369,6 +369,32 @@ export function ChatPage({
       setRunStatus("Thinking…");
       return;
     }
+    if (eventData.type === "compaction") {
+      const details: string[] = [];
+      if (eventData.summarized) {
+        details.push(`summarized ${eventData.summarized_messages ?? 0} earlier messages`);
+      }
+      if (eventData.pruned_tool_outputs) {
+        details.push(`pruned ${eventData.pruned_tool_outputs} tool output(s)`);
+      }
+      if (eventData.dropped_blocks) {
+        details.push(`dropped ${eventData.dropped_blocks} oldest block(s) to fit the window`);
+      }
+      if (eventData.failure) {
+        details.push(`summarizer failed: ${eventData.failure}`);
+      }
+      const suffix =
+        typeof eventData.estimated_tokens_after === "number"
+          ? ` (~${eventData.estimated_tokens_after.toLocaleString()} tokens)`
+          : "";
+      if (details.length) {
+        updateConversation(conversationId, (conversation) => ({
+          ...conversation,
+          entries: [...conversation.entries, entry("system", `Context compacted: ${details.join("; ")}${suffix}`)],
+        }));
+      }
+      return;
+    }
     if (eventData.type === "done") {
       state.terminal = true;
       if (!state.receivedContent) {

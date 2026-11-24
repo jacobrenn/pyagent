@@ -157,11 +157,11 @@ class RunLoggingTests(unittest.TestCase):
                           0]["attributes"]["parent_run_id"])
         self.assertEqual(len(self.logs()), 3)
 
-    def test_messages_survive_history_trimming_and_tool_ids_are_preserved(self):
+    def test_messages_and_tool_ids_are_preserved_in_log(self):
         def call(n): return {"tool_calls": [
             {"id": n, "function": {"name": "echo", "arguments": {}}}]}
         agent = self.agent([[call("call-1")], [call("call-2")],
-                           [{"content": "done"}]], max_history_messages=2)
+                           [{"content": "done"}]])
         agent.tool_registry = ToolRegistry([ToolSpec(
             name="echo", description="echo", parameters={"type": "object", "properties": {}},
             handler=lambda: "full tool output",
@@ -176,7 +176,8 @@ class RunLoggingTests(unittest.TestCase):
         self.assertEqual([m["tool_calls"][0]["id"] for m in messages if m.get(
             "tool_calls")], ["call-1", "call-2"])
         self.assertEqual(messages[0], {"role": "user", "content": "use tools"})
-        self.assertGreater(len(messages), len(agent.messages))
+        self.assertEqual(
+            messages, [m for m in agent.messages if m.get("role") != "system"])
         self.assertEqual(log[-1]["attributes"]["messages"], agent.messages)
         self.assertEqual(
             len([r for r in log if r["type"] == "model_request"]), 3)

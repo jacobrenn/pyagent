@@ -19,6 +19,7 @@ from pyagent.agent_definitions import AgentDefinitionStore, build_agent_from_def
 from pyagent.config import AppConfig
 from pyagent.llm_client import OpenAICompatibleClient, OpenAIResponsesClient
 from pyagent.main import main
+from pyagent.compaction import COMPACTION_MARKER
 from pyagent.resume import restore_session
 from pyagent.session_store import SessionError, SessionStore, format_sessions, validate_messages
 from pyagent.tools import ToolRegistry, ToolSpec
@@ -170,16 +171,29 @@ class SessionTests(unittest.TestCase):
         agent.reset()
         self.assertIsNone(agent.parent_run_id)
 
-    def test_current_history_limit_applies_without_changing_source(self):
+    def test_restore_preserves_saved_history_without_trimming(self):
         source = self.saved()
         saved = self.store.load(source.run_id)
-        config = replace(AppConfig.from_env(), max_history_messages=1)
-        restored = self.restore(source.run_id, config=config)
-        self.assertLess(len(restored.agent.messages), len(saved.messages))
-        self.assertTrue(
+        restored = self.restore(source.run_id)
+        self.assertEqual(len(restored.agent.messages), len(saved.messages))
+        self.assertFalse(
             any("trimmed" in warning for warning in restored.warnings))
         self.assertEqual(self.store.load(
             source.run_id).messages, saved.messages)
+
+    def test_restore_warns_about_compacted_sections(self):
+        source = self.saved()
+
+        def add_marker(log):
+            for record in log:
+                if record.get("type") == "run_end":
+                    record["attributes"]["messages"].append(
+                        {"role": "user",
+                         "content": COMPACTION_MARKER + "\n\nprior brief"})
+        self.rewrite(source, add_marker)
+        restored = self.restore(source.run_id)
+        self.assertTrue(
+            any("auto-compacted" in warning for warning in restored.warnings))
 
     def test_tools_are_not_replayed_and_history_works_in_all_adapters(self):
         source = self.agent([

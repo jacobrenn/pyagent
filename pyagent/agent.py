@@ -8,6 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .compaction import (
+    CompactionReport,
+    calibrate_estimate,
+    estimate_messages_tokens,
+    manage_context,
+    resolve_limits,
+)
 from .config import AppConfig, SYSTEM_PROMPT
 from .extensions import Ctx, EventBus, NoOpLog
 from .mcp_runtime import McpDiscoveryResult, get_mcp_manager
@@ -123,6 +130,14 @@ class Agent:
         # re-append skills each iteration without clobbering base modifications.
         self._system_prompt_base_value: str = ""
         self._ext_ctx = Ctx(self._add_skill, self._ext_log)
+        # Context compaction state. Calibration learns the true prompt-token
+        # ratio from provider-reported usage; last_compaction feeds /context.
+        self._token_calibration = 1.0
+        self._last_prompt_tokens: int | None = None
+        self._last_usage: dict[str, int] | None = None
+        self._last_raw_estimate = 0
+        self.last_compaction: CompactionReport | None = None
+        self._compaction_client: Any = None
 
         created, path = self._ensure_system_prompt_file()
         if created:
@@ -327,6 +342,12 @@ class Agent:
             close = getattr(existing_client, "close", None)
             if callable(close):
                 close()
+        existing_compaction = getattr(self, "_compaction_client", None)
+        if existing_compaction is not None:
+            close = getattr(existing_compaction, "close", None)
+            if callable(close):
+                close()
+            self._compaction_client = None
 
         profile = self.profile_store.get(self.active_profile_name)
         if self.model_override:
@@ -389,6 +410,11 @@ class Agent:
         self.parent_run_id = None
         self._system_prompt_base_value = self._system_prompt_base()
         self.messages: list[dict[str, Any]] = []
+        self._token_calibration = 1.0
+        self._last_prompt_tokens = None
+        self._last_usage = None
+        self._last_raw_estimate = 0
+        self.last_compaction = None
         self._refresh_system_message()
 
     def load_messages(self, messages: list[dict[str, Any]] | None) -> None:
@@ -402,7 +428,6 @@ class Agent:
             if normalized is None:
                 continue
             self.messages.append(normalized)
-        self._trim_history()
 
     def _normalize_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         role = message.get("role")
@@ -442,7 +467,6 @@ class Agent:
         message = {"role": role, "content": content}
         message.update(extra)
         self._append_run_message(message)
-        self._trim_history()
 
     def _append_run_message(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
@@ -451,6 +475,120 @@ class Agent:
     def _record_run_message(self, message: dict[str, Any]) -> None:
         if self._run_log is not None:
             self._run_log.message(message)
+
+    # --- Context compaction ---
+
+    def _get_compaction_client(self) -> Any:
+        """Lazily build the client used for summarization.
+
+        Defaults to the active profile's model; ``PYAGENT_COMPACTION_MODEL``
+        overrides it with any model reachable through the same profile.
+        """
+        if self._compaction_client is None:
+            profile = self.current_profile()
+            model_override = (self.config.compaction_model or "").strip()
+            if model_override:
+                profile = replace(profile, model=model_override)
+            self._compaction_client = build_chat_client(
+                profile, timeout=self.config.request_timeout)
+        return self._compaction_client
+
+    def _compaction_complete(self, system: str, user: str) -> str:
+        client = self._get_compaction_client()
+        chunks = client.chat_stream(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            tools=None,
+        )
+        parts: list[str] = []
+        for chunk in chunks:
+            if "error" in chunk:
+                raise RuntimeError(str(chunk["error"]))
+            if "usage" in chunk:
+                continue
+            parts.append(str(chunk.get("content") or ""))
+        summary = "".join(parts).strip()
+        if not summary:
+            raise RuntimeError("compaction model returned an empty summary")
+        return summary
+
+    def _record_compaction(self, report: CompactionReport) -> None:
+        if self._run_log is not None:
+            self._run_log.record("compaction", **report.as_dict())
+
+    def _run_compaction(self, *, force: bool) -> CompactionReport:
+        limits = resolve_limits(self.config)
+        new_messages, report = manage_context(
+            self.messages,
+            limits=limits,
+            calibration=self._token_calibration,
+            complete=self._compaction_complete,
+            force=force,
+        )
+        if report.changed:
+            self.messages = new_messages
+            self.last_compaction = report
+        if report.changed or report.failure:
+            self._record_compaction(report)
+        return report
+
+    def _manage_context_step(self) -> CompactionReport | None:
+        """Compaction for the agent loop; a no-op when disabled or in budget."""
+        if not resolve_limits(self.config).enabled:
+            return None
+        report = self._run_compaction(force=False)
+        return report if (report.changed or report.failure) else None
+
+    def compact_now(self) -> CompactionReport:
+        """Force a compaction pass (``/compact``), even if disabled by config."""
+        return self._run_compaction(force=True)
+
+    def _active_model_name(self) -> str:
+        profile = getattr(getattr(self, "client", None), "profile", None)
+        model = getattr(profile, "model", None)
+        return model or "unknown"
+
+    def context_status(self) -> dict[str, Any]:
+        limits = resolve_limits(self.config)
+        estimated = estimate_messages_tokens(
+            self.messages, self._token_calibration)
+        return {
+            "enabled": limits.enabled,
+            "estimated_tokens": estimated,
+            "window": self.config.context_window or None,
+            "soft_tokens": limits.soft_tokens,
+            "hard_tokens": limits.hard_tokens,
+            "keep_recent_tokens": limits.keep_recent_tokens,
+            "max_summary_tokens": limits.max_summary_tokens,
+            "model": limits.model or self._active_model_name(),
+            "calibration": round(self._token_calibration, 2),
+            "last_prompt_tokens": self._last_prompt_tokens,
+            "last_usage": self._last_usage,
+            "last_compaction": (
+                self.last_compaction.as_dict() if self.last_compaction else None
+            ),
+        }
+
+    def _record_usage(self, usage: Any) -> None:
+        if not isinstance(usage, dict):
+            return
+        try:
+            prompt = int(usage.get("prompt_tokens") or 0)
+        except (TypeError, ValueError):
+            return
+        normalized: dict[str, int] = {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                normalized[key] = int(value)
+        if prompt > 0:
+            self._token_calibration = calibrate_estimate(
+                self._token_calibration, prompt, self._last_raw_estimate
+            )
+            self._last_prompt_tokens = prompt
+        self._last_usage = normalized
 
     # --- Extension event bus plumbing ---
 
@@ -548,128 +686,6 @@ class Agent:
             self._ext_ctx,
         )
         self._prev_model = current
-
-    def _trim_history(self) -> None:
-        max_history = self.config.max_history_messages
-        if len(self.messages) <= max_history + 1:
-            return
-
-        system_message = self.messages[0]
-        blocks: list[list[dict[str, Any]]] = []
-        index = 1
-        while index < len(self.messages):
-            message = self.messages[index]
-            role = message.get("role")
-
-            if role == "tool":
-                index += 1
-                continue
-
-            if role == "assistant" and message.get("tool_calls"):
-                block = [message]
-                index += 1
-                while index < len(self.messages) and self.messages[index].get("role") == "tool":
-                    block.append(self.messages[index])
-                    index += 1
-                blocks.append(block)
-                continue
-
-            blocks.append([message])
-            index += 1
-
-        kept_blocks: list[list[dict[str, Any]]] = []
-        kept_count = 0
-        for block in reversed(blocks):
-            block_size = len(block)
-            if kept_blocks and kept_count + block_size > max_history:
-                break
-            kept_blocks.append(block)
-            kept_count += block_size
-            if kept_count >= max_history:
-                break
-
-        trimmed_messages = [message for block in reversed(
-            kept_blocks) for message in block]
-        self.messages = [system_message, *trimmed_messages]
-
-    def _trailing_tool_result_block_indexes(self, messages: list[dict[str, Any]]) -> set[int]:
-        """Return indexes for a trailing contiguous block of tool results.
-
-        Models need freshly produced tool output intact for the immediate
-        follow-up request. When a single assistant response requested multiple
-        tools, their tool messages are contiguous, so preserve that whole
-        trailing block while it is still the newest context.
-        """
-        if not messages or messages[-1].get("role") != "tool":
-            return set()
-
-        start = len(messages) - 1
-        while start > 0 and messages[start - 1].get("role") == "tool":
-            start -= 1
-        return set(range(start, len(messages)))
-
-    def _mask_tool_result_content(self, content: str, max_chars: int) -> str:
-        """Shorten an older long tool result while keeping useful context."""
-        if max_chars <= 0 or len(content) <= max_chars:
-            return content
-
-        placeholder = (
-            "[Previous tool output masked to reduce context; "
-            f"original length {len(content)} characters.]"
-        )
-        marker_template = (
-            "\n\n... [masked {omitted} characters from previous tool output; "
-            "original length {total}] ...\n\n"
-        )
-        marker = marker_template.format(omitted=0, total=len(content))
-        budget = max_chars - len(marker)
-        if budget < 2:
-            return placeholder[:max_chars]
-
-        head_chars = max(1, budget * 2 // 3)
-        tail_chars = max(1, budget - head_chars)
-        omitted = max(0, len(content) - head_chars - tail_chars)
-        marker = marker_template.format(omitted=omitted, total=len(content))
-
-        while head_chars + tail_chars + len(marker) > max_chars and tail_chars > 1:
-            tail_chars -= 1
-        while head_chars + tail_chars + len(marker) > max_chars and head_chars > 1:
-            head_chars -= 1
-
-        masked = f"{content[:head_chars]}{marker}{content[-tail_chars:]}"
-        return masked[:max_chars]
-
-    def _mask_previous_tool_results_for_request(
-        self,
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Mask older long tool outputs in the request sent to the model.
-
-        Stored history remains untouched. A trailing contiguous tool-result
-        block stays intact so the model can consume the tool output it just
-        requested.
-        """
-        max_chars = self.config.max_previous_tool_result_chars
-        if max_chars <= 0:
-            return messages
-
-        trailing_tool_indexes = self._trailing_tool_result_block_indexes(
-            messages)
-        masked_messages: list[dict[str, Any]] | None = None
-        for index, message in enumerate(messages):
-            if message.get("role") != "tool" or index in trailing_tool_indexes:
-                continue
-
-            content = str(message.get("content", ""))
-            masked_content = self._mask_tool_result_content(content, max_chars)
-            if masked_content == content:
-                continue
-
-            if masked_messages is None:
-                masked_messages = [dict(item) for item in messages]
-            masked_messages[index]["content"] = masked_content
-
-        return masked_messages if masked_messages is not None else messages
 
     def _normalize_arguments(self, arguments: Any) -> dict[str, Any]:
         if isinstance(arguments, dict):
@@ -895,6 +911,12 @@ class Agent:
         try:
             iteration = 0
             while self.config.max_iterations < 0 or iteration < self.config.max_iterations:
+                # Compact stored history before building this iteration's
+                # request. No-op (and free) when compaction is disabled or
+                # history is within budget.
+                compaction_report = self._manage_context_step()
+                if compaction_report is not None:
+                    yield {"type": "compaction", **compaction_report.as_dict()}
                 # turn_start: add_skill here targets this turn, then we
                 # re-inject the skill suffix so it reaches this iteration's
                 # LLM request (fixes the one-turn-late race).
@@ -927,10 +949,8 @@ class Agent:
                         "messages", self.messages)
                 else:
                     request_messages = self.messages
-                request_messages = self._mask_previous_tool_results_for_request(
-                    request_messages
-                )
 
+                self._last_raw_estimate = estimate_messages_tokens(request_messages)
                 self.bus.emit("message_start", {
                               "message": {"role": "assistant"}}, ctx)
                 if self._run_log is not None:
@@ -941,6 +961,9 @@ class Agent:
                     tools=self.tools if self.config.tools_enabled else None,
                 ):
                     yield {"type": "debug", "label": "llm_chunk", "data": chunk}
+                    if "usage" in chunk:
+                        self._record_usage(chunk["usage"])
+                        continue
                     if "error" in chunk:
                         error_message = f"API Error: {chunk['error']}"
                         yield {"type": "error", "message": error_message}
@@ -968,7 +991,6 @@ class Agent:
                 if full_tool_calls:
                     assistant_message["tool_calls"] = full_tool_calls
                 self.messages.append(assistant_message)
-                self._trim_history()
 
                 # message_end: allow replacing the finalized assistant message.
                 end_event = self.bus.emit(
@@ -1073,7 +1095,6 @@ class Agent:
                         recent_tool_results.append(
                             {"name": name, "arguments": arguments, "result": result}
                         )
-                        self._trim_history()
                         yield {
                             "type": "tool_result",
                             "tool_call_id": tool_call_id,
@@ -1129,7 +1150,6 @@ class Agent:
                     iteration_tool_results.append(
                         {"name": name, "arguments": arguments, "result": result}
                     )
-                    self._trim_history()
                     yield {
                         "type": "tool_result",
                         "tool_call_id": tool_call_id,
