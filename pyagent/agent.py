@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import AppConfig, SYSTEM_PROMPT
 from .extensions import Ctx, EventBus, NoOpLog
+from .mcp_runtime import McpDiscoveryResult, get_mcp_manager
 from .external_tools import (
     DiscoveryResult,
     build_external_tool_specs,
@@ -77,18 +78,18 @@ class Agent:
         self.active_profile_name = profile or self.config.default_profile or self.profile_store.default_profile
         self.model_override = model.strip() if model else None
         self.external_tool_discovery: DiscoveryResult | None = external_tool_discovery
+        self.mcp_discovery: McpDiscoveryResult | None = None
         if tool_registry is None:
             self.external_tool_discovery = (
                 external_tool_discovery
                 if external_tool_discovery is not None
                 else self._discover_external_tools()
             )
-            registry = create_default_tool_registry(
-                self.config,
-                external_specs=self._external_specs_from_discovery(
+            self.mcp_discovery = self._discover_mcp_tools()
+            registry = self._build_tool_registry(
+                self._external_specs_from_discovery(
                     self.external_tool_discovery),
-                workspace=self.workspace,
-                restrict_workspace=self.restrict_workspace,
+                self._mcp_specs_from_discovery(self.mcp_discovery),
             )
         else:
             registry = tool_registry
@@ -154,6 +155,44 @@ class Agent:
             cwd=self.workspace,
         )
 
+    def _discover_mcp_tools(self) -> McpDiscoveryResult | None:
+        if not getattr(self.config, "mcp_enabled", True):
+            return None
+        try:
+            return get_mcp_manager().ensure_tools(
+                user_dir=self.config.user_dir,
+                connect_timeout=self.config.mcp_connect_timeout,
+            )
+        except Exception as exc:  # never break agent construction
+            return McpDiscoveryResult(
+                path="", error=f"MCP discovery failed: {exc}")
+
+    def _rediscover_mcp_tools(self) -> McpDiscoveryResult | None:
+        if not getattr(self.config, "mcp_enabled", True):
+            return None
+        try:
+            return get_mcp_manager().reload(
+                user_dir=self.config.user_dir,
+                connect_timeout=self.config.mcp_connect_timeout,
+            )
+        except Exception as exc:
+            return McpDiscoveryResult(
+                path="", error=f"MCP reload failed: {exc}")
+
+    def _mcp_specs_from_discovery(self, discovery: McpDiscoveryResult | None):
+        if discovery is None:
+            return None
+        return discovery.specs
+
+    def _build_tool_registry(self, external_specs, mcp_specs):
+        return create_default_tool_registry(
+            self.config,
+            external_specs=external_specs,
+            mcp_specs=mcp_specs,
+            workspace=self.workspace,
+            restrict_workspace=self.restrict_workspace,
+        )
+
     def _apply_tool_policy(self, registry: ToolRegistry) -> ToolRegistry:
         if self.allowed_tools is None:
             return registry
@@ -167,6 +206,23 @@ class Agent:
         is reset so the model sees a clean tool surface.
         """
         discovery = self._rebuild_external_tools()
+        self.reset()
+        return discovery
+
+    def reload_mcp_tools(self) -> McpDiscoveryResult | None:
+        """Reconnect MCP servers, rebuild the registry, reset the conversation.
+
+        Returns the fresh discovery result, or ``None`` when MCP is disabled
+        in config. Mirrors :meth:`reload_external_tools`.
+        """
+        discovery = self._rediscover_mcp_tools()
+        self.mcp_discovery = discovery
+        registry = self._build_tool_registry(
+            self._external_specs_from_discovery(self.external_tool_discovery),
+            self._mcp_specs_from_discovery(discovery),
+        )
+        self.tool_registry = self._apply_tool_policy(registry)
+        self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []
         self.reset()
         return discovery
 
@@ -425,11 +481,9 @@ class Agent:
         """
         discovery = self._discover_external_tools()
         self.external_tool_discovery = discovery
-        registry = create_default_tool_registry(
-            self.config,
-            external_specs=self._external_specs_from_discovery(discovery),
-            workspace=self.workspace,
-            restrict_workspace=self.restrict_workspace,
+        registry = self._build_tool_registry(
+            self._external_specs_from_discovery(discovery),
+            self._mcp_specs_from_discovery(self.mcp_discovery),
         )
         self.tool_registry = self._apply_tool_policy(registry)
         self.tools = self.tool_registry.definitions() if self.config.tools_enabled else []

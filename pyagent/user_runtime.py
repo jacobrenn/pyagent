@@ -59,6 +59,10 @@ def user_tools_disabled_dir(user_dir: Path | None = None) -> Path:
     return user_tools_dir(user_dir) / "disabled"
 
 
+def user_mcp_config_path(user_dir: Path | None = None) -> Path:
+    return (user_dir or resolve_user_dir()) / "mcp.json"
+
+
 def user_log_dir(user_dir: Path | None = None) -> Path:
     return (user_dir or resolve_user_dir()) / "logs"
 

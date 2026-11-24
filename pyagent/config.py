@@ -80,6 +80,9 @@ class AppConfig:
     user_tool_timeout: float = 60.0
     user_tool_describe_timeout: float = 10.0
     tool_runner: str = DEFAULT_TOOL_RUNNER
+    mcp_enabled: bool = True
+    mcp_connect_timeout: float = 15.0
+    mcp_call_timeout: float = 60.0
     logging_enabled: bool = False
     session_api_enabled: bool = False
 
@@ -179,4 +182,20 @@ class AppConfig:
                 )
             ),
             tool_runner=os.getenv(TOOL_RUNNER_ENV_VAR, defaults.tool_runner),
+            mcp_enabled=os.getenv(
+                "PYAGENT_MCP_ENABLED", str(defaults.mcp_enabled)
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
+            mcp_connect_timeout=float(
+                os.getenv(
+                    "PYAGENT_MCP_CONNECT_TIMEOUT",
+                    str(defaults.mcp_connect_timeout),
+                )
+            ),
+            mcp_call_timeout=float(
+                os.getenv(
+                    "PYAGENT_MCP_CALL_TIMEOUT",
+                    str(defaults.mcp_call_timeout),
+                )
+            ),
         )

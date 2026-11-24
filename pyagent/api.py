@@ -24,6 +24,18 @@ from .external_tools import (
     find_tool_script,
     move_tool_script,
 )
+from .mcp_config import (
+    McpConfigError,
+    default_mcp_config_path,
+    load_mcp_config,
+    redacted_server_dict,
+    remove_server,
+    server_from_dict,
+    server_to_dict,
+    set_server_enabled,
+    upsert_server,
+    validate_server_name,
+)
 from .project_context import list_available_skills
 from .resources import (
     PROMPT_KIND,
@@ -39,7 +51,7 @@ from .resources import (
     resource_dir,
 )
 from .scaffold import ScaffoldError, create_user_tool
-from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN, create_default_tool_registry
+from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN, MCP_ORIGIN, create_default_tool_registry
 from .user_runtime import resolve_user_dir, user_extensions_dir
 from .webui import ASSETS_DIR as _WEB_UI_ASSETS_DIR
 from .webui import INDEX_FILE as _WEB_UI_INDEX_FILE
@@ -336,6 +348,7 @@ class ExternalToolDisabled(BaseModel):
 class ToolCollisionResponse(BaseModel):
     name: str
     external_path: str | None = None
+    loser_origin: str | None = None
 
 
 class ToolsResponse(BaseModel):
@@ -351,6 +364,59 @@ class ToolsResponse(BaseModel):
     disabled: list[ExternalToolDisabled] = Field(default_factory=list)
     collisions: list[ToolCollisionResponse] = Field(default_factory=list)
     discovery_error: str | None = None
+    mcp: list[ToolInfo] = Field(default_factory=list)
+    mcp_error: str | None = None
+
+
+class McpServerRequest(StrictRequestModel):
+    """MCP server fields. Omitted fields are preserved on update; explicit
+    ``null`` clears them. ``env``/``headers`` replace the whole mapping."""
+
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    cwd: str | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    enabled: bool | None = None
+
+
+class McpServerCreateRequest(McpServerRequest):
+    name: str = Field(..., min_length=1, max_length=32)
+
+
+class McpServerEntry(BaseModel):
+    name: str
+    transport: str
+    enabled: bool
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    missing_env: list[str] = Field(default_factory=list)
+    status: str = "unknown"
+    tool_count: int = 0
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class McpListResponse(BaseModel):
+    enabled: bool
+    config_path: str
+    servers: list[McpServerEntry] = Field(default_factory=list)
+    error: str | None = None
+
+
+class McpTestResponse(BaseModel):
+    server: str
+    ok: bool
+    transport: str | None = None
+    latency_ms: int | None = None
+    tool_count: int = 0
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
 
 
 class CreateToolRequest(BaseModel):
@@ -1151,8 +1217,9 @@ def list_tools() -> ToolsResponse:
         if discovery is not None
         else None
     )
+    mcp_specs, mcp_error = _mcp_specs_for(config)
     registry = create_default_tool_registry(
-        config, external_specs=external_specs)
+        config, external_specs=external_specs, mcp_specs=mcp_specs)
     definitions = {
         item["function"]["name"]: item["function"]
         for item in registry.definitions()
@@ -1172,6 +1239,10 @@ def list_tools() -> ToolsResponse:
     external = [
         _tool_info_response(registry, definitions, name, EXTERNAL_ORIGIN)
         for name in sorted(registry.names_by_origin(EXTERNAL_ORIGIN))
+    ]
+    mcp_tools = [
+        _tool_info_response(registry, definitions, name, MCP_ORIGIN)
+        for name in sorted(registry.names_by_origin(MCP_ORIGIN))
     ]
     files = [
         ToolFileInfo(
@@ -1210,10 +1281,13 @@ def list_tools() -> ToolsResponse:
             ToolCollisionResponse(
                 name=collision.name,
                 external_path=collision.external_path,
+                loser_origin=getattr(collision, "loser_origin", None),
             )
             for collision in registry.collisions()
         ],
         discovery_error=discovery_error,
+        mcp=mcp_tools,
+        mcp_error=mcp_error,
     )
 
 
@@ -1261,6 +1335,215 @@ def disable_tool(name: str) -> ResourceActionResponse:
 def delete_tool(name: str) -> ResourceActionResponse:
     removed = _remove_resource_or_404(TOOL_KIND, name)
     return ResourceActionResponse(message=f"Removed tool {removed}", path=str(removed))
+
+
+# --- MCP (Model Context Protocol) management -------------------------------
+
+
+def _mcp_specs_for(config: AppConfig):
+    """Return ``(mcp_specs, error)`` for registry construction in /tools."""
+    if not getattr(config, "mcp_enabled", True):
+        return [], None
+    try:
+        from .mcp_runtime import get_mcp_manager
+
+        discovery = get_mcp_manager().ensure_tools(
+            user_dir=config.user_dir,
+            connect_timeout=config.mcp_connect_timeout,
+        )
+        if discovery.error:
+            return [], discovery.error
+        return discovery.specs, None
+    except Exception as exc:  # never break /tools because of MCP
+        return [], str(exc)
+
+
+def _mcp_status_map(config: AppConfig):
+    """Return ``(statuses_by_name, error)`` using the pooled connections."""
+    if not getattr(config, "mcp_enabled", True):
+        return {}, None
+    try:
+        from .mcp_runtime import get_mcp_manager
+
+        discovery = get_mcp_manager().ensure_tools(
+            user_dir=config.user_dir,
+            connect_timeout=config.mcp_connect_timeout,
+        )
+        return {s.name: s for s in discovery.servers}, discovery.error
+    except Exception as exc:  # pragma: no cover - defensive
+        return {}, str(exc)
+
+
+def _mcp_entry(server, status) -> McpServerEntry:
+    redacted = redacted_server_dict(server)
+    if status is not None:
+        return McpServerEntry(
+            name=server.name,
+            transport=server.transport,
+            enabled=server.enabled,
+            command=redacted.get("command"),
+            args=redacted.get("args", []),
+            env=redacted.get("env", {}),
+            cwd=redacted.get("cwd"),
+            url=redacted.get("url"),
+            headers=redacted.get("headers", {}),
+            missing_env=redacted.get("missing_env", []),
+            status=status.status,
+            tool_count=status.tool_count,
+            tools=list(status.tool_names),
+            error=status.error,
+        )
+    return McpServerEntry(
+        name=server.name,
+        transport=server.transport,
+        enabled=server.enabled,
+        command=redacted.get("command"),
+        args=redacted.get("args", []),
+        env=redacted.get("env", {}),
+        cwd=redacted.get("cwd"),
+        url=redacted.get("url"),
+        headers=redacted.get("headers", {}),
+        missing_env=redacted.get("missing_env", []),
+        status="unknown" if server.enabled else "disabled",
+    )
+
+
+def _load_mcp_or_400():
+    try:
+        return load_mcp_config()
+    except McpConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mcp", response_model=McpListResponse)
+def list_mcp_servers() -> McpListResponse:
+    config = AppConfig.from_env()
+    enabled = bool(getattr(config, "mcp_enabled", True))
+    try:
+        parsed = load_mcp_config(user_dir=config.user_dir)
+    except McpConfigError as exc:
+        return McpListResponse(
+            enabled=enabled,
+            config_path=str(default_mcp_config_path(config.user_dir)),
+            servers=[],
+            error=str(exc),
+        )
+    statuses, status_error = _mcp_status_map(config)
+    servers = [_mcp_entry(server, statuses.get(server.name)) for server in parsed.servers]
+    return McpListResponse(
+        enabled=enabled,
+        config_path=str(parsed.path),
+        servers=servers,
+        error=status_error,
+    )
+
+
+@app.post("/mcp", response_model=McpServerEntry, status_code=201)
+def create_mcp_server(request: McpServerCreateRequest) -> McpServerEntry:
+    config = AppConfig.from_env()
+    try:
+        name = validate_server_name(request.name)
+    except McpConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    parsed = _load_mcp_or_400()
+    if parsed.get(name) is not None:
+        raise HTTPException(
+            status_code=409, detail=f"MCP server {name!r} already exists.")
+    payload = request.model_dump(exclude_unset=True)
+    payload.pop("name", None)
+    payload.setdefault("enabled", True)
+    try:
+        server = server_from_dict(name, payload)
+    except McpConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    upsert_server(server, user_dir=config.user_dir)
+    return _mcp_entry(server, None)
+
+
+@app.get("/mcp/{name}", response_model=McpServerEntry)
+def get_mcp_server(name: str) -> McpServerEntry:
+    config = AppConfig.from_env()
+    parsed = _load_mcp_or_400()
+    server = parsed.get(name)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+    statuses, _ = _mcp_status_map(config)
+    return _mcp_entry(server, statuses.get(name))
+
+
+@app.put("/mcp/{name}", response_model=McpServerEntry)
+def update_mcp_server(name: str, request: McpServerRequest) -> McpServerEntry:
+    config = AppConfig.from_env()
+    try:
+        name = validate_server_name(name)
+    except McpConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    parsed = _load_mcp_or_400()
+    existing = parsed.get(name)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+    data = server_to_dict(existing)
+    for field_name in ("command", "args", "env", "cwd", "url", "headers", "enabled"):
+        if field_name in request.model_fields_set:
+            value = getattr(request, field_name)
+            if value is None:
+                data.pop(field_name, None)
+            else:
+                data[field_name] = value
+    try:
+        server = server_from_dict(name, data)
+    except McpConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    upsert_server(server, user_dir=config.user_dir, replace=True)
+    return _mcp_entry(server, None)
+
+
+@app.delete("/mcp/{name}", response_model=ResourceActionResponse)
+def delete_mcp_server(name: str) -> ResourceActionResponse:
+    config = AppConfig.from_env()
+    if not remove_server(name, user_dir=config.user_dir):
+        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+    return ResourceActionResponse(
+        message=f"Removed MCP server `{name}`.",
+        path=str(default_mcp_config_path(config.user_dir)),
+    )
+
+
+@app.post("/mcp/{name}/enable", response_model=McpServerEntry)
+def enable_mcp_server(name: str) -> McpServerEntry:
+    return _set_mcp_server_enabled(name, True)
+
+
+@app.post("/mcp/{name}/disable", response_model=McpServerEntry)
+def disable_mcp_server(name: str) -> McpServerEntry:
+    return _set_mcp_server_enabled(name, False)
+
+
+def _set_mcp_server_enabled(name: str, enabled: bool) -> McpServerEntry:
+    config = AppConfig.from_env()
+    try:
+        updated = set_server_enabled(name, enabled, user_dir=config.user_dir)
+    except McpConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+    return _mcp_entry(updated, None)
+
+
+@app.post("/mcp/{name}/test", response_model=McpTestResponse)
+def test_mcp_server_endpoint(name: str) -> McpTestResponse:
+    config = AppConfig.from_env()
+    parsed = _load_mcp_or_400()
+    if parsed.get(name) is None:
+        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+    from .mcp_runtime import get_mcp_manager
+
+    result = get_mcp_manager().test_server(
+        name,
+        user_dir=config.user_dir,
+        timeout=config.mcp_connect_timeout,
+    )
+    return McpTestResponse(**result)
 
 
 @app.get("/extensions", response_model=ExtensionsResponse)

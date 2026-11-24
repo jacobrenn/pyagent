@@ -16,7 +16,8 @@ dependencies = [
   "tabulate",
   "pydantic-core>=2.46.4",
   "openai>=2.14.0",
-  "uv"
+  "uv",
+  "mcp>=2.0"
 ]
 authors = [{name = "Jacob Renn"}]
 keywords = ["agent", "tui", "coding-assistant", "textual", "llm"]

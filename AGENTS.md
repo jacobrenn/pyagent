@@ -23,6 +23,8 @@ Core files:
 - `pyagent/agent.py` — agent loop, tool-call handling, provider switching, fallback behavior after tool results
 - `pyagent/tools.py` — tool registry plus built-in tools
 - `pyagent/external_tools.py` — discovery, schema cache, and subprocess execution for user-managed tools under `~/.pyagent/tools/`
+- `pyagent/mcp_config.py` — `~/.pyagent/mcp.json` IO, validation, `${VAR}` expansion, redaction, tool-name mangling for MCP servers
+- `pyagent/mcp_runtime.py` — pooled MCP client sessions (stdio + Streamable HTTP) bridged to sync tool handlers
 - `pyagent/scaffold.py` + `pyagent/templates/tool_template.py` — `/tools new` scaffolding
 - `pyagent/user_runtime.py` — single source of truth for `~/.pyagent/` paths and runner availability
 - `pyagent/config.py` — environment-driven runtime config and system prompt
@@ -36,7 +38,7 @@ Core files:
 - `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
 - `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`
-- `test_agent.py` + `test_run_logging.py` + `test_sessions.py` + `test_session_api.py` — unit and integration tests
+- `test_agent.py` + `test_run_logging.py` + `test_sessions.py` + `test_session_api.py` + `test_mcp.py` — unit and integration tests
 
 ## Development priorities
 
@@ -57,6 +59,18 @@ If implementing agent-facing capabilities, prefer:
 - search tools over shell grep
 - file editing tools over raw shell edits
 - config-driven behavior over hard-coded toggles
+
+### MCP (Model Context Protocol)
+
+- MCP support lives in `pyagent/mcp_config.py` (config file handling) and `pyagent/mcp_runtime.py` (pooled client sessions). Servers are configured in `~/.pyagent/mcp.json` (or `$PYAGENT_USER_DIR/mcp.json`) under the `mcpServers` key; stdio and Streamable HTTP transports are supported. Project-local MCP config is deliberately unsupported for now.
+- The MCP SDK is imported lazily inside the runtime module; config parsing and the tool registry must not depend on it. The `mcp` package is a core dependency (`mcp>=2.0`).
+- MCP servers run **untrusted code (stdio) or arbitrary endpoints (HTTP) with the user's privileges**. Never add auto-discovery of project-local config, credential forwarding, or any sandbox bypass without explicit design review.
+- MCP tools are namespaced `mcp__<server>__<tool>` (sanitized, ≤64 chars) and registered in the same `ToolRegistry` with origin `mcp`. Precedence is built-in > external > MCP; collisions are reported. Tool allowlists (agent definitions) support globs such as `mcp__github__*`.
+- Sessions are pooled process-wide and keyed by a fingerprint of the expanded config; `Agent`s share them. Connections are established lazily but eagerly at agent construction (pooled across agents). Broken servers are reported per-server and must never break agent construction or other servers.
+- `PYAGENT_MCP_ENABLED` (default on), `PYAGENT_MCP_CONNECT_TIMEOUT` (15s), `PYAGENT_MCP_CALL_TIMEOUT` (60s). `/mcp` (TUI), `pyagent mcp ...` (CLI), and the `/mcp` HTTP endpoints manage the same file; `/mcp reload` reconnects and rebuilds the registry.
+- Redaction: API/TUI output masks `env`/`headers` values and URL credentials/query strings. Never log raw MCP config values, and keep `${VAR}` indirection as the documented way to pass secrets.
+- stdio server stderr goes to `~/.pyagent/logs/mcp-<server>-<hash>.log`, never to the TUI or response stdout.
+- New MCP work should extend `test_mcp.py` (config parsing, pooling, registry integration, API/TUI surfaces) rather than adding ad hoc coverage elsewhere.
 
 ### Built-in vs user-managed tools
 
@@ -156,7 +170,7 @@ If you change that behavior:
 For any non-trivial change, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py test_session_api.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py test_session_api.py test_mcp.py
 python -m unittest -v
 ```
 
@@ -170,7 +184,7 @@ Examples:
 
 - new slash commands
 - changed slash-command output or suggestions
-- new tools or tool semantics (built-in or external)
+- new tools or tool semantics (built-in, external, or MCP)
 - new env vars (including `PYAGENT_USER_DIR`, `PYAGENT_USER_TOOLS_ENABLED`, `PYAGENT_USER_TOOL_TIMEOUT`, `PYAGENT_USER_TOOL_DESCRIBE_TIMEOUT`, `PYAGENT_TOOL_RUNNER`)
 - changed keybindings
 - project-context loading behavior or user-global skills

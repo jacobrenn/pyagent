@@ -4,7 +4,7 @@ from difflib import get_close_matches
 from .model_profiles import ModelProfile, default_base_url_for_provider
 from .external_tools import find_tool_script, move_tool_script
 from .scaffold import ScaffoldError, create_user_tool
-from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
+from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN, MCP_ORIGIN
 from .project_context import (
     GLOBAL_SCOPE,
     PROJECT_SCOPE,
@@ -96,10 +96,12 @@ def handle_tools(app: PyAgentApp, args: list[str]) -> bool:
         discovery = app.agent.reload_external_tools()
         registry = app.agent.tool_registry
         external_count = len(registry.names_by_origin(EXTERNAL_ORIGIN))
+        mcp_count = len(registry.names_by_origin(MCP_ORIGIN))
         details = [
             f"Reloaded external tools from `{app.agent.config.user_dir}/tools/`.",
             f"Built-in tools: `{len(registry.names_by_origin(BUILTIN_ORIGIN))}`",
             f"External tools registered: `{external_count}`",
+            f"MCP tools registered: `{mcp_count}`",
         ]
         if discovery is not None:
             if discovery.broken:
@@ -491,6 +493,262 @@ def handle_debug(app: PyAgentApp, args: list[str]) -> bool:
     app._add_system_note("Usage: `/debug on` or `/debug off`")
     return True
 
+def _format_mcp_summary(app: "PyAgentApp") -> str:
+    from .mcp_config import default_mcp_config_path, load_mcp_config
+
+    agent = app.agent
+    config = agent.config
+    lines = ["MCP servers:"]
+    if not getattr(config, "mcp_enabled", True):
+        lines.append("- MCP is disabled (`PYAGENT_MCP_ENABLED=off`).")
+        return "\n".join(lines)
+    try:
+        mcp_config = load_mcp_config()
+    except Exception as exc:
+        lines.append(f"- Config error: {exc}")
+        return "\n".join(lines)
+    if not mcp_config.servers:
+        lines.append(
+            "- _none configured_ — add one with `/mcp add <name> ...` or "
+            "`pyagent mcp add` (see `~/.pyagent/mcp.json`)."
+        )
+        return "\n".join(lines)
+    discovery = getattr(agent, "mcp_discovery", None)
+    if discovery is not None and discovery.error:
+        lines.append(f"- Config error: {discovery.error}")
+    status_by_name = {s.name: s for s in discovery.servers} if discovery else {}
+    registry = agent.tool_registry
+    for server in mcp_config.servers:
+        status = status_by_name.get(server.name)
+        if not server.enabled:
+            detail = "disabled"
+        elif status is None:
+            detail = "not connected"
+        elif status.status == "ok":
+            detail = f"ok — {status.tool_count} tool(s)"
+        else:
+            detail = f"error — {status.error or 'unknown error'}"
+        target = (
+            f"{server.command} {' '.join(server.args)}".strip()
+            if server.transport == "stdio"
+            else str(server.url)
+        )
+        lines.append(f"- `{server.name}` — {server.transport} — {detail}")
+        lines.append(f"  - `{target}`")
+        if status is not None and status.tool_names:
+            shown = status.tool_names[:10]
+            suffix = "" if len(status.tool_names) <= 10 else f" … +{len(status.tool_names) - 10} more"
+            lines.append("  - tools: " + ", ".join(f"`{name}`" for name in shown) + suffix)
+    mcp_count = len(registry.names_by_origin(MCP_ORIGIN))
+    lines.append("")
+    lines.append(f"MCP tools registered: `{mcp_count}`")
+    lines.append(f"Config: `{default_mcp_config_path()}`")
+    return "\n".join(lines)
+
+
+def handle_mcp(app: PyAgentApp, args: list[str]) -> bool:
+    from .mcp_config import (
+        McpConfigError,
+        remove_server,
+        set_server_enabled,
+        upsert_server,
+    )
+    from .mcp_runtime import get_mcp_manager
+
+    agent = app.agent
+    config = agent.config
+    user_dir = config.user_dir
+
+    def _reload_and_report(action: str) -> str:
+        discovery = agent.reload_mcp_tools()
+        registry = agent.tool_registry
+        mcp_count = len(registry.names_by_origin(MCP_ORIGIN))
+        parts = [f"{action}."]
+        if discovery is None:
+            parts.append("MCP is disabled (`PYAGENT_MCP_ENABLED=off`).")
+            return "\n".join(parts)
+        parts.append(f"MCP tools registered: `{mcp_count}`")
+        if discovery.error:
+            parts.append(f"Config error: {discovery.error}")
+        _ok, failed, _disabled = discovery.counts()
+        if failed:
+            parts.append(f"Servers with errors: `{failed}` (see `/mcp`)")
+        return "\n".join(parts) + "\nConversation reset so the updated tool surface takes effect."
+
+    if not args:
+        app._add_system_note(_format_mcp_summary(app))
+        return True
+
+    action = args[0].lower()
+    rest = args[1:]
+
+    if action in {"list", "status"}:
+        app._add_system_note(_format_mcp_summary(app))
+        return True
+
+    if action == "reload":
+        if rest:
+            app._add_system_note("Usage: `/mcp reload`")
+            return True
+        app._add_system_note(_reload_and_report("Reloaded MCP servers"))
+        app._set_status(app._ready_status())
+        return True
+
+    if action in {"enable", "disable"}:
+        if len(rest) != 1:
+            app._add_system_note(f"Usage: `/mcp {action} <name>`")
+            return True
+        try:
+            updated = set_server_enabled(
+                rest[0], action == "enable", user_dir=user_dir)
+        except McpConfigError as exc:
+            app._add_system_note(f"Could not update MCP config: `{exc}`")
+            return True
+        if updated is None:
+            app._add_system_note(f"No MCP server named `{rest[0]}`.")
+            return True
+        app._add_system_note(
+            _reload_and_report(f"MCP server `{updated.name}` {action}d"))
+        app._set_status(app._ready_status())
+        return True
+
+    if action == "remove":
+        if len(rest) != 1:
+            app._add_system_note("Usage: `/mcp remove <name>`")
+            return True
+        try:
+            removed = remove_server(rest[0], user_dir=user_dir)
+        except McpConfigError as exc:
+            app._add_system_note(f"Could not update MCP config: `{exc}`")
+            return True
+        if not removed:
+            app._add_system_note(f"No MCP server named `{rest[0]}`.")
+            return True
+        app._add_system_note(_reload_and_report(f"Removed MCP server `{rest[0]}`"))
+        app._set_status(app._ready_status())
+        return True
+
+    if action == "test":
+        if len(rest) != 1:
+            app._add_system_note("Usage: `/mcp test <name>`")
+            return True
+        result = get_mcp_manager().test_server(
+            rest[0], user_dir=user_dir, timeout=config.mcp_connect_timeout)
+        if result.get("ok"):
+            tools = result.get("tools", [])
+            shown = ", ".join(f"`mcp__{result['server']}__{t}`" for t in tools[:20])
+            suffix = "" if len(tools) <= 20 else f" … +{len(tools) - 20} more"
+            app._add_system_note(
+                f"MCP server `{result['server']}` OK — transport `{result.get('transport')}`, "
+                f"{result.get('tool_count', 0)} tool(s), handshake {result.get('latency_ms')} ms\n"
+                + (f"Tools: {shown}{suffix}" if shown else "No tools exposed.")
+            )
+        else:
+            app._add_system_note(
+                f"MCP server `{rest[0]}` FAILED: {result.get('error')}")
+        return True
+
+    if action == "add":
+        if not rest:
+            app._add_system_note(
+                "Usage: `/mcp add <name> (command=... [arg=...]... | url=...) [env.KEY=VAL]...`")
+            return True
+        server = _parse_mcp_add_args(rest)
+        if isinstance(server, str):
+            app._add_system_note(server)
+            return True
+        try:
+            upsert_server(server, user_dir=user_dir, replace=False)
+        except McpConfigError as exc:
+            app._add_system_note(f"Could not add MCP server: `{exc}`")
+            return True
+        app._add_system_note(
+            _reload_and_report(f"Added MCP server `{server.name}`")
+        )
+        app._set_status(app._ready_status())
+        return True
+
+    app._add_system_note(
+        "Usage: `/mcp` — list servers\n"
+        "`/mcp reload` — reconnect and rebuild the tool registry\n"
+        "`/mcp add <name> command=<cmd> [arg=...] | url=<url> [header.Name=Value]`\n"
+        "`/mcp enable|disable|remove|test <name>`"
+    )
+    return True
+
+
+def _parse_mcp_add_args(tokens: list[str]):
+    from .mcp_config import validate_server_name, McpConfigError
+
+    name = tokens[0]
+    try:
+        validate_server_name(name)
+    except McpConfigError as exc:
+        return str(exc)
+
+    command = None
+    url = None
+    args: list[str] = []
+    env: dict[str, str] = {}
+    headers: dict[str, str] = {}
+    cwd: str | None = None
+    enabled = True
+
+    for token in tokens[1:]:
+        if "=" not in token:
+            return f"Invalid option `{token}`. Expected key=value."
+        key, value = token.split("=", 1)
+        key = key.strip()
+        if not key:
+            return f"Invalid option `{token}`."
+        lowered = key.lower()
+        if lowered == "command":
+            command = value
+        elif lowered == "url":
+            url = value.strip()
+        elif lowered == "arg":
+            args.append(value)
+        elif lowered == "args":
+            args.extend(part for part in value.split(",") if part)
+        elif lowered == "cwd":
+            cwd = value
+        elif lowered in {"disabled", "enabled"}:
+            flag = _parse_bool_option(value)
+            enabled = flag if lowered == "enabled" else not flag
+        elif key.startswith("env."):
+            env[key[len("env."):]] = value
+        elif key.lower().startswith("header."):
+            headers[key[len("header."):]] = value
+        else:
+            return f"Unknown option `{key}`."
+
+    if command and url:
+        return "Specify either `command=` (stdio) or `url=` (http), not both."
+    if not command and not url:
+        return "Specify either `command=` (stdio) or `url=` (http)."
+    if url and (args or env or cwd):
+        return "`arg=`, `env.` and `cwd=` only apply to stdio servers (command=)."
+
+    from .mcp_config import server_from_dict, McpConfigError as _McpConfigError
+
+    payload: dict = {"enabled": enabled}
+    if command:
+        payload["command"] = command.strip()
+        payload["args"] = args
+        if env:
+            payload["env"] = env
+        if cwd:
+            payload["cwd"] = cwd
+    else:
+        payload["url"] = (url or "").strip()
+        if headers:
+            payload["headers"] = headers
+    try:
+        return server_from_dict(name, payload)
+    except _McpConfigError as exc:
+        return str(exc)
+
+
 # --- Registry ---
 
 
@@ -498,6 +756,7 @@ COMMAND_REGISTRY = {
     "/help": handle_help,
     "/tools": handle_tools,
     "/reload_tools": lambda app, args: handle_tools(app, ["reload"]),
+    "/mcp": handle_mcp,
     "/profiles": handle_profiles,
     "/profile": handle_profile,
     "/model": handle_model,

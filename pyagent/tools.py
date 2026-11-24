@@ -16,6 +16,7 @@ MAX_TOOL_OUTPUT_CHARS = 12_000
 
 BUILTIN_ORIGIN = "builtin"
 EXTERNAL_ORIGIN = "external"
+MCP_ORIGIN = "mcp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,7 @@ class CollisionInfo:
     name: str
     builtin_origin: str
     external_path: str | None
+    loser_origin: str = EXTERNAL_ORIGIN
 
 
 class ToolRegistry:
@@ -48,6 +50,7 @@ class ToolRegistry:
         self,
         builtin_specs: list[ToolSpec],
         external_specs: list[ToolSpec] | None = None,
+        mcp_specs: list[ToolSpec] | None = None,
     ):
         self._specs: dict[str, ToolSpec] = {}
         self._origins: dict[str, str] = {}
@@ -55,27 +58,35 @@ class ToolRegistry:
         self._collisions: list[CollisionInfo] = []
 
         for spec in builtin_specs:
-            self._specs[spec.name] = spec
-            self._origins[spec.name] = BUILTIN_ORIGIN
-            self._sources[spec.name] = None
-
+            self._add_spec(spec, BUILTIN_ORIGIN)
         for spec in external_specs or []:
-            handler = spec.handler
-            external_path = getattr(handler, "script_path", None)
-            external_path_str = str(
-                external_path) if external_path is not None else None
-            if spec.name in self._specs and self._origins[spec.name] == BUILTIN_ORIGIN:
-                self._collisions.append(
-                    CollisionInfo(
-                        name=spec.name,
-                        builtin_origin=BUILTIN_ORIGIN,
-                        external_path=external_path_str,
-                    )
+            self._add_spec(spec, EXTERNAL_ORIGIN)
+        for spec in mcp_specs or []:
+            self._add_spec(spec, MCP_ORIGIN)
+
+    @staticmethod
+    def _source_of(spec: ToolSpec) -> str | None:
+        handler = spec.handler
+        source = getattr(handler, "script_path", None)
+        if source is None:
+            source = getattr(handler, "source_ref", None)
+        return str(source) if source is not None else None
+
+    def _add_spec(self, spec: ToolSpec, origin: str) -> None:
+        source = self._source_of(spec)
+        if spec.name in self._specs:
+            self._collisions.append(
+                CollisionInfo(
+                    name=spec.name,
+                    builtin_origin=self._origins[spec.name],
+                    external_path=source,
+                    loser_origin=origin,
                 )
-                continue
-            self._specs[spec.name] = spec
-            self._origins[spec.name] = EXTERNAL_ORIGIN
-            self._sources[spec.name] = external_path_str
+            )
+            return
+        self._specs[spec.name] = spec
+        self._origins[spec.name] = origin
+        self._sources[spec.name] = source
 
     def definitions(self) -> list[dict[str, Any]]:
         return [spec.definition() for spec in self._specs.values()]
@@ -99,20 +110,34 @@ class ToolRegistry:
         return list(self._collisions)
 
     def restricted(self, allowed_names: list[str] | tuple[str, ...] | set[str]) -> "ToolRegistry":
-        """Return a registry containing only explicitly allowed tool names."""
-        allowed = set(allowed_names)
+        """Return a registry containing only explicitly allowed tool names.
+
+        Entries containing glob characters (``*``, ``?``, ``[``) match by
+        ``fnmatch`` — e.g. ``mcp__github__*`` allows every tool from the
+        ``github`` MCP server.
+        """
+        allowed = list(allowed_names)
+
+        def is_allowed(name: str) -> bool:
+            for pattern in allowed:
+                if pattern == name:
+                    return True
+                if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(name, pattern):
+                    return True
+            return False
+
         restricted = ToolRegistry(builtin_specs=[])
         restricted._specs = {
-            name: spec for name, spec in self._specs.items() if name in allowed
+            name: spec for name, spec in self._specs.items() if is_allowed(name)
         }
         restricted._origins = {
-            name: origin for name, origin in self._origins.items() if name in allowed
+            name: origin for name, origin in self._origins.items() if is_allowed(name)
         }
         restricted._sources = {
-            name: source for name, source in self._sources.items() if name in allowed
+            name: source for name, source in self._sources.items() if is_allowed(name)
         }
         restricted._collisions = [
-            collision for collision in self._collisions if collision.name in allowed
+            collision for collision in self._collisions if is_allowed(collision.name)
         ]
         return restricted
 
@@ -713,6 +738,7 @@ def create_default_tool_registry(
     config: AppConfig | None = None,
     external_specs: list[ToolSpec] | None = None,
     *,
+    mcp_specs: list[ToolSpec] | None = None,
     workspace: str | os.PathLike[str] | None = None,
     restrict_workspace: bool = False,
 ) -> ToolRegistry:
@@ -729,6 +755,7 @@ def create_default_tool_registry(
     return ToolRegistry(
         builtin_specs=builtin_specs,
         external_specs=external_specs,
+        mcp_specs=mcp_specs,
     )
 
 

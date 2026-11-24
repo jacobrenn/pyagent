@@ -9,12 +9,15 @@ import re
 import shutil
 from typing import Any
 
+import fnmatch
+
 from .config import AppConfig
 from .external_tools import (
     build_external_tool_specs,
     default_runner_command,
     discover_external_tools,
 )
+from .mcp_config import is_mcp_tool_name
 from .model_profiles import load_profile_store
 from .project_context import load_full_context, resolve_available_skill
 from .resources import PROMPT_KIND, resolve_resource
@@ -413,9 +416,32 @@ def validate_agent_definition(
             for entry in discovery.broken:
                 warnings.append(
                     f"External tool {entry.script_path.name}: {entry.error}")
+        mcp_specs = None
+        mcp_discovery_failed = False
+        if getattr(runtime_config, "mcp_enabled", True):
+            try:
+                from .mcp_runtime import get_mcp_manager
+
+                mcp_discovery = get_mcp_manager().ensure_tools(
+                    user_dir=runtime_config.user_dir,
+                    connect_timeout=runtime_config.mcp_connect_timeout,
+                )
+                if mcp_discovery.error:
+                    mcp_discovery_failed = True
+                    warnings.append(
+                        f"MCP configuration error: {mcp_discovery.error}")
+                mcp_specs = mcp_discovery.specs
+                for server in mcp_discovery.servers:
+                    if server.status == "error":
+                        warnings.append(
+                            f"MCP server {server.name!r}: {server.error}")
+            except Exception as exc:
+                mcp_discovery_failed = True
+                warnings.append(f"Could not discover MCP tools: {exc}")
         registry = create_default_tool_registry(
             runtime_config,
             external_specs=external_specs,
+            mcp_specs=mcp_specs,
             workspace=workspace,
             restrict_workspace=True,
         )
@@ -428,17 +454,49 @@ def validate_agent_definition(
             restrict_workspace=True,
         )
         available_tools = registry.names()
+        mcp_discovery_failed = True
 
     requested_tools = definition.tools
     if requested_tools is None:
         resolved_tools = available_tools if runtime_config.tools_enabled else []
     else:
-        missing_tools = [
-            name for name in requested_tools if name not in available_tools]
-        for tool_name in missing_tools:
-            errors.append(f"Unknown or disabled tool: {tool_name}")
-        resolved_tools = [
-            name for name in requested_tools if name in available_tools]
+        resolved_set: list[str] = []
+        seen: set[str] = set()
+
+        def _add(name: str) -> None:
+            if name not in seen:
+                seen.add(name)
+                resolved_set.append(name)
+
+        for pattern in requested_tools:
+            if any(ch in pattern for ch in "*?["):
+                matches = [
+                    name for name in available_tools
+                    if fnmatch.fnmatchcase(name, pattern)
+                ]
+                if matches:
+                    for name in matches:
+                        _add(name)
+                elif is_mcp_tool_name(pattern) and mcp_discovery_failed:
+                    warnings.append(
+                        f"Could not verify MCP tool pattern {pattern!r}: "
+                        "MCP discovery failed; keeping it."
+                    )
+                    _add(pattern)
+                else:
+                    errors.append(f"Unknown or disabled tool pattern: {pattern}")
+                continue
+            if pattern in available_tools:
+                _add(pattern)
+            elif is_mcp_tool_name(pattern) and mcp_discovery_failed:
+                warnings.append(
+                    f"Could not verify MCP tool {pattern!r}: "
+                    "MCP discovery failed; keeping it."
+                )
+                _add(pattern)
+            else:
+                errors.append(f"Unknown or disabled tool: {pattern}")
+        resolved_tools = resolved_set
         if requested_tools and not runtime_config.tools_enabled:
             errors.append("Tool calling is disabled by server configuration.")
     resolved["tools"] = resolved_tools

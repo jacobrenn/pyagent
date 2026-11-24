@@ -81,6 +81,7 @@ pyagent --prompt "Summarize this repository"
 - Supports **Ollama** natively and **OpenAI-compatible** providers through the OpenAI Python SDK.
 - Loads layered always-on instructions from user-global and project-local `AGENTS.md` files, with `.md` / `.skill` skills available for explicit loading.
 - Supports persistent **custom tools and skills** under `~/.pyagent/`, safe from package upgrades.
+- Speaks the **Model Context Protocol (MCP)**: any MCP server (stdio or Streamable HTTP) you configure becomes a source of first-class, model-callable tools.
 - Includes optional **single-shot CLI**, **HTTP API**, **Python client**, and **browser-hosted TUI** modes.
 
 ## Installation
@@ -290,6 +291,8 @@ pyagent agents list
 pyagent agents show reviewer
 pyagent agents validate reviewer
 ```
+
+Tool allowlists accept exact tool names and glob patterns. MCP tools are named `mcp__<server>__<tool>`, so `--tool 'mcp__github__*'` allows every tool from the `github` server. Names that cannot be resolved at validation time are reported as errors, except when MCP discovery itself fails, in which case they produce a warning instead.
 
 Updates create immutable numbered revisions. The current revision is stored as `agents/<name>.json`; historical snapshots are stored under `agents/.revisions/<name>/`.
 
@@ -504,12 +507,19 @@ Endpoints:
 - `GET /skills?cwd=/path/to/project` — list user and project skills discoverable from a cwd
 - `POST /skills/install` — install a user skill from a multipart file upload (`file`) or JSON HTTP(S) URL
 - `DELETE /skills/{name}` — remove a user-managed skill
-- `GET /tools` — list tool configuration, built-ins, installed tool files, discovered external tools, broken tools, disabled tools, and name collisions
+- `GET /tools` — list tool configuration, built-ins, installed tool files, discovered external tools, broken tools, disabled tools, name collisions, and MCP tools (`mcp` key)
 - `POST /tools/install` — install a user tool from a multipart file upload (`file`) or JSON HTTP(S) URL
 - `POST /tools/new` — scaffold a starter user tool (`{"name": "my_tool"}`)
 - `GET /tools/{name}/path` — locate an enabled or disabled user tool script
 - `POST /tools/{name}/enable` / `POST /tools/{name}/disable` — move a user tool in or out of `tools/disabled/`
 - `DELETE /tools/{name}` — remove a user-managed tool
+- `GET /mcp` — list MCP servers with redacted configuration and live connection status/tool counts
+- `POST /mcp` — add an MCP server (provide `command` for stdio or `url` for Streamable HTTP)
+- `GET /mcp/{name}` — show one server's redacted configuration and status
+- `PUT /mcp/{name}` — update a server; omitted fields are preserved, explicit `null` clears, `env`/`headers` replace the mapping
+- `DELETE /mcp/{name}` — remove a server from `~/.pyagent/mcp.json`
+- `POST /mcp/{name}/enable` / `POST /mcp/{name}/disable` — toggle a server
+- `POST /mcp/{name}/test` — connect now and report latency and exposed tools
 - `GET /extensions` — list enabled and disabled extensions on disk
 - `POST /extensions/install` — upload a single `.py` extension or zipped package, install a direct `.py`/`.zip` URL, or clone an HTTP(S) Git repository URL
 - `POST /extensions/new` — scaffold an extension (`{"name": "demo"}`) or install one from a GitHub URL (`{"name": "demo", "url": "..."}`)
@@ -834,7 +844,7 @@ Client details:
 - `PyAgentClient.run(...)` returns a typed `RunResponse` object; `stream_run(...)` yields decoded SSE events.
 - Profile helpers include `list_profiles()`, `show_profile()`, `create_profile()`, `update_profile()`, `set_default_profile()`, `remove_profile()`, and `list_profile_models()`.
 - Agent-definition helpers include `list_agents()`, `create_agent()`, `show_agent()`, `list_agent_revisions()`, `update_agent()`, `validate_agent()`, `remove_agent()`, `run_agent()`, and `stream_agent()`; `run_agent()` returns a typed `AgentRunResponse`.
-- Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_extensions()`, `install_extension(url=... | file_path=...)`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
+- Management helpers are available for prompts, skills, tools, and extensions, including `list_prompts()`, `install_prompt(url=... | file_path=...)`, `show_prompt()`, `use_prompt()`, `remove_prompt()`, `list_skills()`, `install_skill(...)`, `remove_skill()`, `list_tools()`, `install_tool(...)`, `new_tool()`, `tool_path()`, `enable_tool()`, `disable_tool()`, `remove_tool()`, `list_mcp_servers()`, `get_mcp_server(...)`, `add_mcp_server(...)`, `update_mcp_server(...)`, `delete_mcp_server(...)`, `set_mcp_server_enabled(...)`, `test_mcp_server(...)`, `list_extensions()`, `install_extension(url=... | file_path=...)`, `new_extension()`, `enable_extension()`, `disable_extension()`, and `remove_extension()`.
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, upload-file read failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 
@@ -906,10 +916,11 @@ Notes:
 
 ## Tools
 
-PyAgent has two tool layers:
+PyAgent has three tool layers:
 
 1. **Built-in tools** shipped with the package.
 2. **External user tools** under `~/.pyagent/tools/`.
+3. **MCP tools** provided by MCP servers configured in `~/.pyagent/mcp.json` — see [MCP servers](#mcp-servers).
 
 Built-in tools include:
 
@@ -1044,13 +1055,99 @@ Then run `/tools reload` in PyAgent. UV installs `huggingface_hub` and `datasets
 - Disable a tool: `/tools disable <name>` or `pyagent tools disable <tool_file>` moves it to `~/.pyagent/tools/disabled/`.
 - Re-enable a tool: `/tools enable <name>` or `pyagent tools enable <tool_file>`.
 - Locate a script: `/tools open <name>` prints its absolute path.
-- Name collisions: built-ins win when built-in tools are enabled. `/tools` reports colliding external scripts so you can rename them. If `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, those built-in names are no longer reserved and an external tool may register the same name.
+- Name collisions: precedence is built-in > external > MCP. `/tools` reports collisions from any layer. If `PYAGENT_BUILTIN_TOOLS_ENABLED=false`, built-in names are no longer reserved.
 - Broken scripts: timeout, non-zero `describe`, and malformed JSON are listed under "Broken external tools" and skipped.
 - Missing `uv`: external tools are disabled at startup with a clear banner; built-ins still work unless `PYAGENT_BUILTIN_TOOLS_ENABLED=false`.
 
 ### Trust boundary
 
 `~/.pyagent/tools/` is user-owned. PyAgent enforces wall-clock timeouts but does not otherwise sandbox these scripts. Treat any tool you install there as code you have chosen to run.
+
+## MCP servers
+
+PyAgent can connect to [Model Context Protocol](https://modelcontextprotocol.io) servers and register their tools alongside built-in and external tools. Tools from a server appear to the model as `mcp__<server>__<tool>`.
+
+Two transports are supported:
+
+- **stdio** — PyAgent spawns the server as a subprocess (`command`/`args`).
+- **Streamable HTTP** — PyAgent connects to a remote endpoint (`url`) with optional `headers`.
+
+Legacy SSE-only servers are not supported.
+
+Either transport works for servers offered both ways. GitHub, for example, publishes the official [`github/github-mcp-server`](https://github.com/github/github-mcp-server) as a Docker image for stdio and operates a hosted endpoint for Copilot (`https://api.githubcopilot.com/mcp/`, authenticated with a GitHub token); check GitHub's current documentation for exact availability and scopes. The npm package `@modelcontextprotocol/server-github` is deprecated and should not be used.
+
+### Configuring MCP servers
+
+MCP servers are configured in `~/.pyagent/mcp.json` (or `$PYAGENT_USER_DIR/mcp.json`). The format uses the de-facto standard `mcpServers` shape, so snippets from server documentation can usually be pasted in directly:
+
+```json
+{
+  "version": 1,
+  "mcpServers": {
+    "github": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"}
+    },
+    "docs": {
+      "url": "https://docs.example.com/mcp",
+      "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"},
+      "enabled": true
+    }
+  }
+}
+```
+
+- `${VAR}` references in `command`, `args`, `env` values, `cwd`, `url`, and `headers` values are expanded from the process environment at load time. An unset variable marks the server as broken (the missing variable is named in the error); values are never silently substituted.
+- Keep secrets in the environment, not in the file. API/TUI responses mask `env`/`headers` values and the credentials/query parts of URLs.
+- Servers are enabled by default. Set `"enabled": false` to keep the configuration but skip the server.
+- Configuration is user-global only; PyAgent does **not** auto-load MCP servers from the current working directory.
+- Stdio servers inherit a minimal safe environment (`PATH`, `HOME`, …) plus whatever you set in `env`.
+- Server stderr is captured to `~/.pyagent/logs/mcp-<name>-<hash>.log` instead of the terminal.
+
+An editable example ships at [`examples/mcp.example.json`](examples/mcp.example.json).
+
+### Managing MCP servers from the CLI
+
+```bash
+pyagent mcp list                      # servers and live connection status
+pyagent mcp add github --command docker --arg=run --arg=-i --arg=--rm --arg=-e --arg=GITHUB_PERSONAL_ACCESS_TOKEN --arg=ghcr.io/github/github-mcp-server --env GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_PERSONAL_ACCESS_TOKEN
+pyagent mcp add docs --url https://docs.example.com/mcp --header "Authorization: Bearer $DOCS_TOKEN"
+pyagent mcp add local-only --command python3 --arg ./server.py --disabled
+pyagent mcp test github               # connect now and report latency and tools
+pyagent mcp tools                     # list qualified tool names per server
+pyagent mcp enable github
+pyagent mcp disable github            # keep the config, stop using the server
+pyagent mcp remove github
+```
+
+`pyagent mcp list --no-connect` shows only the on-disk configuration without connecting to anything.
+
+### Managing MCP servers from the TUI
+
+```text
+/mcp                   # server status and registered MCP tools
+/mcp reload            # reconnect and rebuild the tool registry (resets the conversation)
+/mcp add github command=docker arg=run arg=-i arg=--rm arg=-e arg=GITHUB_PERSONAL_ACCESS_TOKEN arg=ghcr.io/github/github-mcp-server env.GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_PERSONAL_ACCESS_TOKEN
+/mcp add docs url=https://docs.example.com/mcp header.Authorization="Bearer $DOCS_TOKEN"
+/mcp test github       # connect now and report latency and tools
+/mcp enable github
+/mcp disable github
+/mcp remove github
+```
+
+### How MCP tools behave
+
+- Tool names are namespaced as `mcp__<server>__<tool>` and sanitized to fit model tool-name limits; collisions resolve as built-in > external > MCP, and losers are reported by `/tools`.
+- MCP tools use the same registry as built-in tools, so they honor `/tools on|off`, agent-definition tool allowlists (including glob patterns such as `mcp__github__*`), and run logging.
+- Tool results are truncated to the shared output budget; non-text content (images, audio, embedded resources) is replaced with short placeholders. Structured tool results are appended as JSON.
+- Connections are pooled per process and reused across requests and agents. Unreachable servers are reported in `/tools` and `/mcp` and never prevent PyAgent from starting; `/mcp reload` reconnects them.
+- A tool error reported by a server is surfaced to the model as `Error: ...` tool output.
+- MCP resources and prompts are not exposed as model-callable constructs yet; tools only.
+
+### MCP trust boundary
+
+An MCP server is arbitrary code (stdio) or an arbitrary remote endpoint (HTTP) running with your user's privileges. Configure only servers you trust. PyAgent passes no credentials beyond what you place in `env`/`headers` (use `${VAR}` indirection), redacts those values in API/TUI output, and cannot sandbox the server itself.
 
 ## Managing user skills, tools, and extensions from the CLI
 
@@ -1073,6 +1170,12 @@ pyagent tools list
 pyagent tools install ./my_tool.py
 pyagent tools install https://example.com/my_tool.py --name my_tool.py
 pyagent tools disable my_tool.py
+
+pyagent mcp list
+pyagent mcp add github --command docker --arg=run --arg=-i --arg=--rm --arg=-e --arg=GITHUB_PERSONAL_ACCESS_TOKEN --arg=ghcr.io/github/github-mcp-server --env GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_PERSONAL_ACCESS_TOKEN
+pyagent mcp test github
+pyagent mcp disable github
+pyagent mcp remove github
 pyagent tools enable my_tool.py
 pyagent tools remove my_tool.py
 ```
@@ -1141,6 +1244,11 @@ Recommended user directory layout:
 - `/tools enable <name>` — move a script out of `~/.pyagent/tools/disabled/`
 - `/tools disable <name>` — move a script into `~/.pyagent/tools/disabled/`
 - `/tools open <name>` — print the absolute path to a tool script
+- `/mcp` — show MCP servers, their status, and registered MCP tools
+- `/mcp reload` — reconnect MCP servers and rebuild the tool registry
+- `/mcp add <name> command=<cmd> [arg=...] | url=<url>` — add an MCP server (`env.KEY=value`, `header.Name=Value`, `cwd=`, `disabled=true`)
+- `/mcp test <name>` — connect now and report latency and tools
+- `/mcp enable <name>` / `/mcp disable <name>` / `/mcp remove <name>` — manage a server
 - `/profiles` — list saved profiles, including current/default markers and auth hints
 - `/profiles reload` — reload profiles from disk
 - `/reload_profiles` — reload profiles from disk
@@ -1397,6 +1505,12 @@ A local fork requires confirmation and creates another conversation using the la
 - `PYAGENT_TOOL_RUNNER` — executable used to run external tools; default `uv`
 
 These tool environment variables apply to the TUI, single-shot CLI mode, and agents created by the HTTP API server process.
+
+### MCP environment variables
+
+- `PYAGENT_MCP_ENABLED` — enable MCP server connections and tool registration; default `true`
+- `PYAGENT_MCP_CONNECT_TIMEOUT` — seconds to wait for an MCP server to connect and list tools; default `15`
+- `PYAGENT_MCP_CALL_TIMEOUT` — seconds to wait for an MCP tool call before returning an error to the model; default `60`
 
 ### Fallback profile environment variables
 

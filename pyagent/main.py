@@ -493,6 +493,196 @@ class _ExtensionCliAgent:
         return None
 
 
+def _handle_mcp_command(args: argparse.Namespace) -> int:
+    from .mcp_config import (
+        McpConfigError,
+        McpServerConfig,
+        default_mcp_config_path,
+        load_mcp_config,
+        remove_server,
+        set_server_enabled,
+        upsert_server,
+    )
+
+    config = AppConfig.from_env()
+
+    def _fail(message: str) -> int:
+        sys.stderr.write(f"Error: {message}\n")
+        return 2
+
+    def _load():
+        try:
+            return load_mcp_config()
+        except McpConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+
+    if args.mcp_action == "list":
+        mcp_config = _load()
+        if not mcp_config.servers:
+            print(
+                f"No MCP servers configured in {default_mcp_config_path()}.\n"
+                "Add one with: pyagent mcp add <name> --command <cmd> [--arg ...]\n"
+                "or:         pyagent mcp add <name> --url <url>"
+            )
+            return 0
+        status_by_name: dict[str, Any] = {}
+        mcp_enabled = getattr(config, "mcp_enabled", True)
+        if not mcp_enabled:
+            print("(MCP is disabled via PYAGENT_MCP_ENABLED=off; showing configuration only)")
+        if not args.no_connect and mcp_enabled:
+            from .mcp_runtime import get_mcp_manager
+
+            try:
+                discovery = get_mcp_manager().ensure_tools(
+                    user_dir=config.user_dir,
+                    connect_timeout=config.mcp_connect_timeout,
+                )
+                status_by_name = {s.name: s for s in discovery.servers}
+            except Exception as exc:
+                print(f"Warning: could not query MCP servers: {exc}", file=sys.stderr)
+        rows = []
+        for server in mcp_config.servers:
+            status = status_by_name.get(server.name)
+            if not server.enabled:
+                state, detail = "disabled", ""
+            elif status is None:
+                state, detail = "unknown", "(not connected)"
+            elif status.status == "ok":
+                state, detail = "ok", f"{status.tool_count} tool(s)"
+            else:
+                state, detail = "error", status.error or ""
+            target = (
+                f"{server.command} {' '.join(server.args)}".strip()
+                if server.transport == "stdio"
+                else (server.url or "")
+            )
+            rows.append([server.name, server.transport, state, detail, target])
+        print(tabulate(
+            rows,
+            headers=["Name", "Transport", "Status", "Tools/Error", "Target"],
+        ))
+        print(f"\nConfig: {mcp_config.path}")
+        return 0
+
+    if args.mcp_action == "add":
+        env: dict[str, str] = {}
+        for item in args.env:
+            if "=" not in item:
+                return _fail(f"--env entries must be KEY=VALUE, got {item!r}")
+            key, value = item.split("=", 1)
+            key = key.strip()
+            if not key:
+                return _fail(f"--env entry has an empty key: {item!r}")
+            env[key] = value
+        headers: dict[str, str] = {}
+        for item in args.headers:
+            if ":" not in item:
+                return _fail(f"--header entries must be 'Name: Value', got {item!r}")
+            key, value = item.split(":", 1)
+            headers[key.strip()] = value.strip()
+        command = getattr(args, "exec_command", None)
+        transport = "stdio" if command else "http"
+        if command and (args.headers):
+            return _fail("--header is only valid with --url")
+        if args.url and (args.env or args.args or args.cwd):
+            return _fail("--env/--arg/--cwd are only valid with --command")
+        try:
+            server = McpServerConfig(
+                name=args.name.strip(),
+                transport=transport,
+                enabled=not args.disabled,
+                command=command.strip() if command else None,
+                args=tuple(args.args),
+                env=env,
+                cwd=args.cwd,
+                url=args.url.strip() if args.url else None,
+                headers=headers,
+            )
+            if server.transport == "http" and not args.url.strip().lower().startswith(("http://", "https://")):
+                return _fail("--url must start with http:// or https://")
+            upsert_server(server, user_dir=config.user_dir, replace=args.force)
+        except McpConfigError as exc:
+            return _fail(str(exc))
+        state = "disabled" if args.disabled else "enabled"
+        print(f"Added MCP server `{server.name}` ({state}) in {default_mcp_config_path()}")
+        if not args.disabled:
+            print("Run `pyagent mcp test " + server.name + "` to verify it, "
+                  "or restart pyagent / run /mcp reload in the TUI.")
+        if args.test:
+            return _mcp_test(config, server.name)
+        return 0
+
+    if args.mcp_action == "remove":
+        removed = remove_server(args.name, user_dir=config.user_dir)
+        if not removed:
+            return _fail(f"No MCP server named {args.name!r}.")
+        print(f"Removed MCP server `{args.name}`.")
+        return 0
+
+    if args.mcp_action in {"enable", "disable"}:
+        enabled = args.mcp_action == "enable"
+        try:
+            updated = set_server_enabled(args.name, enabled, user_dir=config.user_dir)
+        except McpConfigError as exc:
+            return _fail(str(exc))
+        if updated is None:
+            return _fail(f"No MCP server named {args.name!r}.")
+        print(f"MCP server `{args.name}` {'enabled' if enabled else 'disabled'}.")
+        if enabled:
+            print("Run `pyagent mcp test " + args.name + "` to verify it, "
+                  "or restart pyagent / run /mcp reload in the TUI.")
+        return 0
+
+    if args.mcp_action == "test":
+        return _mcp_test(config, args.name)
+
+    if args.mcp_action == "tools":
+        from .mcp_runtime import get_mcp_manager
+
+        mcp_config = _load()
+        targets = [s for s in mcp_config.servers if args.name is None or s.name == args.name]
+        if args.name is not None and not targets:
+            return _fail(f"No MCP server named {args.name!r}.")
+        manager = get_mcp_manager()
+        exit_code = 0
+        for server in targets:
+            if not server.enabled:
+                print(f"{server.name}: disabled")
+                continue
+            result = manager.test_server(
+                server.name, user_dir=config.user_dir,
+                timeout=config.mcp_connect_timeout,
+            )
+            if not result.get("ok"):
+                print(f"{server.name}: error — {result.get('error')}")
+                exit_code = 1
+                continue
+            print(f"{server.name}: {result['tool_count']} tool(s) "
+                  f"in {result['latency_ms']} ms")
+            for tool_name in result["tools"]:
+                print(f"  - mcp__{server.name}__{tool_name}")
+        return exit_code
+
+    return _fail(f"Unknown mcp action: {args.mcp_action}")
+
+
+def _mcp_test(config: AppConfig, name: str) -> int:
+    from .mcp_runtime import get_mcp_manager
+
+    result = get_mcp_manager().test_server(
+        name, user_dir=config.user_dir, timeout=config.mcp_connect_timeout,
+    )
+    if result.get("ok"):
+        print(f"MCP server `{name}` OK — transport={result['transport']}, "
+              f"{result['tool_count']} tool(s), handshake {result['latency_ms']} ms")
+        for tool_name in result["tools"]:
+            print(f"  - mcp__{name}__{tool_name}")
+        return 0
+    print(f"MCP server `{name}` FAILED: {result.get('error')}", file=sys.stderr)
+    return 1
+
+
 def _handle_extensions_command(args: argparse.Namespace) -> None:
     from .extensions.manager import _cmd_disable, _cmd_enable, _cmd_remove
     from .extensions.loader import _discover
@@ -772,6 +962,67 @@ def main(argv: list[str] | None = None) -> None:
         help="Base directory used to resolve a relative agent workspace",
     )
 
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Manage MCP (Model Context Protocol) servers",
+    )
+    mcp_subparsers = mcp_parser.add_subparsers(
+        dest="mcp_action", required=True
+    )
+    mcp_list = mcp_subparsers.add_parser(
+        "list", help="List configured MCP servers and their status"
+    )
+    mcp_list.add_argument(
+        "--no-connect",
+        action="store_true",
+        help="Only show configured servers; do not connect to them",
+    )
+    mcp_add = mcp_subparsers.add_parser("add", help="Add an MCP server")
+    mcp_add.add_argument("name", help="Server name ([a-z0-9_-], max 32 chars)")
+    transport_group = mcp_add.add_mutually_exclusive_group(required=True)
+    transport_group.add_argument(
+        # NB: dest must not be 'command' — that collides with the top-level
+        # `dest="command"` subparsers and would overwrite args.command.
+        "--command", dest="exec_command",
+        help="Command for a stdio server (e.g. npx)")
+    transport_group.add_argument(
+        "--url", help="URL for a Streamable HTTP server")
+    mcp_add.add_argument(
+        "--arg", dest="args", action="append", default=[],
+        help="Argument for --command (repeatable; use --arg=-y for dash-prefixed values)",
+    )
+    mcp_add.add_argument(
+        "--env", dest="env", action="append", default=[], metavar="KEY=VALUE",
+        help="Environment variable for a stdio server (repeatable)",
+    )
+    mcp_add.add_argument(
+        "--header", dest="headers", action="append", default=[], metavar="NAME: VALUE",
+        help="HTTP header for an --url server (repeatable)",
+    )
+    mcp_add.add_argument("--cwd", help="Working directory for a stdio server")
+    mcp_add.add_argument(
+        "--disabled", action="store_true", help="Add the server disabled")
+    mcp_add.add_argument(
+        "--force", action="store_true", help="Overwrite an existing server with the same name")
+    mcp_add.add_argument(
+        "--test", action="store_true", help="Connect to the server after adding it")
+    mcp_remove = mcp_subparsers.add_parser(
+        "remove", help="Remove an MCP server")
+    mcp_remove.add_argument("name")
+    for _action in ("enable", "disable"):
+        _p = mcp_subparsers.add_parser(
+            _action, help=f"{_action.capitalize()} an MCP server")
+        _p.add_argument("name")
+    mcp_test = mcp_subparsers.add_parser(
+        "test", help="Connect to a server and report its tools")
+    mcp_test.add_argument("name")
+    mcp_tools = mcp_subparsers.add_parser(
+        "tools", help="List tools exposed by MCP servers")
+    mcp_tools.add_argument(
+        "name", nargs="?", default=None,
+        help="Only show tools from this server",
+    )
+
     extensions_parser = subparsers.add_parser(
         "extensions",
         help="Manage installed extensions on disk",
@@ -817,6 +1068,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "extensions":
         _handle_extensions_command(args)
         return
+
+    if args.command == "mcp":
+        sys.exit(_handle_mcp_command(args))
 
     if args.command == "profiles":
         try:

@@ -28,7 +28,7 @@ from .project_context import (
     resolve_available_skill,
 )
 from .scaffold import ScaffoldError, create_user_tool
-from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN
+from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN, MCP_ORIGIN
 from .extensions.manager import handle_extension_command
 
 if TYPE_CHECKING:
@@ -666,6 +666,10 @@ class PyAgentApp(App):
             "- `/tools` — show tool status, built-in and external tools\n"
             "- `/tools on|off` — enable or disable model tool calling for this session\n"
             "- `/tools reload` — re-scan `~/.pyagent/tools/` and rebuild the registry\n"
+            "- `/mcp` — list MCP servers and their status\n"
+            "- `/mcp reload` — reconnect MCP servers and rebuild the tool registry\n"
+            "- `/mcp add <name> command=<cmd> [arg=...] | url=<url>` — add an MCP server\n"
+            "- `/mcp test|enable|disable|remove <name>` — manage an MCP server\n"
             "- `/tools new <name>` — scaffold a starter UV-script tool in `~/.pyagent/tools/`\n"
             "- `/tools enable <name>` / `/tools disable <name>` — move a tool in or out of `tools/disabled/`\n"
             "- `/tools open <name>` — print the absolute path to a tool script\n"
@@ -898,6 +902,10 @@ class PyAgentApp(App):
             "- `/tools` — list tool status, built-in and external tools\n"
             "- `/tools on|off` — enable or disable model tool calling for this session\n"
             "- `/tools reload` — re-scan `~/.pyagent/tools/` and rebuild the registry\n"
+            "- `/mcp` — list MCP servers and their status\n"
+            "- `/mcp reload` — reconnect MCP servers and rebuild the tool registry\n"
+            "- `/mcp add <name> command=<cmd> [arg=...] | url=<url>` — add an MCP server\n"
+            "- `/mcp test|enable|disable|remove <name>` — manage an MCP server\n"
             "- `/tools new <name>` — scaffold a starter tool in `~/.pyagent/tools/<name>.py`\n"
             "- `/tools enable <name>` — move a script out of `tools/disabled/`\n"
             "- `/tools disable <name>` — move a script into `tools/disabled/`\n"
@@ -1011,11 +1019,13 @@ class PyAgentApp(App):
         registry = self.agent.tool_registry
         builtin_names = sorted(registry.names_by_origin(BUILTIN_ORIGIN))
         external_names = sorted(registry.names_by_origin(EXTERNAL_ORIGIN))
+        mcp_names = sorted(registry.names_by_origin(MCP_ORIGIN))
         lines = [
             "Tools:",
             f"- Status: `{'on' if self.agent.config.tools_enabled else 'off'}`",
             f"- Built-in tools enabled: `{self.agent.config.builtin_tools_enabled}`",
             f"- User-tools enabled: `{self.agent.config.user_tools_enabled}`",
+            f"- MCP enabled: `{getattr(self.agent.config, 'mcp_enabled', True)}`",
             f"- User dir: `{self.agent.config.user_dir}`",
             f"- Tool runner: `{self.agent.config.tool_runner}`",
         ]
@@ -1033,6 +1043,38 @@ class PyAgentApp(App):
         lines.append("External tools (`~/.pyagent/tools/`):")
         if external_names:
             for name in external_names:
+                source = registry.source(name) or ""
+                suffix = f" — `{source}`" if source else ""
+                lines.append(f"- `{name}`{suffix}")
+        else:
+            lines.append("- _none registered_")
+
+        lines.append("")
+        lines.append("MCP servers (`~/.pyagent/mcp.json`):")
+        mcp_discovery = getattr(self.agent, "mcp_discovery", None)
+        if not getattr(self.agent.config, "mcp_enabled", True):
+            lines.append("- _disabled via `PYAGENT_MCP_ENABLED=off`_")
+        elif mcp_discovery is None:
+            lines.append("- _not initialized_")
+        else:
+            if mcp_discovery.error:
+                lines.append(f"- Config error: {mcp_discovery.error}")
+            if not mcp_discovery.servers and not mcp_discovery.error:
+                lines.append("- _none configured_")
+            for server in mcp_discovery.servers:
+                if server.status == "ok":
+                    lines.append(
+                        f"- `{server.name}` — {server.transport}, {server.tool_count} tool(s)")
+                elif server.status == "disabled":
+                    lines.append(f"- `{server.name}` — _disabled_")
+                else:
+                    lines.append(
+                        f"- `{server.name}` — error: {server.error or 'unknown error'}")
+
+        lines.append("")
+        lines.append("MCP tools:")
+        if mcp_names:
+            for name in mcp_names:
                 source = registry.source(name) or ""
                 suffix = f" — `{source}`" if source else ""
                 lines.append(f"- `{name}`{suffix}")
@@ -1057,12 +1099,12 @@ class PyAgentApp(App):
         if collisions:
             lines.append("")
             lines.append(
-                "Name collisions (built-in wins; rename the external script to register it):"
+                "Name collisions (built-in > external > mcp; loser skipped):"
             )
             for collision in collisions:
-                external_path = collision.external_path or "<unknown>"
+                loser_source = collision.external_path or "<unknown>"
                 lines.append(
-                    f"- `{collision.name}` — external: `{external_path}`")
+                    f"- `{collision.name}` — winner: `{collision.builtin_origin}`, loser: `{collision.loser_origin}` ({loser_source})")
 
         return "\n".join(lines)
 
@@ -1088,10 +1130,12 @@ class PyAgentApp(App):
             discovery = self.agent.reload_external_tools()
             registry = self.agent.tool_registry
             external_count = len(registry.names_by_origin(EXTERNAL_ORIGIN))
+            mcp_count = len(registry.names_by_origin(MCP_ORIGIN))
             details = [
                 f"Reloaded external tools from `{self.agent.config.user_dir}/tools/`.",
                 f"Built-in tools: `{len(registry.names_by_origin(BUILTIN_ORIGIN))}`",
                 f"External tools registered: `{external_count}`",
+                f"MCP tools registered: `{mcp_count}`",
             ]
             if discovery is not None:
                 if discovery.broken:

@@ -775,6 +775,138 @@ class PyAgentClient:
             "tool remove",
         )
 
+    # MCP servers ---------------------------------------------------------
+
+    def list_mcp_servers(self) -> dict[str, Any]:
+        """List configured MCP servers with redacted config and live status.
+
+        Calls ``GET /mcp``. The server connects (pooled) to each enabled
+        server, so the response includes per-server status and tool counts.
+
+        Returns:
+            MCP inventory: ``enabled``, ``config_path``, and a ``servers``
+            list with redacted configuration and connection status.
+        """
+        return self._expect_dict(self._request_json("GET", "/mcp"), "mcp list")
+
+    def get_mcp_server(self, name: str) -> dict[str, Any]:
+        """Get one MCP server's redacted config and status."""
+        return self._expect_dict(
+            self._request_json("GET", self._path_with_name("/mcp", name)),
+            "mcp get",
+        )
+
+    def add_mcp_server(
+        self,
+        name: str,
+        *,
+        command: str | None = None,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Add an MCP server.
+
+        Pass ``command`` (plus optional ``args``/``env``/``cwd``) for a stdio
+        server, or ``url`` (plus optional ``headers``) for a Streamable HTTP
+        server. Values in ``env``/``headers`` may reference environment
+        variables as ``${VAR}``; they are expanded by the server at connect
+        time and are redacted in API responses.
+
+        Returns:
+            The created (redacted) server entry.
+        """
+        payload: dict[str, Any] = {"name": name, "enabled": enabled}
+        for key, value in (
+            ("command", command),
+            ("args", args),
+            ("env", env),
+            ("cwd", cwd),
+            ("url", url),
+            ("headers", headers),
+        ):
+            if value is not None:
+                payload[key] = value
+        return self._expect_dict(
+            self._request_json("POST", "/mcp", payload),
+            "mcp add",
+        )
+
+    def update_mcp_server(
+        self,
+        name: str,
+        *,
+        command: str | None = None,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+        enabled: bool | None = None,
+        clear: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Update an MCP server; omitted fields are preserved.
+
+        Args:
+            name: Server to update.
+            command/args/env/cwd/url/headers/enabled: Fields to replace.
+                ``env`` and ``headers`` replace the whole mapping.
+            clear: Field names to clear entirely (send explicit nulls), e.g.
+                ``("url", "headers")`` when switching an HTTP server to stdio.
+
+        Returns:
+            The updated (redacted) server entry.
+        """
+        payload: dict[str, Any] = {}
+        for key, value in (
+            ("command", command),
+            ("args", args),
+            ("env", env),
+            ("cwd", cwd),
+            ("url", url),
+            ("headers", headers),
+            ("enabled", enabled),
+        ):
+            if value is not None:
+                payload[key] = value
+        for key in clear:
+            payload[key] = None
+        return self._expect_dict(
+            self._request_json("PUT", self._path_with_name("/mcp", name), payload),
+            "mcp update",
+        )
+
+    def delete_mcp_server(self, name: str) -> dict[str, Any]:
+        """Delete an MCP server from the configuration."""
+        return self._expect_dict(
+            self._request_json("DELETE", self._path_with_name("/mcp", name)),
+            "mcp remove",
+        )
+
+    def set_mcp_server_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        """Enable or disable an MCP server without removing its config."""
+        action = "enable" if enabled else "disable"
+        return self._expect_dict(
+            self._request_json(
+                "POST", self._path_with_name("/mcp", name, f"/{action}"), {}),
+            f"mcp {action}",
+        )
+
+    def test_mcp_server(self, name: str) -> dict[str, Any]:
+        """Connect to an MCP server now and report latency and tools.
+
+        Returns:
+            ``{server, ok, transport?, latency_ms?, tool_count?, tools?, error?}``.
+        """
+        return self._expect_dict(
+            self._request_json(
+                "POST", self._path_with_name("/mcp", name, "/test"), {}),
+            "mcp test",
+        )
+
     # Extensions ----------------------------------------------------------
 
     def list_extensions(self) -> dict[str, Any]:
