@@ -484,7 +484,8 @@ def validate_agent_definition(
                     )
                     _add(pattern)
                 else:
-                    errors.append(f"Unknown or disabled tool pattern: {pattern}")
+                    errors.append(
+                        f"Unknown or disabled tool pattern: {pattern}")
                 continue
             if pattern in available_tools:
                 _add(pattern)

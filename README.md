@@ -236,18 +236,25 @@ Example:
 
 ### Managing profiles from the CLI
 
-You can now manage your model profiles directly from the CLI without editing the JSON file:
+You can manage your model profiles directly from the CLI without editing the JSON file. `profiles list` and `profiles show` redact secrets; `profiles models` asks the endpoint which models it exposes:
 
 ```bash
 pyagent profiles list
+pyagent profiles show my-model
 pyagent profiles create --name my-model --provider ollama --model gemma4:latest
 pyagent profiles create --name openai-responses --provider openai --model gpt-4.1-mini --api-mode responses --api-key-env OPENAI_API_KEY
+pyagent profiles update my-model --model gemma4:9b
+pyagent profiles models my-model
+pyagent profiles default my-model
+pyagent profiles remove my-model   # the default profile cannot be removed
 ```
 
 Options for `profiles create`:
 - `--base-url` / `--base_url` — endpoint base URL; defaults to the provider's standard URL
 - `--api-mode` / `--api_mode` — `chat_completions` (default) or `responses`
 - `--api-key-env` / `--api_key_env` — environment variable containing the API key
+
+`profiles update` performs a partial update: omitted fields keep their stored values (including secrets), and repeatable `--header` / `--httpx-kwargs` replace the whole map. Pass `--clear-api-key`, `--clear-api-key-env`, `--clear-headers`, or `--clear-httpx-kwargs` to remove stored values explicitly.
 
 ### Fallback profile from environment
 
@@ -322,7 +329,7 @@ pyagent agents update reviewer \
   --model google/gemma-4-31B-it:fastest
 ```
 
-The CLI currently has no `--clear-model`, `--clear-profile`, `--clear-prompt`, `--clear-workspace`, or `--inherit-max-iterations` option. Use the REST API or Python client to set those optional fields to JSON `null`. Use empty arrays or objects to clear skills, tools, capabilities, or labels.
+`agents update` also accepts clear flags for the optional fields: `--clear-description`, `--clear-profile`, `--clear-model`, `--clear-prompt`, `--clear-workspace`, `--clear-max-iterations`, `--clear-skills`, `--clear-tools`, `--clear-capabilities`, and `--clear-labels`. Use these to unset a previously set value (the REST API and Python client express the same thing by setting the field to JSON `null` or an empty array/object, as appropriate). `--tool` and `--clear-tools` cannot be combined; `--no-tools` takes precedence over `--tool`.
 
 Create and update perform structural validation before writing. Run `pyagent agents validate <name>` afterward to resolve profiles, credentials, prompts, skills, external tools, and the workspace against the current environment.
 
@@ -848,6 +855,65 @@ Client details:
 - `PyAgentClientError` is raised for HTTP errors, invalid JSON responses, connection failures, upload-file read failures, and timeouts.
 - The default base URL is `http://127.0.0.1:8000`.
 
+## Scripting the CLI
+
+Every subcommand is designed to be usable from shell scripts and CI jobs. Two
+things make that possible: a stable exit code and a documented JSON envelope.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success |
+| `1`  | Runtime failure (agent error, I/O, upstream API, missing resource) |
+| `2`  | Usage/validation error (bad arguments, invalid definition, bad profile) |
+| `130` | Interrupted (Ctrl-C) |
+
+### `--json` envelope
+
+Every command accepts `--json` (before or after the subcommand) and prints a
+single JSON envelope on stdout:
+
+```json
+{"ok": true, "command": "profiles.list", "data": {...}}
+```
+
+On failure the envelope carries either an `error` object, or a `data` payload
+with details when the command ran but reported failure (for example
+`agents validate` on an invalid definition):
+
+```json
+{"ok": false, "command": "prompts.show", "error": {"code": "not_found", "message": "..."}}
+```
+
+`ok` is `true` if and only if the process exit code is `0`. `error.code` is a
+stable snake_case identifier; `error.message` is human-readable and may
+change between releases. Human-readable output and errors stay on their
+respective streams: results on stdout, diagnostics on stderr. Long-running
+commands (`serve`, `web`) do not emit the envelope.
+
+```bash
+pyagent agents validate reviewer --json | jq -e '.data.valid' >/dev/null \
+  && echo "definition OK" || echo "definition invalid"
+```
+
+### Streaming
+
+Single-shot runs also support `--stream`. In human mode, assistant tokens are
+printed as they arrive. With `--json --stream`, the command prints newline-delimited
+JSON events (`content_delta`, `assistant_done`, `tool_call`, `tool_result`,
+`compaction`, and a terminal `done` event carrying the same summary object a
+non-streaming `--json` run would print). On failure the stream ends with an
+`error` event followed by a terminal `{"ok": false, ...}` envelope:
+
+```bash
+pyagent --profile my-model --prompt "Summarize README.md" --stream --json \
+  | jq -c 'select(.event.type == "content_delta") | .event.delta'
+```
+
+Add `--with-messages` to include the full message history in the final
+summary payload.
+
 ## Instructions, skills, and project context
 
 PyAgent layers always-on instruction files into the active system prompt and keeps skills discoverable for explicit loading or discovery by the agent.
@@ -1111,9 +1177,11 @@ An editable example ships at [`examples/mcp.example.json`](examples/mcp.example.
 
 ```bash
 pyagent mcp list                      # servers and live connection status
+pyagent mcp show github               # one server (secrets redacted)
 pyagent mcp add github --command docker --arg=run --arg=-i --arg=--rm --arg=-e --arg=GITHUB_PERSONAL_ACCESS_TOKEN --arg=ghcr.io/github/github-mcp-server --env GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_PERSONAL_ACCESS_TOKEN
 pyagent mcp add docs --url https://docs.example.com/mcp --header "Authorization: Bearer $DOCS_TOKEN"
 pyagent mcp add local-only --command python3 --arg ./server.py --disabled
+pyagent mcp update github --arg=--verbose --enable   # partial update; unspecified fields keep their values
 pyagent mcp test github               # connect now and report latency and tools
 pyagent mcp tools                     # list qualified tool names per server
 pyagent mcp enable github
@@ -1121,7 +1189,7 @@ pyagent mcp disable github            # keep the config, stop using the server
 pyagent mcp remove github
 ```
 
-`pyagent mcp list --no-connect` shows only the on-disk configuration without connecting to anything.
+`pyagent mcp list --no-connect` shows only the on-disk configuration without connecting to anything. `pyagent mcp update` accepts `--clear-cwd`, `--clear-args`, `--clear-env`, and `--clear-headers` to drop values, and `--enable`/`--disable` to flip the server on or off.
 
 ### Managing MCP servers from the TUI
 

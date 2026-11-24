@@ -1,4 +1,10 @@
 from __future__ import annotations
+from pyagent.compaction import COMPACTION_MARKER
+from test_run_logging import FakeClient, records
+from pyagent.ui import PyAgentApp
+from pyagent.tools import ToolRegistry, ToolSpec
+from pyagent.session_store import SessionError, SessionStore, format_sessions, validate_messages
+from pyagent.resume import restore_session
 
 import asyncio
 import contextlib
@@ -18,13 +24,15 @@ from pyagent.agent import Agent
 from pyagent.agent_definitions import AgentDefinitionStore, build_agent_from_definition
 from pyagent.config import AppConfig
 from pyagent.llm_client import OpenAICompatibleClient, OpenAIResponsesClient
-from pyagent.main import main
-from pyagent.compaction import COMPACTION_MARKER
-from pyagent.resume import restore_session
-from pyagent.session_store import SessionError, SessionStore, format_sessions, validate_messages
-from pyagent.tools import ToolRegistry, ToolSpec
-from pyagent.ui import PyAgentApp
-from test_run_logging import FakeClient, records
+from pyagent.main import main as _main
+
+
+def main(argv=None):
+    try:
+        _main(argv)
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            raise
 
 
 class SessionTests(unittest.TestCase):
@@ -467,9 +475,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            main(["sessions", "show", source.run_id])
+            main(["sessions", "show", source.run_id, "--json"])
         self.assertEqual(json.loads(stdout.getvalue())
-                         ["messages"], source.messages)
+                         ["data"]["messages"], source.messages)
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             main(["resume", source.run_id, "--prompt", "continue"])

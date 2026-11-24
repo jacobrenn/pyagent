@@ -307,7 +307,8 @@ class OpenAICompatibleClient(BaseChatClient):
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage is not None:
                     prompt = getattr(chunk_usage, "prompt_tokens", None)
-                    completion = getattr(chunk_usage, "completion_tokens", None)
+                    completion = getattr(
+                        chunk_usage, "completion_tokens", None)
                     total = getattr(chunk_usage, "total_tokens", None)
                     usage_payload = {
                         "prompt_tokens": int(prompt) if prompt is not None else 0,

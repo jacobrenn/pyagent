@@ -1712,8 +1712,10 @@ class MainCliTests(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, {"pyagent.ui": fake_ui_module}, clear=False):
             with mock.patch("sys.argv", ["pyagent"]):
-                main_entry()
+                with self.assertRaises(SystemExit) as cm:
+                    main_entry()
 
+        self.assertEqual(cm.exception.code, 0)
         fake_ui_module.PyAgentApp.assert_called_once()
         mock_app_instance.run.assert_called_once()
         mock_app_instance.agent.close.assert_called_once_with(
@@ -1733,18 +1735,20 @@ class MainCliTests(unittest.TestCase):
         ) as mock_build, mock.patch.dict(
             sys.modules, {"pyagent.ui": fake_ui_module}, clear=False
         ):
-            main_entry(
-                [
-                    "agents",
-                    "chat",
-                    "reviewer",
-                    "--revision",
-                    "3",
-                    "--cwd",
-                    "/tmp/project",
-                ]
-            )
+            with self.assertRaises(SystemExit) as cm:
+                main_entry(
+                    [
+                        "agents",
+                        "chat",
+                        "reviewer",
+                        "--revision",
+                        "3",
+                        "--cwd",
+                        "/tmp/project",
+                    ]
+                )
 
+        self.assertEqual(cm.exception.code, 0)
         mock_build.assert_called_once_with(
             "reviewer", revision=3, cwd="/tmp/project"
         )
@@ -1807,7 +1811,9 @@ class MainCliTests(unittest.TestCase):
         fake_api_module = SimpleNamespace(
             create_app=mock.Mock(return_value="app-instance"))
         with mock.patch.dict(sys.modules, {"uvicorn": fake_uvicorn, "pyagent.api": fake_api_module}, clear=False):
-            main_entry(["serve", "--host", "0.0.0.0", "--port", "9000"])
+            with self.assertRaises(SystemExit) as cm:
+                main_entry(["serve", "--host", "0.0.0.0", "--port", "9000"])
+            self.assertEqual(cm.exception.code, 0)
 
         fake_api_module.create_app.assert_called_once_with()
         fake_uvicorn.run.assert_called_once_with(
@@ -1838,19 +1844,21 @@ class MainCliTests(unittest.TestCase):
             {"textual_serve.server": fake_textual_serve_module},
             clear=False,
         ):
-            main_entry(
-                [
-                    "web",
-                    "--host",
-                    "0.0.0.0",
-                    "--port",
-                    "9001",
-                    "--profile",
-                    "local-qwen",
-                    "--model",
-                    "qwen2.5-coder:7b",
-                ]
-            )
+            with self.assertRaises(SystemExit) as cm:
+                main_entry(
+                    [
+                        "web",
+                        "--host",
+                        "0.0.0.0",
+                        "--port",
+                        "9001",
+                        "--profile",
+                        "local-qwen",
+                        "--model",
+                        "qwen2.5-coder:7b",
+                    ]
+                )
+            self.assertEqual(cm.exception.code, 0)
 
         fake_server_class.assert_called_once_with(
             command="python -m pyagent --profile local-qwen --model qwen2.5-coder:7b",
@@ -1911,32 +1919,38 @@ class MainCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": temp_dir}):
                 with mock.patch("sys.stdout"):
-                    main_entry(
-                        [
-                            "agents",
-                            "create",
-                            "reviewer",
-                            "--description",
-                            "Reviews code",
-                            "--tool",
-                            "read_file",
-                            "--label",
-                            "team=engineering",
-                        ]
-                    )
-                    main_entry(
-                        [
-                            "agents",
-                            "update",
-                            "reviewer",
-                            "--description",
-                            "Reviews Python code",
-                        ]
-                    )
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(
+                            [
+                                "agents",
+                                "create",
+                                "reviewer",
+                                "--description",
+                                "Reviews code",
+                                "--tool",
+                                "read_file",
+                                "--label",
+                                "team=engineering",
+                            ]
+                        )
+                    self.assertEqual(cm.exception.code, 0)
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(
+                            [
+                                "agents",
+                                "update",
+                                "reviewer",
+                                "--description",
+                                "Reviews Python code",
+                            ]
+                        )
+                    self.assertEqual(cm.exception.code, 0)
 
                 with mock.patch("sys.stdout") as mock_stdout:
-                    main_entry(
-                        ["agents", "show", "reviewer", "--revision", "1"])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(
+                            ["agents", "show", "reviewer", "--revision", "1"])
+                    self.assertEqual(cm.exception.code, 0)
                 shown = "".join(
                     str(call.args[0]) for call in mock_stdout.write.call_args_list
                 )
@@ -1944,7 +1958,9 @@ class MainCliTests(unittest.TestCase):
                 self.assertIn("Reviews code", shown)
 
                 with mock.patch("sys.stdout") as mock_stdout:
-                    main_entry(["agents", "list"])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["agents", "list"])
+                    self.assertEqual(cm.exception.code, 0)
                 listed = "".join(
                     str(call.args[0]) for call in mock_stdout.write.call_args_list
                 )
@@ -1952,7 +1968,9 @@ class MainCliTests(unittest.TestCase):
                 self.assertIn("2", listed)
 
                 with mock.patch("sys.stdout"):
-                    main_entry(["agents", "remove", "reviewer"])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["agents", "remove", "reviewer"])
+                    self.assertEqual(cm.exception.code, 0)
                 self.assertFalse(
                     (Path(temp_dir) / "agents" / "reviewer.json").exists()
                 )
@@ -1972,13 +1990,17 @@ class MainCliTests(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, env):
                 with mock.patch("sys.stdout"):
-                    main_entry(["prompts", "install", str(source)])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["prompts", "install", str(source)])
+                    self.assertEqual(cm.exception.code, 0)
 
                 installed = user_dir / "system_prompts" / "coder.md"
                 self.assertTrue(installed.is_file())
 
                 with mock.patch("sys.stdout") as mock_stdout:
-                    main_entry(["prompts", "list"])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["prompts", "list"])
+                    self.assertEqual(cm.exception.code, 0)
                 listed = "".join(
                     call.args[0] for call in mock_stdout.write.call_args_list
                 )
@@ -1986,13 +2008,19 @@ class MainCliTests(unittest.TestCase):
                 self.assertIn("- coder.md", listed)
 
                 with mock.patch("sys.stdout") as mock_stdout:
-                    main_entry(["prompts", "show", "coder"])
-                mock_stdout.write.assert_called_once_with(
-                    "Coder prompt\nUse concise answers."
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["prompts", "show", "coder"])
+                    self.assertEqual(cm.exception.code, 0)
+                written = "".join(
+                    call.args[0] for call in mock_stdout.write.call_args_list
                 )
+                self.assertEqual(
+                    written, "Coder prompt\nUse concise answers.\n")
 
                 with mock.patch("sys.stdout"):
-                    main_entry(["prompts", "use", "coder"])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["prompts", "use", "coder"])
+                    self.assertEqual(cm.exception.code, 0)
                 self.assertTrue(installed.is_file())
                 self.assertEqual(
                     active_prompt.read_text(encoding="utf-8"),
@@ -2000,7 +2028,9 @@ class MainCliTests(unittest.TestCase):
                 )
 
                 with mock.patch("sys.stdout"):
-                    main_entry(["prompts", "remove", "coder"])
+                    with self.assertRaises(SystemExit) as cm:
+                        main_entry(["prompts", "remove", "coder"])
+                    self.assertEqual(cm.exception.code, 0)
                 self.assertFalse(installed.exists())
 
     def test_prompts_show_missing_exits_with_error(self) -> None:
@@ -2010,7 +2040,7 @@ class MainCliTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as cm:
                         main_entry(["prompts", "show", "missing"])
 
-        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(cm.exception.code, 1)
         mock_stderr.write.assert_called()
 
 # ... (remaining file) ...
@@ -2324,13 +2354,15 @@ class AgentTests(unittest.TestCase):
         agent, _events = self._run_two_tool_sequence(
             first_result, second_result)
 
-        third_request_tools = self._tool_messages(agent.client.seen_messages[2])
+        third_request_tools = self._tool_messages(
+            agent.client.seen_messages[2])
         self.assertEqual(
             [message["content"] for message in third_request_tools],
             [first_result, second_result],
         )
         self.assertEqual(
-            [message["content"] for message in agent.messages if message.get("role") == "tool"],
+            [message["content"]
+                for message in agent.messages if message.get("role") == "tool"],
             [first_result, second_result],
         )
 
@@ -2825,7 +2857,11 @@ class ExtensionCliTests(unittest.TestCase):
         output = io.StringIO()
         with mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": user_dir}):
             with contextlib.redirect_stdout(output):
-                pyagent_main(argv)
+                try:
+                    pyagent_main(argv)
+                except SystemExit as exc:
+                    if exc.code not in (0, None):
+                        raise
         return output.getvalue().strip()
 
     def test_extensions_list_reports_enabled_and_disabled_extensions(self) -> None:
@@ -5504,7 +5540,8 @@ class UsageStreamTests(unittest.TestCase):
         profile = self._openai_profile()
         usage_chunk = SimpleNamespace(
             choices=[],
-            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=2, total_tokens=12),
         )
         fake_sdk_client = FakeOpenAIClient(
             stream=[make_chunk(content="Hello"), usage_chunk],
@@ -5536,12 +5573,14 @@ class UsageStreamTests(unittest.TestCase):
                 if "stream_options" in payload:
                     raise openai.APIError(
                         "unsupported parameter stream_options",
-                        request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+                        request=httpx.Request(
+                            "POST", "https://example.com/v1/chat/completions"),
                         body=None,
                     )
                 return iter([make_chunk(content="Hello")])
 
-        fake_sdk_client = SimpleNamespace(chat=SimpleNamespace(completions=FlakyCompletions()))
+        fake_sdk_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=FlakyCompletions()))
         client = OpenAICompatibleClient(profile=profile)
         client._client_factory = lambda **kwargs: fake_sdk_client
 
@@ -5580,7 +5619,8 @@ class UsageStreamTests(unittest.TestCase):
         client = OpenAIResponsesClient(profile)
         client._client_factory = lambda **kwargs: fake_sdk_client
 
-        chunks = list(client.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+        chunks = list(client.chat_stream(
+            messages=[{"role": "user", "content": "hi"}]))
 
         self.assertIn(
             {"usage": {"prompt_tokens": 123, "completion_tokens": 7, "total_tokens": 130}},

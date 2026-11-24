@@ -950,7 +950,8 @@ class Agent:
                 else:
                     request_messages = self.messages
 
-                self._last_raw_estimate = estimate_messages_tokens(request_messages)
+                self._last_raw_estimate = estimate_messages_tokens(
+                    request_messages)
                 self.bus.emit("message_start", {
                               "message": {"role": "assistant"}}, ctx)
                 if self._run_log is not None:

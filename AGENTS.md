@@ -18,7 +18,9 @@ The project is intentionally lightweight. Prefer small, compatible changes over 
 
 Core files:
 
-- `pyagent/main.py` — launches the TUI
+- `pyagent/main.py` — the unified CLI entry point (argparse) that dispatches every `pyagent` subcommand; launches the TUI by default; prints via the shared envelope contract
+- `pyagent/cli_output.py` + `pyagent/cli_run.py` — the CLI output contract (stdout/stderr separation, `--json` envelope, exit codes, human renderers) and the shared streaming agent-run reporter used by `--prompt`, `agents run`, and `resume --prompt`
+- `pyagent/tool_report.py` + `pyagent/mcp_report.py` + `pyagent/profile_views.py` + `pyagent/session_views.py` — shared plain-dict reports/views used by both the CLI and the HTTP API so both surfaces present identical shapes (secrets redacted)
 - `pyagent/ui.py` — Textual app, transcript rendering, prompt input, slash commands, prompt history/search, context inspection, scroll behavior
 - `pyagent/agent.py` — agent loop, tool-call handling, provider switching, fallback behavior after tool results
 - `pyagent/compaction.py` — built-in context compaction (prune old tool outputs, summarize the middle with the active model, loud backstop); off by default via `PYAGENT_COMPACTION`
@@ -39,7 +41,7 @@ Core files:
 - `pyagent/llm_client.py` — provider/API-mode-specific clients, request adapters, and streaming normalization
 - `pyagent/project_context.py` — loads always-on `AGENTS.md` instructions into the system prompt and catalogs user/project skills for explicit or tool-driven loading
 - `examples/tools/search_hf_datasets.py` — reference UV-script tool users can copy into `~/.pyagent/tools/`
-- `test_agent.py` + `test_run_logging.py` + `test_sessions.py` + `test_session_api.py` + `test_mcp.py` — unit and integration tests
+- `test_agent.py` + `test_run_logging.py` + `test_sessions.py` + `test_session_api.py` + `test_mcp.py` + `test_cli.py` — unit and integration tests
 
 ## Development priorities
 
@@ -172,7 +174,7 @@ If you change that behavior:
 For any non-trivial change, run:
 
 ```bash
-python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py test_session_api.py test_mcp.py
+python -m py_compile pyagent/*.py test_agent.py test_run_logging.py test_sessions.py test_session_api.py test_mcp.py test_cli.py
 python -m unittest -v
 ```
 

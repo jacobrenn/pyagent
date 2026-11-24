@@ -355,7 +355,8 @@ def handle_compact(app: PyAgentApp, args: list[str]) -> bool:
     if report.pruned_tool_outputs:
         parts.append(f"pruned {report.pruned_tool_outputs} tool output(s)")
     if report.summarized:
-        parts.append(f"summarized {report.summarized_messages} earlier messages")
+        parts.append(
+            f"summarized {report.summarized_messages} earlier messages")
     if report.dropped_blocks:
         parts.append(f"dropped {report.dropped_blocks} oldest block(s)")
     if report.failure:
@@ -521,6 +522,7 @@ def handle_debug(app: PyAgentApp, args: list[str]) -> bool:
     app._add_system_note("Usage: `/debug on` or `/debug off`")
     return True
 
+
 def _format_mcp_summary(app: "PyAgentApp") -> str:
     from .mcp_config import default_mcp_config_path, load_mcp_config
 
@@ -544,7 +546,8 @@ def _format_mcp_summary(app: "PyAgentApp") -> str:
     discovery = getattr(agent, "mcp_discovery", None)
     if discovery is not None and discovery.error:
         lines.append(f"- Config error: {discovery.error}")
-    status_by_name = {s.name: s for s in discovery.servers} if discovery else {}
+    status_by_name = {
+        s.name: s for s in discovery.servers} if discovery else {}
     registry = agent.tool_registry
     for server in mcp_config.servers:
         status = status_by_name.get(server.name)
@@ -565,8 +568,10 @@ def _format_mcp_summary(app: "PyAgentApp") -> str:
         lines.append(f"  - `{target}`")
         if status is not None and status.tool_names:
             shown = status.tool_names[:10]
-            suffix = "" if len(status.tool_names) <= 10 else f" … +{len(status.tool_names) - 10} more"
-            lines.append("  - tools: " + ", ".join(f"`{name}`" for name in shown) + suffix)
+            suffix = "" if len(
+                status.tool_names) <= 10 else f" … +{len(status.tool_names) - 10} more"
+            lines.append("  - tools: " +
+                         ", ".join(f"`{name}`" for name in shown) + suffix)
     mcp_count = len(registry.names_by_origin(MCP_ORIGIN))
     lines.append("")
     lines.append(f"MCP tools registered: `{mcp_count}`")
@@ -652,7 +657,8 @@ def handle_mcp(app: PyAgentApp, args: list[str]) -> bool:
         if not removed:
             app._add_system_note(f"No MCP server named `{rest[0]}`.")
             return True
-        app._add_system_note(_reload_and_report(f"Removed MCP server `{rest[0]}`"))
+        app._add_system_note(_reload_and_report(
+            f"Removed MCP server `{rest[0]}`"))
         app._set_status(app._ready_status())
         return True
 
@@ -664,7 +670,8 @@ def handle_mcp(app: PyAgentApp, args: list[str]) -> bool:
             rest[0], user_dir=user_dir, timeout=config.mcp_connect_timeout)
         if result.get("ok"):
             tools = result.get("tools", [])
-            shown = ", ".join(f"`mcp__{result['server']}__{t}`" for t in tools[:20])
+            shown = ", ".join(
+                f"`mcp__{result['server']}__{t}`" for t in tools[:20])
             suffix = "" if len(tools) <= 20 else f" … +{len(tools) - 20} more"
             app._add_system_note(
                 f"MCP server `{result['server']}` OK — transport `{result.get('transport')}`, "

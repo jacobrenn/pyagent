@@ -771,11 +771,14 @@ class PyAgentApp(App):
         if last:
             details = []
             if last.get("summarized"):
-                details.append(f"summarized {last.get('summarized_messages', 0)} messages")
+                details.append(
+                    f"summarized {last.get('summarized_messages', 0)} messages")
             if last.get("pruned_tool_outputs"):
-                details.append(f"pruned {last['pruned_tool_outputs']} tool outputs")
+                details.append(
+                    f"pruned {last['pruned_tool_outputs']} tool outputs")
             if last.get("dropped_blocks"):
-                details.append(f"dropped {last['dropped_blocks']} oldest block(s)")
+                details.append(
+                    f"dropped {last['dropped_blocks']} oldest block(s)")
             if last.get("failure"):
                 details.append(f"summarizer failed: {last['failure']}")
             lines.append(
@@ -1835,16 +1838,21 @@ class PyAgentApp(App):
                     continue
 
                 if event_type == "compaction":
-                    self._log_debug(f"compaction: {self._format_debug_data(event)}")
+                    self._log_debug(
+                        f"compaction: {self._format_debug_data(event)}")
                     details = []
                     if event.get("summarized"):
-                        details.append(f"summarized {event.get('summarized_messages', 0)} earlier messages")
+                        details.append(
+                            f"summarized {event.get('summarized_messages', 0)} earlier messages")
                     if event.get("pruned_tool_outputs"):
-                        details.append(f"pruned {event['pruned_tool_outputs']} tool output(s)")
+                        details.append(
+                            f"pruned {event['pruned_tool_outputs']} tool output(s)")
                     if event.get("dropped_blocks"):
-                        details.append(f"dropped {event['dropped_blocks']} oldest block(s) to fit the window")
+                        details.append(
+                            f"dropped {event['dropped_blocks']} oldest block(s) to fit the window")
                     if event.get("failure"):
-                        details.append(f"summarizer failed: {event['failure']}")
+                        details.append(
+                            f"summarizer failed: {event['failure']}")
                     if details:
                         self._add_system_note(
                             "Context compacted · " + "; ".join(details)

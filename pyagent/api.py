@@ -17,18 +17,11 @@ from .extension_resources import (
     install_extension_url,
     normalize_extension_name,
 )
-from .external_tools import (
-    build_external_tool_specs,
-    default_runner_command,
-    discover_external_tools,
-    find_tool_script,
-    move_tool_script,
-)
+from .external_tools import find_tool_script, move_tool_script
 from .mcp_config import (
     McpConfigError,
     default_mcp_config_path,
     load_mcp_config,
-    redacted_server_dict,
     remove_server,
     server_from_dict,
     server_to_dict,
@@ -37,6 +30,10 @@ from .mcp_config import (
     validate_server_name,
 )
 from .project_context import list_available_skills
+from .profile_views import profile_to_dict
+from .session_views import saved_run_summary
+from .tool_report import tools_report
+from .mcp_report import mcp_entry_dict, mcp_list_payload, mcp_status_map as _mcp_status_map
 from .resources import (
     PROMPT_KIND,
     SKILL_KIND,
@@ -51,7 +48,6 @@ from .resources import (
     resource_dir,
 )
 from .scaffold import ScaffoldError, create_user_tool
-from .tools import BUILTIN_ORIGIN, EXTERNAL_ORIGIN, MCP_ORIGIN, create_default_tool_registry
 from .user_runtime import resolve_user_dir, user_extensions_dir
 from .webui import ASSETS_DIR as _WEB_UI_ASSETS_DIR
 from .webui import INDEX_FILE as _WEB_UI_INDEX_FILE
@@ -735,25 +731,7 @@ def _saved_run_or_error(store, run_id: str, *, completed: bool = False):
 
 
 def _saved_run_summary(saved) -> SavedRunSummary:
-    def text(key):
-        value = saved.metadata.get(key)
-        return value[:1024] if isinstance(value, str) else None
-
-    revision = saved.metadata.get("agent_revision")
-    if isinstance(revision, str) and len(revision) <= 16 and revision.isdecimal():
-        revision = int(revision)
-    if type(revision) is not int or not 0 < revision <= 9_007_199_254_740_991:
-        revision = None
-    return SavedRunSummary(
-        run_id=saved.run_id, parent_run_id=saved.parent_run_id,
-        conversation_id=saved.conversation_id, timestamp=saved.timestamp,
-        prompt_preview=" ".join(saved.prompt[:1000].split())[:160],
-        outcome=saved.outcome, resumable=saved.resumable, reason=saved.reason,
-        profile=text("profile"), model=text("model"), workspace=text("workspace"),
-        agent=text("agent"), agent_revision=revision,
-        warnings=[*saved.warnings, *
-                  ([saved.lineage_warning] if saved.lineage_warning else [])],
-    )
+    return SavedRunSummary(**saved_run_summary(saved))
 
 
 @app.get("/sessions", response_model=SavedRunListResponse)
@@ -1187,108 +1165,7 @@ def delete_skill(name: str) -> ResourceActionResponse:
 
 @app.get("/tools", response_model=ToolsResponse)
 def list_tools() -> ToolsResponse:
-    config = AppConfig.from_env()
-    discovery = None
-    discovery_error: str | None = None
-    if config.user_tools_enabled:
-        try:
-            from .extensions.loader import _discover, loaded_extension_tool_dirs
-
-            resolved_user_dir = resolve_user_dir(config.user_dir)
-            extension_dir = user_extensions_dir(resolved_user_dir)
-            extension_tool_dirs = loaded_extension_tool_dirs(
-                extension_dir, _discover(extension_dir)
-            )
-            discovery = discover_external_tools(
-                user_dir=config.user_dir,
-                runner=config.tool_runner,
-                describe_timeout=config.user_tool_describe_timeout,
-                extra_tool_dirs=extension_tool_dirs,
-            )
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            discovery_error = str(exc)
-
-    external_specs = (
-        build_external_tool_specs(
-            discovery,
-            invoke_timeout=config.user_tool_timeout,
-            runner_command=default_runner_command(discovery.runner),
-        )
-        if discovery is not None
-        else None
-    )
-    mcp_specs, mcp_error = _mcp_specs_for(config)
-    registry = create_default_tool_registry(
-        config, external_specs=external_specs, mcp_specs=mcp_specs)
-    definitions = {
-        item["function"]["name"]: item["function"]
-        for item in registry.definitions()
-        if isinstance(item.get("function"), dict)
-    }
-
-    runner = ToolRunnerInfo(
-        name=discovery.runner if discovery is not None else config.tool_runner,
-        available=discovery.runner_available if discovery is not None else None,
-        message=discovery.runner_message if discovery is not None else None,
-    )
-
-    builtin = [
-        _tool_info_response(registry, definitions, name, BUILTIN_ORIGIN)
-        for name in sorted(registry.names_by_origin(BUILTIN_ORIGIN))
-    ]
-    external = [
-        _tool_info_response(registry, definitions, name, EXTERNAL_ORIGIN)
-        for name in sorted(registry.names_by_origin(EXTERNAL_ORIGIN))
-    ]
-    mcp_tools = [
-        _tool_info_response(registry, definitions, name, MCP_ORIGIN)
-        for name in sorted(registry.names_by_origin(MCP_ORIGIN))
-    ]
-    files = [
-        ToolFileInfo(
-            label=resource.label,
-            path=str(resource.path),
-            disabled="disabled" in Path(resource.label).parts[:-1],
-        )
-        for resource in list_resources(TOOL_KIND, user_dir=config.user_dir)
-    ]
-
-    broken = []
-    disabled = []
-    if discovery is not None:
-        broken = [
-            ExternalToolProblem(script_path=str(
-                entry.script_path), error=entry.error)
-            for entry in discovery.broken
-        ]
-        disabled = [
-            ExternalToolDisabled(script_path=str(entry.script_path))
-            for entry in discovery.disabled
-        ]
-
-    return ToolsResponse(
-        tools_enabled=config.tools_enabled,
-        builtin_tools_enabled=config.builtin_tools_enabled,
-        user_tools_enabled=config.user_tools_enabled,
-        user_dir=str(resolve_user_dir(config.user_dir)),
-        runner=runner,
-        builtin=builtin,
-        external=external,
-        files=files,
-        broken=broken,
-        disabled=disabled,
-        collisions=[
-            ToolCollisionResponse(
-                name=collision.name,
-                external_path=collision.external_path,
-                loser_origin=getattr(collision, "loser_origin", None),
-            )
-            for collision in registry.collisions()
-        ],
-        discovery_error=discovery_error,
-        mcp=mcp_tools,
-        mcp_error=mcp_error,
-    )
+    return ToolsResponse(**tools_report(AppConfig.from_env()))
 
 
 @app.post("/tools/install", response_model=ResourceInstallResponse)
@@ -1340,72 +1217,8 @@ def delete_tool(name: str) -> ResourceActionResponse:
 # --- MCP (Model Context Protocol) management -------------------------------
 
 
-def _mcp_specs_for(config: AppConfig):
-    """Return ``(mcp_specs, error)`` for registry construction in /tools."""
-    if not getattr(config, "mcp_enabled", True):
-        return [], None
-    try:
-        from .mcp_runtime import get_mcp_manager
-
-        discovery = get_mcp_manager().ensure_tools(
-            user_dir=config.user_dir,
-            connect_timeout=config.mcp_connect_timeout,
-        )
-        if discovery.error:
-            return [], discovery.error
-        return discovery.specs, None
-    except Exception as exc:  # never break /tools because of MCP
-        return [], str(exc)
-
-
-def _mcp_status_map(config: AppConfig):
-    """Return ``(statuses_by_name, error)`` using the pooled connections."""
-    if not getattr(config, "mcp_enabled", True):
-        return {}, None
-    try:
-        from .mcp_runtime import get_mcp_manager
-
-        discovery = get_mcp_manager().ensure_tools(
-            user_dir=config.user_dir,
-            connect_timeout=config.mcp_connect_timeout,
-        )
-        return {s.name: s for s in discovery.servers}, discovery.error
-    except Exception as exc:  # pragma: no cover - defensive
-        return {}, str(exc)
-
-
 def _mcp_entry(server, status) -> McpServerEntry:
-    redacted = redacted_server_dict(server)
-    if status is not None:
-        return McpServerEntry(
-            name=server.name,
-            transport=server.transport,
-            enabled=server.enabled,
-            command=redacted.get("command"),
-            args=redacted.get("args", []),
-            env=redacted.get("env", {}),
-            cwd=redacted.get("cwd"),
-            url=redacted.get("url"),
-            headers=redacted.get("headers", {}),
-            missing_env=redacted.get("missing_env", []),
-            status=status.status,
-            tool_count=status.tool_count,
-            tools=list(status.tool_names),
-            error=status.error,
-        )
-    return McpServerEntry(
-        name=server.name,
-        transport=server.transport,
-        enabled=server.enabled,
-        command=redacted.get("command"),
-        args=redacted.get("args", []),
-        env=redacted.get("env", {}),
-        cwd=redacted.get("cwd"),
-        url=redacted.get("url"),
-        headers=redacted.get("headers", {}),
-        missing_env=redacted.get("missing_env", []),
-        status="unknown" if server.enabled else "disabled",
-    )
+    return McpServerEntry(**mcp_entry_dict(server, status))
 
 
 def _load_mcp_or_400():
@@ -1417,24 +1230,12 @@ def _load_mcp_or_400():
 
 @app.get("/mcp", response_model=McpListResponse)
 def list_mcp_servers() -> McpListResponse:
-    config = AppConfig.from_env()
-    enabled = bool(getattr(config, "mcp_enabled", True))
-    try:
-        parsed = load_mcp_config(user_dir=config.user_dir)
-    except McpConfigError as exc:
-        return McpListResponse(
-            enabled=enabled,
-            config_path=str(default_mcp_config_path(config.user_dir)),
-            servers=[],
-            error=str(exc),
-        )
-    statuses, status_error = _mcp_status_map(config)
-    servers = [_mcp_entry(server, statuses.get(server.name)) for server in parsed.servers]
+    payload = mcp_list_payload(AppConfig.from_env())
     return McpListResponse(
-        enabled=enabled,
-        config_path=str(parsed.path),
-        servers=servers,
-        error=status_error,
+        enabled=payload["enabled"],
+        config_path=payload["config_path"],
+        servers=[McpServerEntry(**entry) for entry in payload["servers"]],
+        error=payload["error"],
     )
 
 
@@ -1466,7 +1267,8 @@ def get_mcp_server(name: str) -> McpServerEntry:
     parsed = _load_mcp_or_400()
     server = parsed.get(name)
     if server is None:
-        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+        raise HTTPException(
+            status_code=404, detail=f"No MCP server named {name!r}.")
     statuses, _ = _mcp_status_map(config)
     return _mcp_entry(server, statuses.get(name))
 
@@ -1481,7 +1283,8 @@ def update_mcp_server(name: str, request: McpServerRequest) -> McpServerEntry:
     parsed = _load_mcp_or_400()
     existing = parsed.get(name)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+        raise HTTPException(
+            status_code=404, detail=f"No MCP server named {name!r}.")
     data = server_to_dict(existing)
     for field_name in ("command", "args", "env", "cwd", "url", "headers", "enabled"):
         if field_name in request.model_fields_set:
@@ -1502,7 +1305,8 @@ def update_mcp_server(name: str, request: McpServerRequest) -> McpServerEntry:
 def delete_mcp_server(name: str) -> ResourceActionResponse:
     config = AppConfig.from_env()
     if not remove_server(name, user_dir=config.user_dir):
-        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+        raise HTTPException(
+            status_code=404, detail=f"No MCP server named {name!r}.")
     return ResourceActionResponse(
         message=f"Removed MCP server `{name}`.",
         path=str(default_mcp_config_path(config.user_dir)),
@@ -1526,7 +1330,8 @@ def _set_mcp_server_enabled(name: str, enabled: bool) -> McpServerEntry:
     except McpConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
-        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+        raise HTTPException(
+            status_code=404, detail=f"No MCP server named {name!r}.")
     return _mcp_entry(updated, None)
 
 
@@ -1535,7 +1340,8 @@ def test_mcp_server_endpoint(name: str) -> McpTestResponse:
     config = AppConfig.from_env()
     parsed = _load_mcp_or_400()
     if parsed.get(name) is None:
-        raise HTTPException(status_code=404, detail=f"No MCP server named {name!r}.")
+        raise HTTPException(
+            status_code=404, detail=f"No MCP server named {name!r}.")
     from .mcp_runtime import get_mcp_manager
 
     result = get_mcp_manager().test_server(
@@ -1792,61 +1598,8 @@ def _get_profile_or_404(name: str):
     return store.get(normalized_name)
 
 
-def _is_sensitive_profile_key(name: str) -> bool:
-    normalized = name.strip().lower().replace("_", "-")
-    if normalized in {"auth", "authentication", "key"}:
-        return True
-    sensitive_markers = (
-        "authorization",
-        "api-key",
-        "apikey",
-        "token",
-        "secret",
-        "password",
-        "credential",
-        "cookie",
-    )
-    return normalized.endswith("-key") or any(
-        marker in normalized for marker in sensitive_markers
-    )
-
-
-def _redact_profile_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): (
-                "<redacted>"
-                if _is_sensitive_profile_key(str(key))
-                else _redact_profile_value(item)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_profile_value(item) for item in value]
-    return value
-
-
 def _profile_response(profile: Any, default_profile: str) -> ProfileResponse:
-    visible_headers: dict[str, str] = {}
-    redacted_headers: list[str] = []
-    for name, value in profile.headers.items():
-        if _is_sensitive_profile_key(name):
-            redacted_headers.append(name)
-        else:
-            visible_headers[name] = value
-    return ProfileResponse(
-        name=profile.name,
-        provider=profile.resolved_provider(),
-        api_mode=profile.resolved_api_mode(),
-        model=profile.model,
-        base_url=profile.base_url,
-        api_key_env=profile.api_key_env,
-        has_inline_api_key=bool(profile.api_key),
-        headers=visible_headers,
-        redacted_headers=sorted(redacted_headers),
-        httpx_kwargs=_redact_profile_value(profile.httpx_kwargs),
-        is_default=profile.name == default_profile,
-    )
+    return ProfileResponse(**profile_to_dict(profile, default_profile))
 
 
 def _model_payload(model: BaseModel, *, exclude_unset: bool = False) -> dict[str, Any]:
@@ -2036,17 +1789,6 @@ def _user_managed_resource_target(target: str, *, kind: str) -> str:
     if target.startswith("user:"):
         return target.split(":", 1)[1]
     return target
-
-
-def _tool_info_response(registry: Any, definitions: dict[str, dict[str, Any]], name: str, origin: str) -> ToolInfo:
-    definition = definitions.get(name, {})
-    return ToolInfo(
-        name=name,
-        origin=origin,
-        source=registry.source(name),
-        description=definition.get("description"),
-        parameters=definition.get("parameters"),
-    )
 
 
 def _move_tool(name: str, *, enable: bool) -> ResourceActionResponse:

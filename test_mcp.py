@@ -108,7 +108,8 @@ class McpConfigTests(unittest.TestCase):
         fake = loaded.get("fake")
         self.assertEqual(fake.args, ("server.py",))
         self.assertEqual(fake.env, {"TOKEN": "abc"})
-        self.assertEqual(loaded.get("web").headers, {"Authorization": "Bearer xyz"})
+        self.assertEqual(loaded.get("web").headers, {
+                         "Authorization": "Bearer xyz"})
 
     def test_unknown_server_keys_preserved(self):
         path = self.user_dir / "mcp.json"
@@ -136,7 +137,8 @@ class McpConfigTests(unittest.TestCase):
 
     def test_conflicting_transport_rejected(self):
         with self.assertRaises(McpConfigError):
-            server_from_dict("x", {"command": "run", "url": "https://a.example.com/mcp"})
+            server_from_dict(
+                "x", {"command": "run", "url": "https://a.example.com/mcp"})
 
     def test_missing_transport_rejected(self):
         with self.assertRaises(McpConfigError):
@@ -213,7 +215,8 @@ class QualifyToolNameTests(unittest.TestCase):
 
     def test_special_characters_sanitized(self):
         name = qualify_tool_name("my server", "tool/name.with.dots")
-        self.assertRegex(name, r"^mcp__my_server__tool_name_with_dots-[0-9a-f]{8}$")
+        self.assertRegex(
+            name, r"^mcp__my_server__tool_name_with_dots-[0-9a-f]{8}$")
 
     def test_long_names_truncated_to_64(self):
         name = qualify_tool_name("s" * 24, "t" * 100)
@@ -250,17 +253,20 @@ class _McpTestCase(unittest.TestCase):
 class McpRuntimeTests(_McpTestCase):
     def test_discovery_and_call(self):
         self.make_config({"fake": self.fake_server_entry()})
-        result = get_mcp_manager().ensure_tools(user_dir=str(self.user_dir), connect_timeout=10)
+        result = get_mcp_manager().ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=10)
         self.assertEqual([s.status for s in result.servers], ["ok"])
         names = [spec.name for spec in result.specs]
         self.assertEqual(
             sorted(names), ["mcp__fake__add", "mcp__fake__echo", "mcp__fake__fail"])
         echo = next(s for s in result.specs if s.name == "mcp__fake__echo")
-        self.assertEqual(echo.handler(text="hi").strip().splitlines()[0], "echo: hi")
+        self.assertEqual(echo.handler(
+            text="hi").strip().splitlines()[0], "echo: hi")
 
     def test_tool_error_is_reported_not_raised(self):
         self.make_config({"fake": self.fake_server_entry()})
-        result = get_mcp_manager().ensure_tools(user_dir=str(self.user_dir), connect_timeout=10)
+        result = get_mcp_manager().ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=10)
         fail = next(s for s in result.specs if s.name == "mcp__fake__fail")
         self.assertTrue(fail.handler().startswith("Error:"))
 
@@ -268,7 +274,8 @@ class McpRuntimeTests(_McpTestCase):
         self.make_config({
             "ghost": {"command": "definitely-not-a-real-binary-xyz"},
         })
-        result = get_mcp_manager().ensure_tools(user_dir=str(self.user_dir), connect_timeout=5)
+        result = get_mcp_manager().ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=5)
         self.assertEqual(result.servers[0].status, "error")
         self.assertEqual(result.specs, [])
 
@@ -276,7 +283,8 @@ class McpRuntimeTests(_McpTestCase):
         entry = self.fake_server_entry()
         entry["env"] = {"TOKEN": "${PYAGENT_TEST_MISSING_VAR_XYZ}"}
         self.make_config({"fake": entry})
-        result = get_mcp_manager().ensure_tools(user_dir=str(self.user_dir), connect_timeout=5)
+        result = get_mcp_manager().ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=5)
         self.assertEqual(result.servers[0].status, "error")
         self.assertIn("PYAGENT_TEST_MISSING_VAR_XYZ", result.servers[0].error)
 
@@ -284,7 +292,8 @@ class McpRuntimeTests(_McpTestCase):
         entry = self.fake_server_entry()
         entry["enabled"] = False
         self.make_config({"fake": entry})
-        result = get_mcp_manager().ensure_tools(user_dir=str(self.user_dir), connect_timeout=5)
+        result = get_mcp_manager().ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=5)
         self.assertEqual(result.servers[0].status, "disabled")
         self.assertEqual(result.specs, [])
 
@@ -299,10 +308,13 @@ class McpRuntimeTests(_McpTestCase):
     def test_config_change_reconnects(self):
         self.make_config({"fake": self.fake_server_entry()})
         manager = get_mcp_manager()
-        first = manager.ensure_tools(user_dir=str(self.user_dir), connect_timeout=10)
+        first = manager.ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=10)
         first_fp = next(iter(manager._sessions))
-        self.make_config({"fake": {**self.fake_server_entry(), "env": {"EXTRA": "1"}}})
-        second = manager.ensure_tools(user_dir=str(self.user_dir), connect_timeout=10)
+        self.make_config(
+            {"fake": {**self.fake_server_entry(), "env": {"EXTRA": "1"}}})
+        second = manager.ensure_tools(
+            user_dir=str(self.user_dir), connect_timeout=10)
         second_fp = next(iter(manager._sessions))
         self.assertNotEqual(first_fp, second_fp)
         self.assertEqual(second.servers[0].status, "ok")
@@ -310,12 +322,14 @@ class McpRuntimeTests(_McpTestCase):
     def test_reload(self):
         self.make_config({"fake": self.fake_server_entry()})
         manager = get_mcp_manager()
-        result = manager.reload(user_dir=str(self.user_dir), connect_timeout=10)
+        result = manager.reload(user_dir=str(
+            self.user_dir), connect_timeout=10)
         self.assertEqual(result.servers[0].status, "ok")
 
     def test_test_server_reports_tools(self):
         self.make_config({"fake": self.fake_server_entry()})
-        result = get_mcp_manager().test_server("fake", user_dir=str(self.user_dir), timeout=10)
+        result = get_mcp_manager().test_server(
+            "fake", user_dir=str(self.user_dir), timeout=10)
         self.assertTrue(result["ok"])
         self.assertEqual(result["tool_count"], 3)
 
@@ -370,10 +384,12 @@ class McpRuntimeTests(_McpTestCase):
         text = render_tool_result(Result([Block("text", text="hello")]))
         self.assertEqual(text, "hello")
 
-        err = render_tool_result(Result([Block("text", text="nope")], is_error=True))
+        err = render_tool_result(
+            Result([Block("text", text="nope")], is_error=True))
         self.assertTrue(err.startswith("Error:"))
 
-        img = render_tool_result(Result([Block("image", mime_type="image/png")]))
+        img = render_tool_result(
+            Result([Block("image", mime_type="image/png")]))
         self.assertIn("image omitted", img)
 
         redundant = render_tool_result(
@@ -415,27 +431,33 @@ class McpAgentTests(unittest.TestCase):
     @unittest.skipUnless(MCP_AVAILABLE, "mcp package not installed")
     def test_agent_registers_mcp_tools(self):
         server = write_fake_server(Path(self.tmp.name))
-        write_config(self.user_dir, {"fake": {"command": sys.executable, "args": [str(server)]}})
+        write_config(self.user_dir, {
+                     "fake": {"command": sys.executable, "args": [str(server)]}})
         from pyagent.agent import Agent
 
         agent = Agent(config=self._config(), workspace=self.tmp.name)
         try:
             names = agent.tool_registry.names()
             self.assertIn("mcp__fake__echo", names)
-            self.assertEqual(agent.tool_registry.origin("mcp__fake__echo"), MCP_ORIGIN)
-            out = agent.tool_registry.execute("mcp__fake__echo", {"text": "hi"})
+            self.assertEqual(agent.tool_registry.origin(
+                "mcp__fake__echo"), MCP_ORIGIN)
+            out = agent.tool_registry.execute(
+                "mcp__fake__echo", {"text": "hi"})
             self.assertIn("echo: hi", out)
         finally:
             agent.close()
 
     def test_agent_mcp_disabled_registers_nothing(self):
         server = write_fake_server(Path(self.tmp.name))
-        write_config(self.user_dir, {"fake": {"command": sys.executable, "args": [str(server)]}})
+        write_config(self.user_dir, {
+                     "fake": {"command": sys.executable, "args": [str(server)]}})
         from pyagent.agent import Agent
 
-        agent = Agent(config=self._config(mcp_enabled=False), workspace=self.tmp.name)
+        agent = Agent(config=self._config(
+            mcp_enabled=False), workspace=self.tmp.name)
         try:
-            self.assertFalse(any(n.startswith("mcp__") for n in agent.tool_registry.names()))
+            self.assertFalse(any(n.startswith("mcp__")
+                             for n in agent.tool_registry.names()))
             self.assertIsNone(agent.mcp_discovery)
         finally:
             agent.close()
@@ -447,7 +469,8 @@ class McpApiTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.user_dir = Path(self.tmp.name) / "user"
         self.user_dir.mkdir(parents=True)
-        self.env = mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": str(self.user_dir)})
+        self.env = mock.patch.dict(
+            os.environ, {"PYAGENT_USER_DIR": str(self.user_dir)})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.addCleanup(shutdown_mcp_manager)
@@ -498,9 +521,11 @@ class McpApiTests(unittest.TestCase):
 
     def test_create_conflict_and_validation(self):
         write_config(self.user_dir, {"dup": {"command": "true"}})
-        response = self.client.post("/mcp", json={"name": "dup", "command": "true"})
+        response = self.client.post(
+            "/mcp", json={"name": "dup", "command": "true"})
         self.assertEqual(response.status_code, 409)
-        response = self.client.post("/mcp", json={"name": "bad name", "command": "true"})
+        response = self.client.post(
+            "/mcp", json={"name": "bad name", "command": "true"})
         self.assertEqual(response.status_code, 400)
         response = self.client.post(
             "/mcp", json={"name": "both", "command": "true", "url": "https://x.example.com/mcp"})
@@ -511,7 +536,8 @@ class McpApiTests(unittest.TestCase):
     @unittest.skipUnless(MCP_AVAILABLE, "mcp package not installed")
     def test_tools_endpoint_lists_mcp_tools(self):
         server = write_fake_server(Path(self.tmp.name))
-        write_config(self.user_dir, {"fake": {"command": sys.executable, "args": [str(server)]}})
+        write_config(self.user_dir, {
+                     "fake": {"command": sys.executable, "args": [str(server)]}})
         response = self.client.get("/tools")
         self.assertEqual(response.status_code, 200)
         names = [tool["name"] for tool in response.json()["mcp"]]
@@ -523,7 +549,8 @@ class McpCliTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.user_dir = str(Path(self.tmp.name) / "user")
-        self.env = mock.patch.dict(os.environ, {"PYAGENT_USER_DIR": self.user_dir})
+        self.env = mock.patch.dict(
+            os.environ, {"PYAGENT_USER_DIR": self.user_dir})
         self.env.start()
         self.addCleanup(self.env.stop)
 
@@ -587,7 +614,8 @@ class McpHttpTransportTests(_McpTestCase):
         port = sock.getsockname()[1]
         sock.close()
 
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+        config = uvicorn.Config(app, host="127.0.0.1",
+                                port=port, log_level="error")
         instance = uvicorn.Server(config)
         thread = threading.Thread(target=instance.run, daemon=True)
         thread.start()
@@ -599,8 +627,10 @@ class McpHttpTransportTests(_McpTestCase):
             result = get_mcp_manager().ensure_tools(
                 user_dir=str(self.user_dir), connect_timeout=10)
             self.assertEqual(result.servers[0].status, "ok")
-            greet = next(s for s in result.specs if s.name == "mcp__web__greet")
-            self.assertEqual(greet.handler(name="agent").strip().splitlines()[0], "hello agent")
+            greet = next(s for s in result.specs if s.name ==
+                         "mcp__web__greet")
+            self.assertEqual(greet.handler(
+                name="agent").strip().splitlines()[0], "hello agent")
         finally:
             instance.should_exit = True
             thread.join(timeout=5)
@@ -652,7 +682,8 @@ class McpAgentDefinitionValidationTests(unittest.TestCase):
 
     def test_wildcard_expands_to_concrete_tools(self):
         server = write_fake_server(self.root)
-        write_config(self.user_dir, {"fake": {"command": sys.executable, "args": [str(server)]}})
+        write_config(self.user_dir, {
+                     "fake": {"command": sys.executable, "args": [str(server)]}})
         validation = self._validate(["mcp__fake__*"])
         self.assertTrue(validation.valid, validation.errors)
         self.assertEqual(
@@ -662,7 +693,8 @@ class McpAgentDefinitionValidationTests(unittest.TestCase):
 
     def test_unknown_mcp_tool_is_an_error_when_discovery_works(self):
         server = write_fake_server(self.root)
-        write_config(self.user_dir, {"fake": {"command": sys.executable, "args": [str(server)]}})
+        write_config(self.user_dir, {
+                     "fake": {"command": sys.executable, "args": [str(server)]}})
         validation = self._validate(["mcp__fake__nonexistent"])
         self.assertFalse(validation.valid)
         self.assertIn("mcp__fake__nonexistent", " ".join(validation.errors))
@@ -711,7 +743,8 @@ class McpAgentDefinitionBuildTests(unittest.TestCase):
         from pyagent.config import AppConfig
 
         server = write_fake_server(self.root)
-        write_config(self.user_dir, {"fake": {"command": sys.executable, "args": [str(server)]}})
+        write_config(self.user_dir, {
+                     "fake": {"command": sys.executable, "args": [str(server)]}})
         store = AgentDefinitionStore(self.user_dir)
         store.create({
             "name": "mcp-bot",

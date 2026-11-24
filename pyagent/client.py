@@ -875,7 +875,8 @@ class PyAgentClient:
         for key in clear:
             payload[key] = None
         return self._expect_dict(
-            self._request_json("PUT", self._path_with_name("/mcp", name), payload),
+            self._request_json(
+                "PUT", self._path_with_name("/mcp", name), payload),
             "mcp update",
         )
 

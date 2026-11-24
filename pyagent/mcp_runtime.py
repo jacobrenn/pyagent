@@ -134,16 +134,19 @@ def _render_content(blocks: Any) -> str:
         if kind == "text":
             parts.append(getattr(block, "text", "") or "")
         elif kind == "image":
-            parts.append(f"[image omitted: {getattr(block, 'mime_type', 'image')}]")
+            parts.append(
+                f"[image omitted: {getattr(block, 'mime_type', 'image')}]")
         elif kind == "audio":
-            parts.append(f"[audio omitted: {getattr(block, 'mime_type', 'audio')}]")
+            parts.append(
+                f"[audio omitted: {getattr(block, 'mime_type', 'audio')}]")
         elif kind == "resource":
             resource = getattr(block, "resource", None)
             text = getattr(resource, "text", None)
             if isinstance(text, str):
                 parts.append(text)
             else:
-                parts.append(f"[resource omitted: {getattr(resource, 'uri', 'unknown URI')}]")
+                parts.append(
+                    f"[resource omitted: {getattr(resource, 'uri', 'unknown URI')}]")
         elif kind == "resource_link":
             name = getattr(block, "name", "")
             uri = getattr(block, "uri", "")
@@ -173,10 +176,12 @@ def render_tool_result(result: Any) -> str:
             is_redundant_result = False
         if not is_redundant_result:
             try:
-                structured_text = json.dumps(structured, ensure_ascii=False, indent=2)
+                structured_text = json.dumps(
+                    structured, ensure_ascii=False, indent=2)
             except (TypeError, ValueError):
                 structured_text = str(structured)
-            text = f"{text}\n\n{structured_text}".strip() if text else structured_text
+            text = f"{text}\n\n{structured_text}".strip(
+            ) if text else structured_text
     if not text:
         text = "<empty result>"
     if is_error:
@@ -462,7 +467,8 @@ class McpManager:
             from mcp.client.streamable_http import streamablehttp_client  # type: ignore
 
             read, write = await stack.enter_async_context(
-                streamablehttp_client(res.url or "", headers=dict(res.headers) or None)
+                streamablehttp_client(
+                    res.url or "", headers=dict(res.headers) or None)
             )
             return read, write
 
@@ -580,7 +586,8 @@ class McpManager:
                 entry = self._sessions.get(res.fingerprint)
         latency_ms = round((time.monotonic() - started) * 1000)
         if entry is None:
-            _, message = self._failures.get(res.fingerprint, (0.0, "Connection failed."))
+            _, message = self._failures.get(
+                res.fingerprint, (0.0, "Connection failed."))
             return {"server": name, "ok": False, "error": message}
         return {
             "server": name,
@@ -635,6 +642,7 @@ class McpManager:
                 loop.close()
         self._thread = None
 
+
 def _close_quietly(stream) -> None:
     with suppress(Exception):
         stream.close()
@@ -659,7 +667,8 @@ def _specs_for_entry(manager: McpManager, entry: _SessionEntry) -> list[ToolSpec
                 name=qualified,
                 description=f"[MCP: {entry.name}] {description}",
                 parameters=schema,
-                handler=McpToolHandler(manager, entry.fingerprint, entry.name, raw_name),
+                handler=McpToolHandler(
+                    manager, entry.fingerprint, entry.name, raw_name),
             )
         )
     return specs

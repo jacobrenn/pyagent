@@ -74,9 +74,12 @@ def resolve_limits(config: Any) -> CompactionLimits:
             return max(1, int(window * ratio))
         return unknown
 
-    soft = _derive(int(getattr(config, "compaction_soft_tokens", 0) or 0), SOFT_RATIO, UNKNOWN_WINDOW_SOFT_TOKENS)
-    hard = _derive(int(getattr(config, "compaction_hard_tokens", 0) or 0), HARD_RATIO, UNKNOWN_WINDOW_HARD_TOKENS)
-    keep = _derive(int(getattr(config, "compaction_keep_recent_tokens", 0) or 0), KEEP_RATIO, UNKNOWN_WINDOW_KEEP_TOKENS)
+    soft = _derive(int(getattr(config, "compaction_soft_tokens", 0)
+                   or 0), SOFT_RATIO, UNKNOWN_WINDOW_SOFT_TOKENS)
+    hard = _derive(int(getattr(config, "compaction_hard_tokens", 0)
+                   or 0), HARD_RATIO, UNKNOWN_WINDOW_HARD_TOKENS)
+    keep = _derive(int(getattr(config, "compaction_keep_recent_tokens", 0)
+                   or 0), KEEP_RATIO, UNKNOWN_WINDOW_KEEP_TOKENS)
     hard = max(hard, soft + 1)
     model = (getattr(config, "compaction_model", "") or "").strip() or None
     return CompactionLimits(
@@ -84,7 +87,8 @@ def resolve_limits(config: Any) -> CompactionLimits:
         soft_tokens=soft,
         hard_tokens=hard,
         keep_recent_tokens=keep,
-        max_summary_tokens=int(getattr(config, "compaction_max_summary_tokens", 1024) or 1024),
+        max_summary_tokens=int(
+            getattr(config, "compaction_max_summary_tokens", 1024) or 1024),
         model=model,
     )
 
@@ -160,7 +164,8 @@ def _keep_recent_indexes(
     keep: set[int] = set()
     used = 0
     for start, end in reversed(blocks):
-        block_tokens = sum(estimate_message_tokens(messages[i]) for i in range(start, end))
+        block_tokens = sum(estimate_message_tokens(
+            messages[i]) for i in range(start, end))
         if keep and used + block_tokens > keep_tokens:
             break
         keep.update(range(start, end))
@@ -192,7 +197,8 @@ def _serialize_messages(messages: list[dict[str, Any]]) -> str:
             arguments = str(function.get("arguments") or "")
             if len(arguments) > TOOL_CALL_SNIPPET_CHARS:
                 arguments = arguments[:TOOL_CALL_SNIPPET_CHARS] + "…"
-            chunk.append(f"[tool call] {function.get('name') or '?'}({arguments})")
+            chunk.append(
+                f"[tool call] {function.get('name') or '?'}({arguments})")
         parts.append("\n".join(chunk))
     return "\n\n".join(parts)
 
@@ -248,7 +254,8 @@ def summarize_messages(
     chunks = _chunk_text(transcript, SOURCE_CHUNK_CHARS)
     partials: list[str] = []
     for index, chunk in enumerate(chunks):
-        header = f"Transcript segment {index + 1} of {len(chunks)}:\n\n" if len(chunks) > 1 else "Transcript:\n\n"
+        header = f"Transcript segment {index + 1} of {len(chunks)}:\n\n" if len(
+            chunks) > 1 else "Transcript:\n\n"
         prompt_parts = []
         if previous_summary:
             prompt_parts.append(
@@ -256,7 +263,8 @@ def summarize_messages(
                 f"{previous_summary}\n"
             )
         prompt_parts.append(header + chunk)
-        partials.append(complete(_SUMMARY_SYSTEM, "\n".join(prompt_parts)).strip())
+        partials.append(
+            complete(_SUMMARY_SYSTEM, "\n".join(prompt_parts)).strip())
     if len(partials) == 1:
         return partials[0]
     merged = "\n\n---\n\n".join(
@@ -339,7 +347,8 @@ def manage_context(
     report = CompactionReport()
     history = [dict(message) for message in messages]
     blocks = _blocks(history)
-    report.estimated_tokens_before = estimate_messages_tokens(history, calibration)
+    report.estimated_tokens_before = estimate_messages_tokens(
+        history, calibration)
 
     pin_end = _pinned_prefix_end(history)
     keep = _keep_recent_indexes(history, blocks, limits.keep_recent_tokens)
@@ -347,7 +356,8 @@ def manage_context(
     keep |= pin_set
 
     # Stage 1: prune old tool outputs in place.
-    report.pruned_tool_outputs, report.pruned_chars = _prune_old_tool_outputs(history, keep, pin_end)
+    report.pruned_tool_outputs, report.pruned_chars = _prune_old_tool_outputs(
+        history, keep, pin_end)
 
     current_tokens = estimate_messages_tokens(history, calibration)
 
@@ -371,7 +381,8 @@ def manage_context(
                 remaining.append(message)
         if complete is not None and (remaining or previous_summary):
             try:
-                summary = summarize_messages(remaining, previous_summary, complete)
+                summary = summarize_messages(
+                    remaining, previous_summary, complete)
             except Exception as exc:  # noqa: BLE001 - compaction must never break a run
                 report.failure = f"summarization failed: {exc}"
                 summary = None

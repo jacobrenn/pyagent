@@ -69,7 +69,8 @@ def conversation(rounds: int = 6, tool_chars: int = 600) -> list[dict[str, Any]]
 class EstimateTests(unittest.TestCase):
     def test_estimate_grows_with_content_and_tool_calls(self):
         small = estimate_messages_tokens([{"role": "user", "content": "hi"}])
-        big = estimate_messages_tokens([{"role": "user", "content": "x" * 4000}])
+        big = estimate_messages_tokens(
+            [{"role": "user", "content": "x" * 4000}])
         with_tools = estimate_messages_tokens(
             [
                 {
@@ -105,8 +106,10 @@ class EstimateTests(unittest.TestCase):
             compaction_model = ""
 
         limits = resolve_limits(Cfg())
-        self.assertEqual(limits.soft_tokens, compaction.UNKNOWN_WINDOW_SOFT_TOKENS)
-        self.assertEqual(limits.hard_tokens, compaction.UNKNOWN_WINDOW_HARD_TOKENS)
+        self.assertEqual(limits.soft_tokens,
+                         compaction.UNKNOWN_WINDOW_SOFT_TOKENS)
+        self.assertEqual(limits.hard_tokens,
+                         compaction.UNKNOWN_WINDOW_HARD_TOKENS)
 
         Cfg.context_window = 100_000
         limits = resolve_limits(Cfg())
@@ -129,7 +132,8 @@ class PruneTests(unittest.TestCase):
             messages, limits=limits, complete=None
         )
         tool_messages = [m for m in new_messages if m.get("role") == "tool"]
-        pruned = [m for m in tool_messages if m["content"].startswith(TOOL_PRUNE_PREFIX)]
+        pruned = [m for m in tool_messages if m["content"].startswith(
+            TOOL_PRUNE_PREFIX)]
         self.assertGreaterEqual(len(pruned), 2)
         self.assertTrue(all(len(m["content"]) < 400 for m in pruned))
         self.assertGreater(report.pruned_tool_outputs, 0)
@@ -143,7 +147,8 @@ class PruneTests(unittest.TestCase):
         once, _ = manage_context(messages, limits=limits)
         twice, report = manage_context(once, limits=limits)
         self.assertEqual(report.pruned_tool_outputs, 0)
-        self.assertEqual([m["content"] for m in once], [m["content"] for m in twice])
+        self.assertEqual([m["content"] for m in once],
+                         [m["content"] for m in twice])
 
 
 class SummarizeTests(unittest.TestCase):
@@ -165,7 +170,8 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(
             new_messages[1], {"role": "user", "content": "original goal"}
         )
-        marker = next(m for m in new_messages if str(m.get("content", "")).startswith(COMPACTION_MARKER))
+        marker = next(m for m in new_messages if str(
+            m.get("content", "")).startswith(COMPACTION_MARKER))
         self.assertIn("GOAL: finish the task", marker["content"])
         self.assertEqual(new_messages[-1]["content"], "latest question")
         # Tool-call/result pairing preserved for kept blocks
@@ -178,7 +184,8 @@ class SummarizeTests(unittest.TestCase):
                         following.add(follow.get("tool_call_id"))
                     else:
                         break
-                self.assertTrue(ids <= following or not following or ids == following)
+                self.assertTrue(
+                    ids <= following or not following or ids == following)
 
     def test_previous_summary_is_folded_into_next_compaction(self):
         messages = conversation(rounds=4, tool_chars=100)
@@ -189,7 +196,8 @@ class SummarizeTests(unittest.TestCase):
             seen.append(user)
             return f"SUMMARY {len(seen)}"
 
-        first, report1 = manage_context(messages, limits=limits, complete=fake_complete)
+        first, report1 = manage_context(
+            messages, limits=limits, complete=fake_complete)
         self.assertTrue(report1.summarized)
         # Grow history again, then compact again.
         grown = first + [
@@ -197,7 +205,8 @@ class SummarizeTests(unittest.TestCase):
             {"role": "assistant", "content": "answer"},
             {"role": "user", "content": "and another"},
         ]
-        second, report2 = manage_context(grown, limits=limits, complete=fake_complete)
+        second, report2 = manage_context(
+            grown, limits=limits, complete=fake_complete)
         self.assertTrue(report2.summarized)
         self.assertIn("SUMMARY 1", seen[1])
         marker_messages = [
@@ -208,12 +217,14 @@ class SummarizeTests(unittest.TestCase):
 
     def test_summarizer_failure_preserves_middle_and_reports_failure(self):
         messages = conversation(rounds=3, tool_chars=100)
-        limits = make_limits(soft_tokens=10, keep_recent_tokens=120, hard_tokens=10**9)
+        limits = make_limits(
+            soft_tokens=10, keep_recent_tokens=120, hard_tokens=10**9)
 
         def boom(system: str, user: str) -> str:
             raise RuntimeError("model exploded")
 
-        new_messages, report = manage_context(messages, limits=limits, complete=boom)
+        new_messages, report = manage_context(
+            messages, limits=limits, complete=boom)
         self.assertFalse(report.summarized)
         self.assertIn("model exploded", report.failure or "")
         contents = [str(m.get("content")) for m in new_messages]
@@ -221,22 +232,26 @@ class SummarizeTests(unittest.TestCase):
 
     def test_backstop_drops_oldest_blocks_and_marks_overflow(self):
         messages = conversation(rounds=5, tool_chars=900)
-        limits = make_limits(soft_tokens=10, keep_recent_tokens=60, hard_tokens=80)
+        limits = make_limits(
+            soft_tokens=10, keep_recent_tokens=60, hard_tokens=80)
 
         def boom(system: str, user: str) -> str:
             raise RuntimeError("down")
 
-        new_messages, report = manage_context(messages, limits=limits, complete=boom)
+        new_messages, report = manage_context(
+            messages, limits=limits, complete=boom)
         self.assertGreater(report.dropped_blocks, 0)
         self.assertEqual(new_messages[0]["role"], "system")
         self.assertEqual(new_messages[1]["content"], "original goal")
         self.assertTrue(
-            any(str(m.get("content", "")).startswith("[Context overflow") for m in new_messages)
+            any(str(m.get("content", "")).startswith(
+                "[Context overflow") for m in new_messages)
         )
 
     def test_backstop_never_drops_summary_or_pins(self):
         messages = conversation(rounds=5, tool_chars=900)
-        limits = make_limits(soft_tokens=10, keep_recent_tokens=60, hard_tokens=1)
+        limits = make_limits(
+            soft_tokens=10, keep_recent_tokens=60, hard_tokens=1)
 
         new_messages, report = manage_context(
             messages, limits=limits, complete=lambda s, u: "SUMMARY"
@@ -257,7 +272,8 @@ class SummarizeTests(unittest.TestCase):
         )
         self.assertTrue(report.summarized)
         self.assertTrue(
-            any(str(m.get("content", "")).startswith(COMPACTION_MARKER) for m in new_messages)
+            any(str(m.get("content", "")).startswith(COMPACTION_MARKER)
+                for m in new_messages)
         )
 
     def test_pinned_prefix_without_system_and_user(self):
@@ -297,7 +313,8 @@ class AgentIntegrationTests(unittest.TestCase):
         )
         responses = [
             [{"content": "first answer"}],           # run 1 main call
-            [{"content": "BRIEF: earlier turns"}],   # run 2 compaction summarizer
+            # run 2 compaction summarizer
+            [{"content": "BRIEF: earlier turns"}],
             [{"content": "second answer"}],          # run 2 main call
         ]
         calls = []
@@ -319,7 +336,8 @@ class AgentIntegrationTests(unittest.TestCase):
         list(agent.run("first question"))
         events = list(agent.run("second question"))
 
-        compaction_events = [e for e in events if e.get("type") == "compaction"]
+        compaction_events = [
+            e for e in events if e.get("type") == "compaction"]
         self.assertEqual(len(compaction_events), 1)
         self.assertTrue(compaction_events[0]["summarized"])
         self.assertTrue(

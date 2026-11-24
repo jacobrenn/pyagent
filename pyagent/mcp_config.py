@@ -58,7 +58,8 @@ _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 TRANSPORT_STDIO = "stdio"
 TRANSPORT_HTTP = "http"
-_HTTP_ALIASES = {"http", "streamable-http", "streamable_http", "streamablehttp"}
+_HTTP_ALIASES = {"http", "streamable-http",
+                 "streamable_http", "streamablehttp"}
 _STDIO_ALIASES = {"stdio", "stdio_server"}
 
 SECRET_MASK = "********"
@@ -143,8 +144,10 @@ def qualify_tool_name(server: str, tool: str) -> str:
     base = f"{MCP_TOOL_PREFIX}{safe_server}__{safe_tool}"
     if safe_server == server and safe_tool == tool and len(base) <= MAX_TOOL_NAME_CHARS:
         return base
-    digest = hashlib.sha256(f"{server}\x00{tool}".encode("utf-8")).hexdigest()[:8]
-    tool_budget = MAX_TOOL_NAME_CHARS - len(MCP_TOOL_PREFIX) - len(safe_server) - 2 - 1 - len(digest)
+    digest = hashlib.sha256(
+        f"{server}\x00{tool}".encode("utf-8")).hexdigest()[:8]
+    tool_budget = MAX_TOOL_NAME_CHARS - \
+        len(MCP_TOOL_PREFIX) - len(safe_server) - 2 - 1 - len(digest)
     safe_tool = safe_tool[: max(1, tool_budget)]
     return f"{MCP_TOOL_PREFIX}{safe_server}__{safe_tool}-{digest}"
 
@@ -192,11 +195,15 @@ def resolve_server(
     env_source = os.environ if environ is None else environ
     missing: list[str] = []
 
-    command = _expand_string(server.command, env_source, missing) if server.command else None
-    args = tuple(_expand_string(arg, env_source, missing) for arg in server.args)
+    command = _expand_string(server.command, env_source,
+                             missing) if server.command else None
+    args = tuple(_expand_string(arg, env_source, missing)
+                 for arg in server.args)
     env = _expand_mapping(server.env, env_source, missing)
-    cwd = _expand_string(server.cwd, env_source, missing) if server.cwd else None
-    url = _expand_string(server.url, env_source, missing) if server.url else None
+    cwd = _expand_string(server.cwd, env_source,
+                         missing) if server.cwd else None
+    url = _expand_string(server.url, env_source,
+                         missing) if server.url else None
     headers = _expand_mapping(server.headers, env_source, missing)
 
     fingerprint_src = json.dumps(
@@ -244,7 +251,8 @@ def validate_server_name(name: str) -> str:
 
 def _expect_str(value: Any, field: str, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise McpConfigError(f"Server {name!r}: {field} must be a non-empty string.")
+        raise McpConfigError(
+            f"Server {name!r}: {field} must be a non-empty string.")
     return value
 
 
@@ -252,13 +260,15 @@ def _expect_str_list(value: Any, field: str, name: str) -> tuple[str, ...]:
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise McpConfigError(f"Server {name!r}: {field} must be a list of strings.")
+        raise McpConfigError(
+            f"Server {name!r}: {field} must be a list of strings.")
     out: list[str] = []
     for item in value:
         if isinstance(item, (str, int, float, bool)):
             out.append(str(item))
         else:
-            raise McpConfigError(f"Server {name!r}: {field} entries must be strings.")
+            raise McpConfigError(
+                f"Server {name!r}: {field} entries must be strings.")
     return tuple(out)
 
 
@@ -266,13 +276,16 @@ def _expect_str_map(value: Any, field: str, name: str) -> dict[str, str]:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise McpConfigError(f"Server {name!r}: {field} must be an object of string values.")
+        raise McpConfigError(
+            f"Server {name!r}: {field} must be an object of string values.")
     out: dict[str, str] = {}
     for key, item in value.items():
         if not isinstance(key, str):
-            raise McpConfigError(f"Server {name!r}: {field} keys must be strings.")
+            raise McpConfigError(
+                f"Server {name!r}: {field} keys must be strings.")
         if not isinstance(item, str):
-            raise McpConfigError(f"Server {name!r}: {field}[{key!r}] must be a string.")
+            raise McpConfigError(
+                f"Server {name!r}: {field}[{key!r}] must be a string.")
         out[key] = item
     return out
 
@@ -291,7 +304,8 @@ def _server_from_dict(name: str, data: Any) -> McpServerConfig:
 
     if transport_raw is not None:
         if not isinstance(transport_raw, str):
-            raise McpConfigError(f"Server {name!r}: 'transport' must be a string.")
+            raise McpConfigError(
+                f"Server {name!r}: 'transport' must be a string.")
         normalized = transport_raw.strip().lower()
         if normalized in _STDIO_ALIASES:
             transport_raw = TRANSPORT_STDIO
@@ -314,13 +328,16 @@ def _server_from_dict(name: str, data: Any) -> McpServerConfig:
     if transport_raw == TRANSPORT_STDIO:
         transport = TRANSPORT_STDIO
         if has_url:
-            raise McpConfigError(f"Server {name!r}: http-only field 'url' is not allowed for stdio transport.")
+            raise McpConfigError(
+                f"Server {name!r}: http-only field 'url' is not allowed for stdio transport.")
     elif transport_raw == TRANSPORT_HTTP:
         transport = TRANSPORT_HTTP
         if has_command:
-            raise McpConfigError(f"Server {name!r}: stdio field 'command' is not allowed for http transport.")
+            raise McpConfigError(
+                f"Server {name!r}: stdio field 'command' is not allowed for http transport.")
     elif has_command and has_url:
-        raise McpConfigError(f"Server {name!r}: set either 'command' (stdio) or 'url' (http), not both.")
+        raise McpConfigError(
+            f"Server {name!r}: set either 'command' (stdio) or 'url' (http), not both.")
     elif has_command:
         transport = TRANSPORT_STDIO
     elif has_url:
@@ -331,7 +348,8 @@ def _server_from_dict(name: str, data: Any) -> McpServerConfig:
         )
 
     if transport == TRANSPORT_STDIO and not has_command:
-        raise McpConfigError(f"Server {name!r}: stdio transport requires 'command'.")
+        raise McpConfigError(
+            f"Server {name!r}: stdio transport requires 'command'.")
     if transport == TRANSPORT_HTTP:
         assert url is not None
         parsed = urlsplit(url.strip())
@@ -370,13 +388,15 @@ def parse_servers(payload: Mapping[str, Any]) -> dict[str, McpServerConfig]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise McpConfigError("'mcpServers' must be an object mapping names to server configs.")
+        raise McpConfigError(
+            "'mcpServers' must be an object mapping names to server configs.")
     servers: dict[str, McpServerConfig] = {}
     for raw_name, raw_config in raw.items():
         name = validate_server_name(str(raw_name))
         # Preserve ordering; reject duplicates after name normalization.
         if name in servers:
-            raise McpConfigError(f"Duplicate server name {name!r} in mcp.json.")
+            raise McpConfigError(
+                f"Duplicate server name {name!r} in mcp.json.")
         servers[name] = _server_from_dict(name, raw_config)
     return servers
 
@@ -400,7 +420,8 @@ def load_mcp_config(
 
     Raises :class:`McpConfigError` when the file exists but is invalid.
     """
-    resolved = Path(path).expanduser() if path is not None else default_mcp_config_path(user_dir)
+    resolved = Path(path).expanduser(
+    ) if path is not None else default_mcp_config_path(user_dir)
     if not resolved.is_file():
         return McpConfig(path=resolved, servers=())
     try:
@@ -408,9 +429,11 @@ def load_mcp_config(
     except json.JSONDecodeError as exc:
         raise McpConfigError(f"{resolved}: invalid JSON: {exc}") from exc
     except OSError as exc:
-        raise McpConfigError(f"{resolved}: could not read file: {exc}") from exc
+        raise McpConfigError(
+            f"{resolved}: could not read file: {exc}") from exc
     if not isinstance(payload, dict):
-        raise McpConfigError(f"{resolved}: top-level value must be a JSON object.")
+        raise McpConfigError(
+            f"{resolved}: top-level value must be a JSON object.")
     version = payload.get("version", CONFIG_VERSION)
     if not isinstance(version, int) or version > CONFIG_VERSION:
         raise McpConfigError(
@@ -458,7 +481,8 @@ def save_mcp_config(
     *,
     user_dir: str | os.PathLike[str] | None = None,
 ) -> Path:
-    resolved = Path(path).expanduser() if path is not None else default_mcp_config_path(user_dir)
+    resolved = Path(path).expanduser(
+    ) if path is not None else default_mcp_config_path(user_dir)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": CONFIG_VERSION,
@@ -467,7 +491,8 @@ def save_mcp_config(
         },
     }
     tmp = resolved.with_name(f".{resolved.name}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(payload, indent=2,
+                   sort_keys=True) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, resolved)
     return resolved
@@ -504,10 +529,12 @@ def upsert_server(
     replace: bool = False,
 ) -> McpServerConfig:
     """Insert or update ``server``; preserves unknown keys of other entries."""
-    resolved = Path(path).expanduser() if path is not None else default_mcp_config_path(user_dir)
+    resolved = Path(path).expanduser(
+    ) if path is not None else default_mcp_config_path(user_dir)
     raw = _load_raw_servers(resolved)
     if server.name in raw and not replace:
-        raise McpConfigError(f"Server {server.name!r} already exists in {resolved}.")
+        raise McpConfigError(
+            f"Server {server.name!r} already exists in {resolved}.")
     base = dict(raw.get(server.name, {}))
     base.update(_server_to_dict(server))
     raw[server.name] = base
@@ -522,7 +549,8 @@ def remove_server(
     path: str | os.PathLike[str] | None = None,
     user_dir: str | os.PathLike[str] | None = None,
 ) -> bool:
-    resolved = Path(path).expanduser() if path is not None else default_mcp_config_path(user_dir)
+    resolved = Path(path).expanduser(
+    ) if path is not None else default_mcp_config_path(user_dir)
     raw = _load_raw_servers(resolved)
     key = name.strip()
     if key not in raw:
@@ -540,7 +568,8 @@ def set_server_enabled(
     path: str | os.PathLike[str] | None = None,
     user_dir: str | os.PathLike[str] | None = None,
 ) -> McpServerConfig | None:
-    resolved = Path(path).expanduser() if path is not None else default_mcp_config_path(user_dir)
+    resolved = Path(path).expanduser(
+    ) if path is not None else default_mcp_config_path(user_dir)
     raw = _load_raw_servers(resolved)
     key = name.strip()
     if key not in raw:
